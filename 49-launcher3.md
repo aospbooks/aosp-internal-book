@@ -2,15 +2,16 @@
 
 Launcher3 is the default home screen application in AOSP, responsible for the experience
 users see first after unlocking their device. It manages app icons on the workspace,
-the all-apps drawer, widgets, folders, drag-and-drop, the taskbar on large screens, and,
-through its Quickstep integration, the recent-apps overview. The codebase lives in
-`packages/apps/Launcher3/` and is split across roughly fifteen top-level directories of
-Java and Kotlin source, plus a `quickstep/` module for gesture-navigation and recents
-features.
+the all-apps drawer, widgets, folders, drag-and-drop, and the taskbar on large screens.
+Through its Quickstep integration, it also manages the recent-apps overview. The
+codebase lives in `packages/apps/Launcher3/`. It has about fifteen top-level
+directories of Java and Kotlin source, plus a `quickstep/` module for gesture-navigation
+and recents features.
 
-This chapter walks through the full architecture of Launcher3, from the model layer that
-loads workspace data off a background thread, through the view hierarchy that renders
-icons and widgets, to the drag-and-drop engine that ties it all together. Every section
+This chapter walks through the full architecture of Launcher3. It starts at the model
+layer, which loads workspace data off a background thread. It continues through the view
+hierarchy, which renders icons and widgets. It ends at the drag-and-drop engine, which
+ties it all together. Every section
 references real AOSP source files and quotes key code constructs.
 
 ---
@@ -84,7 +85,7 @@ public class Launcher extends StatefulActivity<LauncherState>
 to handle transitions between launcher states (NORMAL, ALL_APPS, SPRING_LOADED,
 EDIT_MODE, and others). The `Callbacks` interface defined in `BgDataModel`
 provides the contract through which the model layer delivers loaded data to the
-UI; `Launcher` does not implement it itself but owns the implementer,
+UI. `Launcher` does not implement it itself. It owns the implementer,
 `ModelCallbacks` (`src/com/android/launcher3/ModelCallbacks.kt`), as its
 `modelCallbacks` field.
 
@@ -276,10 +277,10 @@ graph TD
     L -->|displays| WP
 ```
 
-The `Callbacks` interface -- implemented by `ModelCallbacks`
-(`src/com/android/launcher3/ModelCallbacks.kt`), which `Launcher` owns as its
-`modelCallbacks` field and which forwards bound data into the launcher view
-hierarchy -- defines the binding contract:
+`ModelCallbacks` (`src/com/android/launcher3/ModelCallbacks.kt`) implements the
+`Callbacks` interface. `Launcher` owns this implementer as its `modelCallbacks` field.
+The implementer forwards bound data into the launcher view hierarchy. The interface
+defines the binding contract:
 
 - `bindCompleteModel()` -- delivers the full workspace model in one rebind
 - `bindItemsAdded()` / `bindItemsUpdated()` -- deliver workspace item deltas
@@ -889,7 +890,7 @@ the catalog (`WidgetsRepository`, `WidgetUsersRepository`,
 `QuickstepWidgetPickerActivity`
 (`quickstep/src/com/android/launcher3/QuickstepWidgetPickerActivity.kt`) extends
 `WidgetPickerActivity` to host the picker on additional surfaces (for example a
-lock-screen widget picker), adding wallpaper blur, zoom, and gesture-blocking on
+lock-screen widget picker). It adds wallpaper blur, zoom, and gesture-blocking on
 top of the same Compose content.
 
 The composable catalogs live in the `modules/widgetpicker/` module, each driven by
@@ -902,7 +903,7 @@ a ViewModel:
 | Pin-widget request | `PinAppWidgetCatalog` | `PinAppWidgetCatalogViewModel` |
 
 The full catalog further splits into a `LandingScreen` (featured widgets, with
-single- and two-pane variants for large screens) and a `SearchScreen`, each with
+single- and two-pane variants for large screens) and a `SearchScreen`. Each has
 its own ViewModel under
 `modules/widgetpicker/src/com/android/launcher3/widgetpicker/ui/fullcatalog/screens/`.
 
@@ -930,8 +931,8 @@ reports a `WidgetInteractionInfo.WidgetDragInfo` through the
 (`modules/widgetpicker/src/com/android/launcher3/widgetpicker/ui/WidgetPickerEventListeners.kt`).
 `WidgetPickerComposeWrapperImpl` turns that into a `WidgetPickerDragItemListener`
 (`src/com/android/launcher3/widgetpicker/listeners/WidgetPickerDragItemListener.kt`),
-a `BaseItemDragListener` that converts the picked widget into a
-`PendingAddWidgetInfo` and, once the launcher resumes, starts the drag through the
+a `BaseItemDragListener`. It converts the picked widget into a
+`PendingAddWidgetInfo`. Once the launcher resumes, it starts the drag through the
 unchanged `PendingItemDragHelper`.
 
 ### 49.3.8 Widget Resize
@@ -1245,8 +1246,8 @@ public class QuickstepLauncher extends Launcher {
 ```
 
 This integration is controlled by the system property and Quickstep's
-`TouchInteractionService`, which intercepts gesture-navigation events and
-routes them to either the launcher (for going home or showing recents) or
+`TouchInteractionService`. The service intercepts gesture-navigation events.
+It routes them to either the launcher (for going home or showing recents) or
 the foreground app.
 
 ### 49.5.2 Architecture Overview
@@ -1308,14 +1309,15 @@ constructor(
     private val commandQueue = ConcurrentLinkedDeque<CommandInfo>()
 ```
 
-In Android 17 the helper is a plain `@Inject` Dagger type rather than the
-assisted-injected one of earlier releases: instead of receiving a
-`TouchInteractionService` directly it pulls a
+In Android 17 the helper is a plain `@Inject` Dagger type. Earlier releases
+used an assisted-injected type. The helper does not receive a
+`TouchInteractionService` directly. Instead it pulls a
 `Provider<TouchInteractionHandler>`, a `PerDisplayRepository<TaskAnimationManager>`,
-and a `DisplayRepository`, all of which are display-aware so a single helper
-can drive overview on whichever display the gesture happened (the
-`SystemUiProxy` is still a direct constructor parameter). The command
-types are:
+and a `DisplayRepository`. All of these are display-aware, so a single helper
+can drive overview on whichever display the gesture happened. The
+`SystemUiProxy` is still a direct constructor parameter.
+
+The command types are:
 
 ```kotlin
 enum class CommandType {
@@ -1351,8 +1353,8 @@ public abstract class RecentsView<
 ```
 
 The container type parameter is a `Context` that implements
-`RecentsViewContainer` and `StatefulContainer` -- not necessarily an
-`Activity` -- which is exactly what lets the window-hosted
+`RecentsViewContainer` and `StatefulContainer`. It is not necessarily an
+`Activity`. This is exactly what lets the window-hosted
 `RecentsWindowManager` of section 49.5.8 reuse `RecentsView`.
 
 Key features of `RecentsView`:
@@ -1366,10 +1368,10 @@ Key features of `RecentsView`:
 In Android 17 `RecentsView` also holds a `DesktopRecentsTransitionController`
 (`quickstep/src/com/android/launcher3/desktop/DesktopRecentsTransitionController.kt`),
 injected through its `init` path. When a task card is moved into desktop windowing,
-`RecentsView` delegates to that controller's `moveToDesktop`, and when the
-display is an external connected display it calls `moveToExternalDisplay`; both
-run a `RemoteTransition` named `"RecentsToDesktop"` so the task animates from the
-overview grid into a freeform desktop window.
+`RecentsView` delegates to that controller's `moveToDesktop`. When the
+display is an external connected display, it calls `moveToExternalDisplay`.
+Both run a `RemoteTransition` named `"RecentsToDesktop"`. This makes the task
+animate from the overview grid into a freeform desktop window.
 
 ### 49.5.5 TaskView
 
@@ -1454,7 +1456,7 @@ sequenceDiagram
 Historically overview was hosted by an `Activity` (`RecentsActivity` in the
 fallback case, or the `QuickstepLauncher` itself in the launcher case). With
 desktop windowing and connected displays, Android 17 introduces a way to host
-overview in a standalone *window* rather than an activity, so recents can live
+overview in a standalone *window* rather than an activity. So recents can live
 on a secondary display or float over a desktop without owning a task. The host
 is `RecentsWindowManager`:
 
@@ -1483,11 +1485,11 @@ constructor(
     ComponentCallbacks {
 ```
 
-Instead of an `Activity`, `RecentsWindowManager` builds its own view tree with a
-`SurfaceControlViewHost` driven by a `WindowlessWindowManager`, owns a
+`RecentsWindowManager` does not use an `Activity`. It builds its own view tree
+with a `SurfaceControlViewHost` driven by a `WindowlessWindowManager`. It owns a
 `StateManager<RecentsState, RecentsWindowManager>` (its own `HIDDEN`/visible
-state machine independent of `LauncherState`), and implements
-`RecentsViewContainer` so the very same `RecentsView`/`TaskView` machinery from
+state machine independent of `LauncherState`). It also implements
+`RecentsViewContainer`, so the very same `RecentsView`/`TaskView` machinery from
 section 49.5.4 renders inside it. Because it is a `ComponentCallbacks`, it reacts
 to its own configuration changes (orientation, screen size) per display.
 
@@ -1519,8 +1521,8 @@ Which host is used is gated by `RecentsWindowFlags`
 `enable_fallback_overview_in_window` aconfig flags. A per-display
 `RecentsWindowManager` is created and torn down by `RecentsWindowTracker`
 (`quickstep/src/com/android/quickstep/window/RecentsWindowTracker.kt`, a
-`ContextTracker`) in concert with the `DisplayModel`/`PerDisplayComponent`
-machinery described in section 49.6, so each display with system decorations can
+`ContextTracker`). It works with the `DisplayModel`/`PerDisplayComponent`
+machinery described in section 49.6. So each display with system decorations can
 get its own overview window. The matching gesture handler is
 `RecentsWindowSwipeHandler`
 (`quickstep/src/com/android/quickstep/window/RecentsWindowSwipeHandler.java`),
@@ -1528,9 +1530,9 @@ the window-hosted counterpart to `AbsSwipeUpHandler`.
 
 ### 49.5.9 Desktop App-Launch Transitions
 
-When desktop windowing is active, launching an app from the home screen or
-taskbar should animate the new window into a freeform desktop position rather
-than full screen. Android 17 adds a dedicated transition package,
+When desktop windowing is active, an app launch from the home screen or
+taskbar should animate the new window into a freeform desktop position. It
+should not animate to full screen. Android 17 adds a dedicated transition package,
 `com.android.launcher3.desktop`. `DesktopAppLaunchTransitionManager`
 (`quickstep/src/com/android/launcher3/desktop/DesktopAppLaunchTransitionManager.kt`)
 registers a `RemoteTransition` with SystemUI for freeform task opens and for the
@@ -1554,10 +1556,10 @@ The actual animation is described by `DesktopAppLaunchTransition`
 whose `AppLaunchType` enum distinguishes a fresh `LAUNCH` from an `UNMINIMIZE`,
 and `DesktopAppLaunchAnimatorHelper`
 (`quickstep/src/com/android/launcher3/desktop/DesktopAppLaunchAnimatorHelper.kt`)
-builds the per-window animators. `QuickstepTransitionManager` wires this in: in
-its remote-transition path it checks `isDesktopAppLaunch(...)` and, when true,
-returns `createDesktopAppLaunchRemoteTransition(...)` so a home-screen icon tap
-in desktop mode plays the desktop launch animation. The whole path is gated by
+builds the per-window animators. `QuickstepTransitionManager` wires this in. In
+its remote-transition path it checks `isDesktopAppLaunch(...)`. When the result
+is true, it returns `createDesktopAppLaunchRemoteTransition(...)`. So a home-screen
+icon tap in desktop mode plays the desktop launch animation. The whole path is gated by
 `DesktopModeStatus.canEnterDesktopMode()` and the
 `desktop_homescreen_icons_applaunch_transitions` flag, so on phones the classic
 full-screen launch animation is unchanged.
@@ -1577,16 +1579,16 @@ foldables, desktop mode). It exists as a separate window managed by
 public class TaskbarActivityContext extends BaseTaskbarContext {
 ```
 
-On the primary display the taskbar window is of type `TYPE_NAVIGATION_BAR`,
-placing it at the same system UI level as the navigation bar; on a secondary
+On the primary display the taskbar window is of type `TYPE_NAVIGATION_BAR`.
+This places it at the same system UI level as the navigation bar. On a secondary
 (connected) display it uses `TYPE_NAVIGATION_BAR_PANEL` instead
 (`createAllWindowParams()` picks the type via `isPrimaryDisplay()`). It uses
 `FLAG_NOT_FOCUSABLE` to avoid stealing input focus from foreground apps.
 
 There is one `TaskbarActivityContext` per display. In Android 17 the higher-level
 lifecycle (creating and destroying taskbars as displays come and go) is owned by
-the `TaskbarManager` interface and its `DisplayModel`-backed implementation;
-section 49.6.7 covers that per-display architecture.
+the `TaskbarManager` interface and its `DisplayModel`-backed implementation.
+Section 49.6.7 covers that per-display architecture.
 
 ### 49.6.2 Taskbar Controller Architecture
 
@@ -1709,9 +1711,9 @@ public enum RunningAppState {
 
 ### 49.6.7 Per-Display Taskbar
 
-On phones there is one taskbar (or none), but desktop windowing and connected
-displays mean a device can show several displays with system decorations at once,
-each needing its own taskbar. Android 17 makes the taskbar per-display by
+On phones there is one taskbar (or none). Desktop windowing and connected
+displays mean that a device can show several displays with system decorations at once.
+Each of these displays needs its own taskbar. Android 17 makes the taskbar per-display by
 splitting the manager into an interface plus an implementation and giving the
 implementation a `DisplayModel`. `TaskbarManager`
 (`quickstep/src/com/android/launcher3/taskbar/TaskbarManager.kt`) is now an
@@ -1765,9 +1767,9 @@ This per-display model is shared infrastructure. The taskbar uses it for its
 `PerDisplayTaskbarResource`s, and as shown in section 49.5.8 the same kind of
 display tracking governs the per-display `RecentsWindowManager`. Dagger backs it
 with a `PerDisplayComponent`/`PerDisplaySingleton` scope
-(`quickstep/src/com/android/launcher3/dagger/PerDisplayComponent.kt`) so each
-display's controllers are injected into a subgraph scoped to that display and
-cleaned up via `PerDisplayCleanupTask` when the display goes away.
+(`quickstep/src/com/android/launcher3/dagger/PerDisplayComponent.kt`). So each
+display's controllers are injected into a subgraph scoped to that display. They
+are cleaned up via `PerDisplayCleanupTask` when the display goes away.
 
 ```mermaid
 graph TD
@@ -1785,15 +1787,15 @@ graph TD
 Whether a connected display gets its own taskbar at all is gated by
 `enable_taskbar_connected_displays`
 (`frameworks/base/core/java/android/window/flags/lse_desktop_experience.aconfig`,
-namespace `lse_desktop_experience`); when the flag is off, the per-display path
-above still runs but only the primary display's taskbar is created.
+namespace `lse_desktop_experience`). When the flag is off, the per-display path
+above still runs. But only the primary display's taskbar is created.
 
 Two desktop-class taskbar features round this out. When more recent apps are
 open than fit on the taskbar, `TaskbarOverflowView`
 (`quickstep/src/com/android/launcher3/taskbar/TaskbarOverflowView.java`) draws an
-overflow item that collapses the surplus icons into one chip and expands them on
-tap, gated by `enable_taskbar_overflow` (same `lse_desktop_experience`
-namespace). The keyboard task switcher is `KeyboardQuickSwitchController`
+overflow item. The item collapses the surplus icons into one chip and expands
+them on tap. It is gated by `enable_taskbar_overflow` (same
+`lse_desktop_experience` namespace). The keyboard task switcher is `KeyboardQuickSwitchController`
 (`quickstep/src/com/android/launcher3/taskbar/KeyboardQuickSwitchController.java`,
 with its `KeyboardQuickSwitchView` and `KeyboardQuickSwitchViewController`), the
 Alt+Tab switcher that cycles through recent tasks. Its
@@ -1948,8 +1950,8 @@ which is a separate search entry point that typically launches Google Search.
 
 ### 49.7.7 App Prediction and the AppPredictionService
 
-The suggested apps that fill the prediction row at the top of All Apps and the
-predicted slots in the Hotseat do not come from Launcher3. Launcher3 is the client
+Launcher3 does not supply the suggested apps that fill the prediction row at
+the top of All Apps. It also does not supply the predicted slots in the Hotseat. Launcher3 is the client
 of a system `AppPredictionService`; a separate app supplies the predictions.
 
 On the Launcher side, `QuickstepModelDelegate` opens prediction sessions through
@@ -1968,8 +1970,8 @@ mAllPredictionAppsState.registerPredictor(mContext,
 // ... and a second session with setUiSurface("hotseat")
 ```
 
-Each launch is reported back to the service as an `AppTargetEvent`, and the service
-pushes a fresh list of `AppTarget`s that Launcher3 renders through
+Each launch is reported back to the service as an `AppTargetEvent`. The service
+pushes a fresh list of `AppTarget`s. Launcher3 renders them through
 `appprediction/PredictionRowView.java` (All Apps) and the hotseat predictor.
 
 The service behind these sessions is selectable by the device. AOSP ships a minimal
@@ -1994,12 +1996,13 @@ public class PredictionService extends AppPredictionService {
 }
 ```
 
-Its logic is deliberately simple: it keeps the five most recently launched apps,
-seeded on first boot from the default calendar, gallery, maps, email, and browser
-handlers, and moves an app to the front of the list on each `onAppTargetEvent`.
+Its logic is deliberately simple. It keeps the five most recently launched apps.
+On first boot it seeds them from the default calendar, gallery, maps, email, and
+browser handlers. It moves an app to the front of the list on each `onAppTargetEvent`.
+
 There is no on-device model. A production build replaces this with a Google or OEM
 predictor that ranks by usage history and context. The reference app exists so the
-prediction row has something to show on a stock AOSP image; its `README` notes that
+prediction row has something to show on a stock AOSP image. Its `README` notes that
 the project is unsupported and slated for removal from the manifest.
 
 ---
@@ -2171,7 +2174,7 @@ public class FolderGridOrganizer {
 
 The organizer dynamically adjusts the grid size based on content count. The grid
 grows as roughly `countX = ceil(sqrt(count))` with `countY <= countX` (1 item:
-1x1, 2 items: 2x1, 3-4 items: 2x2, and so on), and the full
+1x1, 2 items: 2x1, 3-4 items: 2x2, and so on). The full
 `mMaxCountX x mMaxCountY` grid is used only once the item count reaches
 `mMaxItemsPerPage`.
 
@@ -2556,10 +2559,10 @@ LauncherPrefs.getPrefs(context)
 For the denser grid, create or modify responsive spec XML files. The workspace
 cell spec controls how much space each cell gets:
 
-Create `res/xml/spec_workspace_6_by_5_custom.xml`, following the schema of the
-real spec files (e.g. `res/xml/spec_handheld_workspace_cell_3_row.xml`): a
-`<cellSpecs>` root containing `<specs>` groups keyed by aspect ratio, each with
-`<cellSpec>` entries whose children set the individual dimensions:
+Create `res/xml/spec_workspace_6_by_5_custom.xml`. Follow the schema of the
+real spec files (e.g. `res/xml/spec_handheld_workspace_cell_3_row.xml`). The file
+has a `<cellSpecs>` root with `<specs>` groups keyed by aspect ratio. Each group
+has `<cellSpec>` entries whose children set the individual dimensions:
 
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
@@ -2649,7 +2652,7 @@ const val INDEX_TWO_PANEL_LANDSCAPE: Int = 3 // Two-panel landscape
 ```
 
 Border spaces, cell heights, and other dimensions can be specified independently
-for each index, allowing fine-grained control over the layout in each
+for each index. This gives fine-grained control over the layout in each
 configuration.
 
 ### 49.10.10 Key Files Reference
@@ -2680,15 +2683,15 @@ This chapter has explored the Launcher3 codebase in AOSP, covering:
   singleton graph.
 
 - **App Icons and Grid** (Section 49.2): The `ItemInfo` hierarchy represents all
-  launcher items. `CellLayout` provides the grid container, `BubbleTextView`
-  renders icons, and the `DeviceProfile`/`InvariantDeviceProfile` system adapts
+  launcher items. `CellLayout` provides the grid container, and `BubbleTextView`
+  renders icons. The `DeviceProfile`/`InvariantDeviceProfile` system adapts
   the layout to different screen sizes via XML-defined grid options and responsive
   specifications.
 
 - **Widget System** (Section 49.3): `LauncherWidgetHolder` wraps `AppWidgetHost`
   for lifecycle-aware widget management. The widget picker is now a standalone
   Jetpack Compose activity (`WidgetPickerActivity` + the `modules/widgetpicker/`
-  catalogs), backed by `WidgetPickerDataProvider`/`WidgetPickerData`, having
+  catalogs), backed by `WidgetPickerDataProvider`/`WidgetPickerData`. It
   replaced the old `WidgetsFullSheet`/`WidgetsListAdapter`/`WidgetCell` views.
   The pinning flow still runs the picked widget through `PendingItemDragHelper`,
   binding, configuration, and resize.

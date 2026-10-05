@@ -1,17 +1,17 @@
 # Chapter 52: CompanionDeviceManager and Virtual Devices
 
 Android's CompanionDeviceManager (CDM) and VirtualDeviceManager (VDM) form a
-layered infrastructure that enables phones to pair with external hardware --
+layered infrastructure. It lets phones pair with external hardware --
 smartwatches, tablets, automotive head-units, PCs, even AR glasses -- and present
 them as first-class computing surfaces. CDM manages the lifecycle of device
 associations, presence detection, secure transport channels, and cross-device
-data synchronization. VDM, built on top of CDM associations, lets a remote
+data synchronization. VDM is built on top of CDM associations. It lets a remote
 companion device host virtual displays, virtual input devices, virtual sensors,
-virtual cameras, and virtual audio pipelines -- effectively projecting an entire
+virtual cameras, and virtual audio pipelines. In effect, it projects an entire
 Android experience onto external hardware.
 
-This chapter walks through the full server-side implementation of both systems,
-from the initial BLE/Bluetooth discovery handshake through to a running
+This chapter walks through the full server-side implementation of both systems.
+It starts at the initial BLE/Bluetooth discovery handshake. It ends at a running
 virtual display with injected touch events and re-routed audio streams.
 
 All source paths are relative to the AOSP source tree root.
@@ -30,8 +30,8 @@ frameworks/base/services/companion/java/com/android/server/companion/
 ```
 
 This file serves as the orchestrator. It does not
-implement all functionality itself; instead it delegates to a set of specialized
-processors and managers, each living in its own sub-package:
+implement all functionality itself. Instead it delegates to a set of specialized
+processors and managers. Each one lives in its own sub-package:
 
 | Sub-package        | Key Class                          | Responsibility                                |
 |--------------------|------------------------------------|-----------------------------------------------|
@@ -51,9 +51,9 @@ processors and managers, each living in its own sub-package:
 | `virtual/`         | `VirtualDeviceManagerService`      | Virtual device creation & management          |
 
 The `devicetrust/` and `powerexemption/` packages are new in
-Android 17 and are covered in section 52.7; the `actionrequest/` package
-already shipped in Android 16 and gained additional result constants in 17. `CompanionDeviceManagerService` also
-holds a top-level `BackupRestoreProcessor` that backs up and restores
+Android 17 and are covered in section 52.7. The `actionrequest/` package
+already shipped in Android 16 and gained more result constants in 17.
+`CompanionDeviceManagerService` also holds a top-level `BackupRestoreProcessor` that backs up and restores
 associations across device migration.
 
 The class diagram below shows how `CompanionDeviceManagerService` coordinates
@@ -116,9 +116,9 @@ classDiagram
 
 The processor fields are declared together in `CompanionDeviceManagerService`
 (see `frameworks/base/services/companion/java/com/android/server/companion/CompanionDeviceManagerService.java`,
-lines 154-170) and wired up in the constructor (lines 200-236), where each
-processor receives the shared `AssociationStore` and `CompanionTransportManager`
-so that all of them observe the same association set and the same transport
+lines 154-170). They are wired up in the constructor (lines 200-236). There each
+processor receives the shared `AssociationStore` and `CompanionTransportManager`.
+So all of them observe the same association set and the same transport
 channels.
 
 ### 52.1.2 Permission Model
@@ -187,7 +187,7 @@ service constructor. During `onStart()`, the service:
    `InactiveAssociationsRemovalService`, and calls
    `CrossDeviceSyncController.onBootCompleted()` for call metadata sync.
 
-The association data is stored in Device Encrypted (DE) storage, so it is
+The association data is stored in Device Encrypted (DE) storage. So it is
 available before the user unlocks the device. This is explicit in the
 `AssociationStore.refreshCache()` implementation:
 
@@ -278,11 +278,11 @@ final AssociationInfo association =
 Source:
 `frameworks/base/services/companion/java/com/android/server/companion/association/AssociationRequestsProcessor.java`, lines 335-355.
 
-The last two setters are new in Android 17: `setExtraPermissions()` carries an
-optional set of permissions tied to the association, and
-`setRemoteAiAgentSupported()` records whether the companion can host a remote AI
-agent (used by the Computer Control flow in section 52.8). The value flows in
-from `AssociationRequest.isRemoteAiAgentSupported()`.
+The last two setters are new in Android 17. `setExtraPermissions()` carries an
+optional set of permissions tied to the association. `setRemoteAiAgentSupported()`
+records whether the companion can host a remote AI agent (used by the Computer
+Control flow in section 52.8). The value flows in from
+`AssociationRequest.isRemoteAiAgentSupported()`.
 
 Key fields:
 
@@ -334,11 +334,12 @@ The full set of device profiles includes:
 - **DEVICE_PROFILE_MEDICAL** -- medical device companion (flag
   `FLAG_ENABLE_MEDICAL_PROFILE`)
 
-The last two are flag-gated profiles present in both Android 16 and 17; they
-stay behind their aconfig flags rather than being a 17 addition. Both are declared in
-`frameworks/base/core/java/android/companion/AssociationRequest.java`,
-each guarded by a `@FlaggedApi` annotation pointing at an aconfig flag in
-`frameworks/base/core/java/android/companion/flags.aconfig`:
+The last two are flag-gated profiles present in both Android 16 and 17. They
+stay behind their aconfig flags. They are not a 17 addition. Both are declared in
+`frameworks/base/core/java/android/companion/AssociationRequest.java`.
+Each is guarded by a `@FlaggedApi` annotation that points at an aconfig flag in
+`frameworks/base/core/java/android/companion/flags.aconfig`.
+
 `DEVICE_PROFILE_FITNESS_TRACKER` maps to the role string
 `android.app.role.COMPANION_DEVICE_FITNESS_TRACKER`, and `DEVICE_PROFILE_MEDICAL`
 maps to `android.app.role.COMPANION_DEVICE_MEDICAL`.
@@ -370,14 +371,15 @@ Source:
 The role-to-permission mapping for each profile lives in
 `frameworks/base/services/companion/java/com/android/server/companion/utils/RolesUtils.java`.
 The two Android 17 profiles are handled differently there.
-`DEVICE_PROFILE_FITNESS_TRACKER` is a *role alias*: a `ROLE_ALIASES` map points
-it at `DEVICE_PROFILE_WATCH`, so a fitness tracker reuses the watch role and its
+`DEVICE_PROFILE_FITNESS_TRACKER` is a *role alias*. A `ROLE_ALIASES` map points
+it at `DEVICE_PROFILE_WATCH`. So a fitness tracker reuses the watch role and its
 permission set (notifications, phone, call logs, SMS, contacts, calendar, nearby
-devices, media output) rather than defining a separate role.
+devices, media output). It does not define a separate role.
+
 `DEVICE_PROFILE_MEDICAL` is its own role with a narrower set in
 `PROFILE_PERMISSION_SETS`: post-notifications, nearby devices, schedule-exact-alarm,
-and bypass-Do-Not-Disturb, reflecting that a medical companion needs to deliver
-time-critical alerts but not the broad messaging access a watch gets.
+and bypass-Do-Not-Disturb. This reflects that a medical companion needs to deliver
+time-critical alerts. It does not need the broad messaging access a watch gets.
 
 ### 52.2.3 The Association Flow
 
@@ -438,10 +440,10 @@ public void processNewAssociationRequest(@NonNull AssociationRequest request,
 ```
 
 Source:
-`AssociationRequestsProcessor.java`, lines 171-249 (the permission helpers
+`AssociationRequestsProcessor.java`, lines 171-249. The permission helpers
 `enforcePermissionForCreatingAssociation` and `enforceUsesCompanionDeviceFeature`
 are static imports from `com.android.server.companion.utils.PermissionsUtils`
-and `PackageUtils`, a refactor introduced in Android 17).
+and `PackageUtils`. This refactor was introduced in Android 17.
 
 ### 52.2.4 Rate Limiting
 
@@ -569,9 +571,9 @@ A critical design aspect: if the companion app process is in the foreground
 when disassociation is triggered, the actual removal is deferred. The
 association is marked as "revoked" and an `OnUidImportanceListener` is
 registered. When the process moves to the background, the cleanup completes.
-Deferral applies both when the association holds a device profile whose role is
-not in use by other associations and when a profile-less association carries
-extra permissions:
+Deferral applies in two cases. In the first, the association holds a device
+profile whose role no other association uses. In the second, a profile-less
+association carries extra permissions:
 
 ```java
 if (packageProcessImportance <= IMPORTANCE_FOREGROUND
@@ -1233,10 +1235,10 @@ In `onStart()` the service publishes a binder service under
 
 Task continuity messages flow through the CDM transport using
 `MESSAGE_ONEWAY_TASK_CONTINUITY`. The concrete message types live under
-`messages/` and include `HandoffRequestMessage` / `HandoffRequestResultMessage`
-(request/response for a task transfer), `HandoffActivityDataMessage` (the activity
-payload to resume), `TaskStackBroadcastMessage` (remote task-stack
-synchronization), and `RemoteTaskInfo` (a single remote task descriptor). The
+`messages/`. They include `HandoffRequestMessage` / `HandoffRequestResultMessage`
+(request/response for a task transfer) and `HandoffActivityDataMessage` (the activity
+payload to resume). They also include `TaskStackBroadcastMessage` (remote task-stack
+synchronization) and `RemoteTaskInfo` (a single remote task descriptor). The
 per-association request flow is driven by `InboundHandoffRequestHandler` and
 `OutboundHandoffRequestHandler` in `handoff/`.
 
@@ -1265,18 +1267,18 @@ public HandoffActivityData onHandoffActivityDataRequested(      // line 10240
 
 The whole API is gated by the `task_continuity` aconfig flag
 (`frameworks/base/core/java/android/companion/flags.aconfig:69`, namespace `companion`,
-exported as `android.companion.Flags.FLAG_TASK_CONTINUITY`) and by the matching
+exported as `android.companion.Flags.FLAG_TASK_CONTINUITY`). A second gate is the matching
 `CompanionDeviceManager.FLAG_TASK_CONTINUITY = 1 << 1`
-(`CompanionDeviceManager.java:233`) data-sync capability that authorizes the transport
-to carry handoff payloads between two associated devices. There is no handoff without a
+(`CompanionDeviceManager.java:233`) data-sync capability. This capability authorizes the
+transport to carry handoff payloads between two associated devices. There is no handoff without a
 CDM association first: the feature rides the same secure CDM channel described in
 Sections 52.3.1-52.3.4.
 
 Both endpoints are *real, user-owned devices* -- a phone and a tablet, or a phone and a
 Chromebook -- that were paired through CompanionDeviceManager (Section 52.2). This is
 unrelated to the virtual displays of Sections 52.4-52.6, where a single device drives a
-projected surface: in a handoff each device runs its own copy of the app, and only a
-compact descriptor crosses the link to tell the receiver how to recreate the activity
+projected surface. In a handoff, each device runs its own copy of the app. Only a
+compact descriptor crosses the link. It tells the receiver how to recreate the activity
 (Section 52.3.11).
 
 `HandoffActivityDataRequestInfo.isActiveRequest()` tells the activity *why* it is being
@@ -1326,40 +1328,40 @@ sequenceDiagram
 On the **sender**, `ActivityThread` calls back into the activity from two places:
 
 - In `callActivityOnSaveInstanceState()` (invoked from `performStopActivityInner()`
-  on the stop path), guarded by
-  `android.companion.Flags.taskContinuity() && r.activity.isHandoffEnabled()`, it
-  pre-caches a snapshot:
+  on the stop path), it pre-caches a snapshot. This step is guarded by
+  `android.companion.Flags.taskContinuity() && r.activity.isHandoffEnabled()`.
+  The snapshot is
   `r.handoffActivityData = r.activity.onHandoffActivityDataRequested(requestInfo)` with
-  `isActiveRequest=false` (`ActivityThread.java:6982`-6990); the cached data is
+  `isActiveRequest=false` (`ActivityThread.java:6982`-6990). The cached data is
   attached to the `StopInfo` via `setHandoffActivityData()` at
   `ActivityThread.java:6437`.
-- When a live handoff is requested it handles the `REQUEST_HANDOFF_ACTIVITY_DATA`
-  message (H-message id 173, `ActivityThread.java:2683`), calls
+- When a live handoff is requested, it handles the `REQUEST_HANDOFF_ACTIVITY_DATA`
+  message (H-message id 173, `ActivityThread.java:2683`). It calls
   `onHandoffActivityDataRequested(...)` with `isActiveRequest=true`
-  (`ActivityThread.java:4846`), and returns the result through
+  (`ActivityThread.java:4846`). It returns the result through
   `ActivityTaskManager.reportHandoffActivityData(requestToken, data)`
   (`ActivityThread.java:4859`).
 
-The request originates in WindowManager:
+The request originates in WindowManager.
 `ActivityTaskManagerService.requestHandoffTaskData(int taskId, IHandoffTaskDataReceiver receiver)`
-(`ActivityTaskManagerService.java:3973`) fans the request to the task's top activity and
-waits -- with a timeout, see the constant at line 489 -- for the activity to report back
-through the `IHandoffTaskDataReceiver` oneway callback. The per-activity enablement bit
+(`ActivityTaskManagerService.java:3973`) fans the request to the task's top activity.
+It then waits for the activity to report back through the `IHandoffTaskDataReceiver`
+oneway callback. The wait has a timeout (see the constant at line 489). The per-activity enablement bit
 itself is set through `ActivityClientController.setHandoffEnabled()`
 (`ActivityClientController.java:366`) and stored on the `ActivityRecord`.
 
 From there the `TaskContinuityManagerService` serializes the `HandoffActivityData` into a
 `HandoffActivityDataMessage` and ships it over the CDM transport as
 `MESSAGE_ONEWAY_TASK_CONTINUITY` (`0x43678884`, `CompanionDeviceManager.java:361`). On the
-**receiver**, the service rebuilds the remote task and notifies registered listeners; the
+**receiver**, the service rebuilds the remote task and notifies registered listeners. The
 device's launcher/taskbar surfaces it as a task available from a nearby device. When the
-user taps it, the receiver calls `requestHandoff(...)`, the sender returns its latest
-`HandoffActivityData`, and the receiver either deep-links into the same app or opens the
+user taps it, the receiver calls `requestHandoff(...)`. The sender returns its latest
+`HandoffActivityData`. The receiver then either deep-links into the same app or opens the
 web fallback (Section 52.3.11).
 
 AOSP ships the framework and the system service, but not the launcher tile that lists
-nearby-device tasks; that surface is part of the system launcher/shell, which consumes
-remote tasks through `TaskContinuityManager`'s listener API.
+nearby-device tasks. That surface is part of the system launcher/shell. The launcher/shell
+consumes remote tasks through the listener API of `TaskContinuityManager`.
 
 ### 52.3.11 App-to-App, App-to-Web, and the Public Manager API
 
@@ -1375,26 +1377,32 @@ carries everything the receiver needs and supports two delivery modes:
 
 Whether a missing app blocks the handoff is controlled by
 `HandoffActivityParams.isAllowHandoffWithoutPackageInstalled()`
-(`HandoffActivityParams.java:98`): set it and the handoff proceeds to the web fallback even
-when the target app is absent on the other device.
+(`HandoffActivityParams.java:98`). When it is set, the handoff proceeds to the web fallback
+even when the target app is absent on the other device.
 
 **What data a handoff can carry.** `HandoffActivityData` is a small, fully serializable
 descriptor, not a bulk state transfer. Its entire payload is three fields
-(`HandoffActivityData.java:50`-52): an optional `ComponentName` (the activity to relaunch),
-an optional fallback `Uri`, and a `PersistableBundle` of extras (`getExtras()`, defaulting
-to empty). The extras are deliberately a `PersistableBundle` rather than a full `Bundle`,
-so only the types a `PersistableBundle` can serialize travel across the link: `boolean`,
-`int`, `long`, `double`, `String`, their arrays, and nested `PersistableBundle`s.
-Parcelables, `Binder` handles, bitmaps, and file descriptors cannot be placed in it. The
-framework also requires the extras to be device-portable -- the Builder's `setExtras()`
-javadoc (`HandoffActivityData.java:214`) warns they "must be safe to pass to another device,
-and thus should not reference any device-specific information such as file paths." Anything
-heavier than primitive state -- a half-edited document, a decoded media buffer, an
-authenticated session -- is not shipped inside the handoff; the receiving activity is
-expected to reconstruct it from the component plus extras, for example by re-fetching from
-the user's account or cloud. On the wire the descriptor is wrapped in a
-`HandoffActivityDataMessage`, which also carries the sending app's `packageSignatureDigests`
-so the receiver can confirm it is launching the same app rather than a look-alike.
+(`HandoffActivityData.java:50`-52). They are an optional `ComponentName` (the activity to
+relaunch), an optional fallback `Uri`, and a `PersistableBundle` of extras (`getExtras()`,
+empty by default).
+
+The extras are deliberately a `PersistableBundle` rather than a full
+`Bundle`. So only the types a `PersistableBundle` can serialize travel across the link:
+`boolean`, `int`, `long`, `double`, `String`, their arrays, and nested `PersistableBundle`s.
+Parcelables, `Binder` handles, bitmaps, and file descriptors cannot be placed in it.
+
+The framework also requires the extras to be device-portable. The Builder's `setExtras()`
+javadoc (`HandoffActivityData.java:214`) warns about this. It says the extras "must be safe to
+pass to another device, and thus should not reference any device-specific information such as
+file paths."
+
+Anything heavier than primitive state -- a half-edited document, a decoded media buffer, an
+authenticated session -- is not shipped inside the handoff. The receiving activity is
+expected to reconstruct it from the component plus extras. For example, it can re-fetch it
+from the user's account or cloud. On the wire the descriptor is wrapped in a
+`HandoffActivityDataMessage`. This message also carries the `packageSignatureDigests` of
+the sending app, so the receiver can confirm it is launching the same app rather than a
+look-alike.
 
 Apps and launchers that want to *observe and trigger* handoffs use the
 `TaskContinuityManager` system service (`@SystemService(Context.TASK_CONTINUITY_SERVICE)`,
@@ -1406,14 +1414,15 @@ Apps and launchers that want to *observe and trigger* handoffs use the
   `isHandoffEnabled()`.
 - `requestHandoff(...)` to pull a task onto this device.
 
-These are guarded by dedicated permissions enforced on the AIDL stub
-(`ITaskContinuityManager.aidl`): `READ_REMOTE_TASKS` (list remote tasks, line 29),
+Dedicated permissions guard these calls. They are enforced on the AIDL stub
+(`ITaskContinuityManager.aidl`). The permissions are `READ_REMOTE_TASKS` (list remote tasks, line 29),
 `REQUEST_TASK_HANDOFF` (pull a task, line 35), `MODIFY_HANDOFF_SETTINGS`
-(`setHandoffForDeviceEnabled`, line 39), and `READ_HANDOFF_SETTINGS` (line 42). Results and
-availability come back through the `HANDOFF_REQUEST_RESULT_*` and
+(`setHandoffForDeviceEnabled`, line 39), and `READ_HANDOFF_SETTINGS` (line 42).
+
+Results and availability come back through the `HANDOFF_REQUEST_RESULT_*` and
 `HANDOFF_AVAILABILITY_STATUS_*` constants on `TaskContinuityManager`
-(`TaskContinuityManager.java:59`-103) -- for example
-`HANDOFF_AVAILABILITY_STATUS_UNSUPPORTED_HARDWARE` when the device lacks the radios, or
+(`TaskContinuityManager.java:59`-103). For example, the result is
+`HANDOFF_AVAILABILITY_STATUS_UNSUPPORTED_HARDWARE` when the device lacks the radios. It is
 `HANDOFF_REQUEST_RESULT_FAILURE_TIMEOUT` when the sender never reported its data.
 
 ---
@@ -1423,8 +1432,8 @@ availability come back through the `HANDOFF_REQUEST_RESULT_*` and
 ### 52.4.1 Service Architecture
 
 The `VirtualDeviceManagerService` is the system service that manages virtual
-devices. It lives alongside CDM but serves a different purpose: while CDM
-manages the _association_ with companion hardware, VDM manages the _virtual
+devices. It lives alongside CDM but serves a different purpose. CDM
+manages the _association_ with companion hardware. VDM manages the _virtual
 representation_ of that hardware within the Android framework.
 
 ```
@@ -1550,8 +1559,8 @@ VirtualDeviceImpl(
 
 Source:
 `VirtualDeviceImpl.java`, lines 489-502. In Android 17 `associationInfo` is now
-`@Nullable` (a virtual device can be created without a CDM association under the
-right permissions) and a `@DeviceProfile int deviceProfile` parameter was added.
+`@Nullable`. A virtual device can be created without a CDM association under the
+right permissions. A `@DeviceProfile int deviceProfile` parameter was also added in Android 17.
 
 Key initialization details:
 
@@ -1657,9 +1666,9 @@ intents launched on virtual displays:
 private final Map<IBinder, IntentFilter> mIntentInterceptors = new ArrayMap<>();
 ```
 
-When an activity launch matches a registered filter, the launch is aborted
-and the `IVirtualDeviceIntentInterceptor` callback fires with a sanitized
-intent (containing only action and data, for privacy):
+When an activity launch matches a registered filter, the launch is aborted.
+Then the `IVirtualDeviceIntentInterceptor` callback fires with a sanitized
+intent. For privacy, the intent contains only the action and data:
 
 ```java
 IVirtualDeviceIntentInterceptor.Stub.asInterface(interceptor.getKey())
@@ -1774,10 +1783,10 @@ try {
 Source:
 `VirtualDeviceImpl.java`, lines 615-619.
 
-When the death callback fires, the device performs a comprehensive cleanup:
-closing all virtual displays, releasing all input devices, stopping the audio
-controller, removing sensors, closing camera injection sessions, and
-unregistering from the service's device map.
+When the death callback fires, the device performs a comprehensive cleanup.
+It closes all virtual displays and releases all input devices. It stops the audio
+controller and removes sensors. It also closes camera injection sessions and
+unregisters from the device map of the service.
 
 ---
 
@@ -1870,16 +1879,17 @@ void setDisplayImePolicy(int displayId, @WindowManager.DisplayImePolicy int poli
 Android 17 ships a concrete consumer of this virtual-input machinery as a
 platform app. `packages/apps/VirtualGamepad/` is a platform-signed Jetpack
 Compose app that draws an on-screen gamepad and synthesizes gamepad input for a
-game running on the same display. Rather than going through a `VirtualDevice`,
-it talks to the input stack directly via the hidden
-`InputManager.createVirtualGamepad(VirtualGamepadConfig)` entry point -- an
-`@hide` platform API guarded by `INJECT_EVENTS`, available only to
-platform-signed apps (declared
-in `frameworks/base/core/java/android/hardware/input/InputManager.java`), which
-backs onto the same `createVirtual*` device family this section describes. Its
-`LocalGamepadBackend` builds the `VirtualGamepadConfig` with the activity's
-`displayId` as `associatedDisplayId`, then pushes `VirtualGamepadMotionEvent`
-and `VirtualKeyEvent` objects through the returned `VirtualGamepad` handle (see
+game running on the same display. The app does not go through a `VirtualDevice`.
+It talks to the input stack directly through the hidden
+`InputManager.createVirtualGamepad(VirtualGamepadConfig)` entry point. This is an
+`@hide` platform API guarded by `INJECT_EVENTS`, and only platform-signed apps can
+use it (declared in `frameworks/base/core/java/android/hardware/input/InputManager.java`).
+It backs onto the same `createVirtual*` device family that this section describes.
+
+The `LocalGamepadBackend` of the app builds the `VirtualGamepadConfig` with the
+`displayId` of the activity as `associatedDisplayId`. It then pushes
+`VirtualGamepadMotionEvent` and `VirtualKeyEvent` objects through the returned
+`VirtualGamepad` handle (see
 `packages/apps/VirtualGamepad/java/com/android/virtualgamepad/backend/LocalGamepadBackend.kt`).
 The app holds `INJECT_EVENTS` and `ASSOCIATE_INPUT_DEVICE_TO_DISPLAY`, and
 finishes itself when a physical gamepad is connected. It is a thin client of the
@@ -2373,8 +2383,9 @@ public boolean canContainActivity(@NonNull ActivityInfo activityInfo,
 Source:
 `GenericWindowPolicyController.java`, lines 316-356. In Android 17 the
 `FLAG_CAN_DISPLAY_ON_REMOTE_DEVICES` gate is skipped for displays created with the
-new `mLocalDeviceOnly` flag (local virtual displays that never leave the host),
-and the standalone mirror-display short-circuit was dropped from this method.
+new `mLocalDeviceOnly` flag (local virtual displays that never leave the host).
+In Android 17, the standalone mirror-display short-circuit was also dropped from this
+method.
 
 The policy logic is an XOR pattern:
 
@@ -2431,13 +2442,13 @@ public boolean keepActivityOnWindowFlagsChanged(ActivityInfo activityInfo, int w
 Source:
 `GenericWindowPolicyController.java`, lines 365-399. Android 17 refactored the
 secure-window bookkeeping into a per-component `mWindowFlagsTracker` and a
-`detectSecureWindowStatusChange()` helper, which is what now fires the
-`onSecureWindowShown`/`onSecureWindowHidden` activity-listener callbacks; the
+`detectSecureWindowStatusChange()` helper. This helper now fires the
+`onSecureWindowShown`/`onSecureWindowHidden` activity-listener callbacks. The
 `ALLOW_SECURE_ACTIVITY_DISPLAY_ON_REMOTE_DEVICE` compatibility change is declared
 at line 126.
 
 The `ALLOW_SECURE_ACTIVITY_DISPLAY_ON_REMOTE_DEVICE` compatibility change
-(ID `201712607`) is `@EnabledSince` Tiramisu: for apps targeting Tiramisu or
+(ID `201712607`) is `@EnabledSince` Tiramisu. For apps that target Tiramisu or
 later it is on by default, so their `FLAG_SECURE` windows are *allowed* on
 virtual displays. Apps targeting below T have the change disabled and hit the
 blocking branch above, which rejects their secure windows.
@@ -2620,12 +2631,12 @@ sequenceDiagram
 This section walks three sibling packages under
 `frameworks/base/services/companion/java/com/android/server/companion/`, all wired
 into `CompanionDeviceManagerService` next to the existing processors. The
-`devicetrust/` and `powerexemption/` packages are new in Android 17; the
+`devicetrust/` and `powerexemption/` packages are new in Android 17. The
 `actionrequest/` package already shipped in Android 16 and is grouped here for
-context (it picked up extra result constants in 17). All three share the same
-`AssociationStore`, so they observe the same association set, but only
-`devicetrust/` also hooks into `CompanionTransportManager`; `actionrequest/`
-works through `CompanionAppBinder` and `DevicePresenceProcessor`, and
+context (it got more result constants in 17). All three share the same
+`AssociationStore`, so they see the same association set. Only
+`devicetrust/` also hooks into `CompanionTransportManager`. The `actionrequest/`
+package works through `CompanionAppBinder` and `DevicePresenceProcessor`, and
 `powerexemption/` through `PowerExemptionManager` and
 `ActivityTaskManagerInternal`.
 
@@ -2660,7 +2671,7 @@ Source:
 `requestAction()` validates the action against `STATEFUL_ACTIONS`, then dispatches
 to each named association (skipping any that no longer exist). The companion app
 later reports `RESULT_ACTIVATED`, `RESULT_DEACTIVATED`, or
-`RESULT_FAILED_TO_ACTIVATE` through `processActionResult()`, which updates the
+`RESULT_FAILED_TO_ACTIVATE` through `processActionResult()`. This call updates the
 processor's per-association state and fans the result out to registered
 `IOnActionResultListener` callbacks:
 
@@ -2689,9 +2700,9 @@ interface (see `CompanionDeviceManagerService.java`, lines 799 and 807).
 
 ### 52.7.2 Trusted Devices
 
-The `devicetrust/` package establishes and stores per-association session keys so
-two paired devices can recognize each other as trusted without re-running the
-full UKEY2 attestation handshake every time. `TrustedDeviceProcessor` registers
+The `devicetrust/` package establishes and stores per-association session keys.
+With these keys, two paired devices can recognize each other as trusted. They do
+not need to re-run the full UKEY2 attestation handshake every time. `TrustedDeviceProcessor` registers
 for `MESSAGE_REQUEST_TRUSTED_DEVICE` on the transport manager and runs a
 key-exchange when a transport connects:
 
@@ -2732,10 +2743,10 @@ mTrustedDeviceProcessor.removePskProvider(RandomKeyProvider.NAME);
 
 Source:
 `CompanionDeviceManagerService.java`, lines 718-720. The `PskProvider` interface
-exposes three members: `String getProviderName()` -- the identity that
-`removePskProvider()` matches on -- `byte[] getKey(int userId, int associationId)`,
-and a default `void load(int userId)` hook
-(`PskProvider.java`, lines 27-50), and `loadKeysForUser()` snapshots the available
+exposes three members. `String getProviderName()` is the identity that
+`removePskProvider()` matches on. `byte[] getKey(int userId, int associationId)`
+returns a key. The third member is a default `void load(int userId)` hook
+(`PskProvider.java`, lines 27-50). `loadKeysForUser()` snapshots the available
 keys when a user is unlocked (`TrustedDeviceProcessor.java`, line 111).
 
 ### 52.7.3 Power Exemptions
@@ -2773,8 +2784,8 @@ companion app exempt from permission auto-revoke
 
 A top-level `BackupRestoreProcessor` lets associations survive a device migration
 or a backup-and-restore cycle. It serializes the association disk store and the
-system-data-transfer request store into a versioned payload, and reconstitutes
-them on restore, holding "pending" associations until the owning app is
+system-data-transfer request store into a versioned payload. It reconstitutes
+them on restore. It holds "pending" associations until the owning app is
 reinstalled:
 
 ```java
@@ -2798,24 +2809,24 @@ binding any associations that were waiting for that app
 
 Android 17 also adds new Health Connect record types such as
 `MenstrualCyclePhaseRecord`. These are not part of CompanionDeviceManager or
-VirtualDeviceManager: they live entirely in the Health Connect (HealthFitness)
+VirtualDeviceManager. They live entirely in the Health Connect (HealthFitness)
 mainline module under
 `packages/modules/HealthFitness/framework/java/android/health/connect/datatypes/MenstrualCyclePhaseRecord.java`,
 with the server-side helper at
 `packages/modules/HealthFitness/service/java/com/android/server/healthconnect/fitness/recordhelpers/MenstrualCyclePhaseRecordHelper.java`.
 A companion app (for example a wearable) reaches that data through the normal
-Health Connect permission and API surface, not through a CDM transport, so it is
-covered by the Health Connect material rather than this chapter.
+Health Connect permission and API surface, not through a CDM transport. For that reason, the
+Health Connect material covers it, not this chapter.
 
 ---
 
 ## 52.8 Computer Control Sessions
 
 The `virtual/computercontrol/` package is the largest new addition to VDM in
-Android 17. It implements **Computer Control**: a controlled, on-device automation
-surface where an approved agent (such as a remote AI agent advertised via the
-association's `remoteAiAgentSupported` flag from section 52.2.1) drives a virtual
-display, injects input, and reads back UI state, under explicit user consent and a
+Android 17. It implements **Computer Control**. This is a controlled, on-device automation
+surface. An approved agent drives a virtual display, injects input, and reads back
+UI state. The agent can be a remote AI agent advertised via the association's
+`remoteAiAgentSupported` flag from section 52.2.1. This access is under explicit user consent and a
 per-agent allowlist.
 
 ```
@@ -2901,8 +2912,8 @@ public String[] getAutomatableAppListForAgent(int agentUid, String agentPackageN
 
 Source:
 `ComputerControlSessionProcessor.java`, lines 346-392. Before a target can be
-automated, the controller checks both that the agent is approved
-(`isPackageApprovedToRunAutomation()`, line 399) and that the target is
+automated, the controller checks two things. The agent must be approved
+(`isPackageApprovedToRunAutomation()`, line 399). The target must be
 automatable (`isPackageTargetableForAutomation()`, line 407). The
 `ACCESS_COMPUTER_CONTROL` permission itself is enforced inside
 `ComputerControlAllowlistController` (see
@@ -2911,8 +2922,8 @@ automatable (`isPackageTargetableForAutomation()`, line 407). The
 ### 52.8.4 Session Lifecycle
 
 A Computer Control session runs on a virtual display. `createSession()` builds a
-`VirtualDeviceImpl` through the injected factory, attaches the agent's input and
-audio paths, and tracks the session so the VDM service can answer
+`VirtualDeviceImpl` through the injected factory and attaches the agent's input and
+audio paths. It also tracks the session so the VDM service can answer
 `isComputerControlSession(deviceId)` and `isComputerControlDisplay(displayId)`.
 Sessions can be closed by user intent (`closeSessionByUserIntent()`, line 473) and
 support a handover where one mirror display takes over from another. The companion
@@ -2928,10 +2939,10 @@ Source:
 
 ## 52.9 The CrossDeviceSync Service
 
-Everything covered so far lives inside `system_server`: the
+Everything covered so far lives inside `system_server`. The
 `CrossDeviceSyncController` in section 52.3.7 is a framework component that
 brokers *call* metadata over the CDM transport. Android 17 also ships a
-*separate*, much larger app-layer service that is the primary production
+*separate*, much larger app-layer service. It is the primary production
 consumer of the CDM association/transport machinery for general data sync. It
 lives outside the framework, as its own platform app:
 
@@ -2940,10 +2951,10 @@ packages/services/CrossDeviceSync/
 ```
 
 Despite the similar name, this is not the framework-side controller. It is a
-privileged, platform-signed application (`com.android.crossdevicesync`) whose
-job is to keep arbitrary feature state -- airplane mode, contextual "modes", and
-similar device settings -- in sync between a phone and its wearable, riding
-entirely on the CDM secure transport that sections 52.2 and 52.3 build. None of
+privileged, platform-signed application (`com.android.crossdevicesync`). Its job
+is to keep arbitrary feature state in sync between a phone and its wearable.
+Examples are airplane mode, contextual "modes", and similar device settings. It
+rides entirely on the CDM secure transport that sections 52.2 and 52.3 build. None of
 its code runs in `system_server`; it talks to CDM through the public
 `CompanionDeviceManager` SDK like any other companion app, just with elevated
 permissions.
@@ -2970,8 +2981,8 @@ trendy_team_wear_wear_frameworks`, marking it a new-in-Android-17 wearable
 component).
 
 Its manifest declares the app `persistent`, `directBootAware`, and gated behind
-a feature flag, and -- crucially -- it requests the same companion permissions
-this chapter has been describing from the framework side:
+a feature flag. Crucially, it requests the same companion permissions that this
+chapter describes from the framework side:
 
 ```xml
 <uses-permission android:name="android.permission.MANAGE_COMPANION_DEVICES" />
@@ -2982,15 +2993,15 @@ this chapter has been describing from the framework side:
 
 Source:
 `packages/services/CrossDeviceSync/AndroidManifest.xml`. `USE_COMPANION_TRANSPORTS`
-is exactly the permission section 52.1.2 lists as the gate for attaching a
-system data transport, and `MANAGE_COMPANION_DEVICES` is the administrative
+is exactly the permission that section 52.1.2 lists as the gate for attaching a
+system data transport. `MANAGE_COMPANION_DEVICES` is the administrative
 permission for querying associations across users. The manifest also registers
 two components: the `SyncService` and a `BootReceiver`.
 
-`BootReceiver` listens for `LOCKED_BOOT_COMPLETED` (so it can start before the
-user unlocks, since association data lives in Device Encrypted storage as
-section 52.1.3 explains) and starts the service only for the system user,
-disabling itself on every other user:
+`BootReceiver` listens for `LOCKED_BOOT_COMPLETED`, so it can start before the
+user unlocks. This is possible because association data lives in Device Encrypted storage, as
+section 52.1.3 explains. The receiver starts the service only for the system user.
+It disables itself on every other user:
 
 ```java
 if (context.getUser().equals(UserHandle.SYSTEM)) {
@@ -3048,7 +3059,7 @@ lines 110-204.
 The service never opens its own socket. Every collaborator that touches a remote
 device goes through a single `CompanionDeviceManagerProxy`, a thin testable
 wrapper around the public `android.companion.CompanionDeviceManager`. Its method
-list reads like an index of the CDM surface this chapter has walked through:
+list reads like an index of the CDM surface in this chapter:
 `getAllAssociations`, `addOnAssociationsChangedListener`,
 `addOnTransportsChangedListener`, `setOnDevicePresenceEventListener`,
 `sendMessage` / `addOnMessageReceivedListener`, `requestAction` /
@@ -3058,9 +3069,9 @@ Source:
 `packages/services/CrossDeviceSync/src/com/android/crossdevicesync/common/CompanionDeviceManagerProxy.java`,
 lines 33-110.
 
-`NetworkManager.init()` is where it latches onto the framework: it seeds itself
-with the current associations, then subscribes to association changes, transport
-changes, and registers the messenger's message listener:
+`NetworkManager.init()` is where it latches onto the framework. It seeds itself
+with the current associations. Then it subscribes to association changes and
+transport changes, and it registers the messenger's message listener:
 
 ```java
 processAssociationsAndMessagesLocked(
@@ -3095,23 +3106,23 @@ mCompanionDeviceManager.sendMessage(
 
 Source:
 `packages/services/CrossDeviceSync/src/com/android/crossdevicesync/network/messenger/MessengerImpl.java`,
-lines 109-112 and 658-661. That constant is defined in the framework as
+lines 109-112 and 658-661. The framework defines that constant as
 `MESSAGE_ONEWAY_CROSS_DEVICE_SYNC = 0x43676883` (the `+CDS` tag) in
 `frameworks/base/core/java/android/companion/CompanionDeviceManager.java`,
 line 405. Its top byte `0x43` makes it a *oneway* message under the
-classification in section 52.3.2, so CDM fires it across the
-secure transport without expecting a response.
+classification in section 52.3.2. So CDM fires it across the
+secure transport and does not expect a response.
 
-Because the underlying CDM message is fire-and-forget, the messenger layers its
-own reliability on top: it batches outbound messages and ACKs into a single
-`BatchedMessage`, retries on a timer, and uses a remote instance id to drop
+The underlying CDM message is fire-and-forget, so the messenger adds its
+own reliability on top. It batches outbound messages and ACKs into a single
+`BatchedMessage`. It retries on a timer. It uses a remote instance id to drop
 duplicates after a reconnect. The relevant timeouts (`RETRY_DELAY_MS`,
 `WAITING_FOR_TRANSPORT_TIMEOUT`, `WAITING_FOR_ACK_TIMEOUT`) are declared at
 `MessengerImpl.java`, lines 59-61.
 
 Before any transport exists, the service must coax the companion side into
 existence. `CompanionActionController` uses the Android 17 action-request
-mechanism from section 52.7.1 -- it issues `REQUEST_TRANSPORT`,
+mechanism from section 52.7.1. It issues `REQUEST_TRANSPORT`,
 `REQUEST_NEARBY_SCANNING`, and `REQUEST_NEARBY_ADVERTISING` action requests to
 its associations and watches the results:
 
@@ -3127,8 +3138,8 @@ mCompanionDeviceManager.requestAction(
 Source:
 `packages/services/CrossDeviceSync/src/com/android/crossdevicesync/network/companion/CompanionActionControllerImpl.java`,
 lines 112-130. So the service is also the canonical client of the new
-`actionrequest/` processor: section 52.7.1 describes the framework half
-(`ActionRequestProcessor` validating `STATEFUL_ACTIONS`), and this is the app
+`actionrequest/` processor. Section 52.7.1 describes the framework half
+(`ActionRequestProcessor` validates `STATEFUL_ACTIONS`). This is the app
 half that drives it.
 
 The end-to-end data flow, from a local feature change down to the CDM transport
@@ -3178,28 +3189,32 @@ ships two, registered by name in the injector:
   "modes" (a per-user setting state).
 
 Source:
-`SyncServiceInjectorImpl.java`, lines 183-204. Each feature creates a named
+`SyncServiceInjectorImpl.java`, lines 183-204.
+
+Each feature creates a named
 `Network` on the `NetworkManager` (for example the airplane-mode feature uses
-`NETWORK_ID = "apm_sync_network"`) and stores its state in a `SharedDataStore`,
-described as "a data store that is in sync with remote devices ... eventually
-synced across other authorized devices" (`SharedDataStore.java`, lines 30-37).
+`NETWORK_ID = "apm_sync_network"`). It stores its state in a `SharedDataStore`.
+This store is described as "a data store that is in sync with remote
+devices ... eventually synced across other authorized devices"
+(`SharedDataStore.java`, lines 30-37).
 The concrete implementation, `SubmergeSharedDataStore`, layers Google's
-*Submerge* eventually-consistent sync library over a per-feature SQLite database;
-the global database is `cross_device_sync_global_db`
+*Submerge* eventually-consistent sync library over a per-feature SQLite database.
+The global database is `cross_device_sync_global_db`
 (`SyncServiceInjectorImpl.java`, line 77).
 
 The airplane-mode feature also ties back to the per-association
-`systemDataSyncFlags` from section 52.2.1: it keys off
+`systemDataSyncFlags` from section 52.2.1. It keys off
 `CompanionDeviceManager.FEATURE_CROSS_DEVICE_SYNC` and
-`CompanionDeviceManager.FLAG_AIRPLANE_MODE` to decide whether sync is enabled for
-a given association (`AirplaneModeSyncManager.java`, imports at lines 19-23).
+`CompanionDeviceManager.FLAG_AIRPLANE_MODE`. It uses them to decide if sync is
+enabled for a given association (`AirplaneModeSyncManager.java`, imports at
+lines 19-23).
 That is the same flag bitmask that the framework-side `DataSyncProcessor`
 (section 52.3.6) and `CHANGE_TYPE_UPDATED_DATA_SYNC_TYPES` (section 52.2.5)
-manage -- the app and the framework agree on which features are active through it.
+manage. Through it, the app and the framework agree on which features are active.
 
 Finally, `MetadataPublisher` writes per-user CDM metadata
-(`putBooleanMetaData` / `putIntMetaData` / `putStringMetaData`) so the remote
-device can discover what this device supports. That metadata travels on the
+(`putBooleanMetaData` / `putIntMetaData` / `putStringMetaData`). The remote
+device can use it to discover what this device supports. That metadata travels on the
 DataSync path from section 52.3.6, via the proxy's `setLocalMetadata` /
 `getLocalMetadata` (`MetadataPublisher.java`, lines 20-37).
 
@@ -3221,10 +3236,10 @@ On non-debuggable builds the same `dump()` falls through to printing the
 lines 33-67.
 
 In short, `CrossDeviceSync` is the productized, app-layer counterpart to the
-in-process controllers of sections 52.3.6 and 52.3.7: a privileged wearable
-companion app that turns the raw CDM association, transport, presence, action,
-and metadata primitives into an eventually-consistent, multi-feature sync fabric,
-without adding anything to `system_server` itself.
+in-process controllers of sections 52.3.6 and 52.3.7. It is a privileged wearable
+companion app. It turns the raw CDM association, transport, presence, action,
+and metadata primitives into an eventually-consistent, multi-feature sync fabric.
+It adds nothing to `system_server` itself.
 
 ---
 
@@ -3286,8 +3301,8 @@ There is no display-name option; the shell command hardcodes the display name
 ### 52.10.3 Inspect Virtual Devices
 
 CDM and VDM are two separate dumpable services. For CDM state, use the
-`companiondevice` service (the name `CompanionDeviceManagerService` publishes
-via `Context.COMPANION_DEVICE_SERVICE`):
+`companiondevice` service. This is the name that `CompanionDeviceManagerService`
+publishes via `Context.COMPANION_DEVICE_SERVICE`:
 
 ```bash
 adb shell dumpsys companiondevice
@@ -3315,8 +3330,8 @@ To create a virtual device programmatically, an app needs:
 
 1. A CDM association with an appropriate device profile.
 2. The `CREATE_VIRTUAL_DEVICE` permission -- declared with
-   `protectionLevel="internal|role"` in the core manifest, so it is granted
-   only to holders of the relevant role, not requestable by ordinary apps.
+   `protectionLevel="internal|role"` in the core manifest. It is granted
+   only to holders of the relevant role. Ordinary apps cannot request it.
 3. For certain features, additional permissions:
    - `ADD_TRUSTED_DISPLAY` for clipboard policy customization.
    - `ADD_ALWAYS_UNLOCKED_DISPLAY` for always-unlocked displays.
@@ -3368,8 +3383,8 @@ adb shell dumpsys companiondevice
 
 There is no shell command to override the transport type. For tests, the
 `@TestApi` method `CompanionDeviceManager.overrideTransportType(int)`
-(`CompanionDeviceManager.java`, line 2310) forces the type for subsequently
-attached transports: `0` for default, `1` for raw (unencrypted), `2` for
+(`CompanionDeviceManager.java`, line 2310) forces the type for transports
+that attach later. Use `0` for default, `1` for raw (unencrypted), and `2` for
 secure. It requires the `MANAGE_COMPANION_DEVICES` permission.
 
 ### 52.10.6 Inspecting Window Policy
@@ -3514,29 +3529,29 @@ comprehensive framework for multi-device Android experiences:
   Its modular processor architecture keeps each concern isolated while the
   `AssociationStore` provides a unified data layer with change notification.
 
-- **VDM** handles the virtual representation: creating virtual displays with
-  fine-grained activity policies, injecting input from remote hardware, routing
-  audio to/from companion devices, providing virtual sensors, and controlling
-  camera access. The `GenericWindowPolicyController` enforces security at the
-  WindowManager level, ensuring that only authorized activities can appear on
+- **VDM** handles the virtual representation. It creates virtual displays with
+  fine-grained activity policies. It injects input from remote hardware and
+  routes audio to/from companion devices. It also provides virtual sensors and
+  controls camera access. The `GenericWindowPolicyController` enforces security at the
+  WindowManager level. It makes sure that only authorized activities can appear on
   virtual surfaces.
 
-- The **transport layer** ties them together: UKEY2-encrypted channels with
+- The **transport layer** ties them together. UKEY2-encrypted channels with
   attestation verification carry permission sync data, call metadata, task
   handoff messages, and custom application data between paired devices.
 
-- The **security model** is layered: CDM permissions gate association creation,
-  device profiles control role grants, transport encryption protects data
-  in transit, camera injection blocks unauthorized hardware access, and window
+- The **security model** is layered. CDM permissions gate association creation,
+  and device profiles control role grants. Transport encryption protects data
+  in transit. Camera injection blocks unauthorized hardware access. Window
   policies prevent sensitive activities from leaking to remote displays.
 
-- **Android 17 additions** broaden the framework: CDM gains persisted
+- **Android 17 additions** broaden the framework. CDM gains persisted
   trusted-device keys (`devicetrust/`) and consolidated
-  power exemptions (`powerexemption/`), extends the existing action-request
+  power exemptions (`powerexemption/`). It extends the existing action-request
   path (`actionrequest/`, carried over from Android 16) with new result
-  constants, and keeps association backup/restore, while VDM
-  gains Computer Control sessions (`virtual/computercontrol/`) that let an approved
+  constants, and it keeps association backup/restore. VDM
+  gains Computer Control sessions (`virtual/computercontrol/`). These sessions let an approved
   agent automate apps on a virtual display under explicit per-agent consent.
 
-This architecture enables use cases ranging from smartwatch pairing to full
-desktop-class app streaming, all built on the same foundational infrastructure.
+This architecture enables use cases from smartwatch pairing to full
+desktop-class app streaming. All of them use the same foundational infrastructure.

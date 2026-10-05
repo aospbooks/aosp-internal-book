@@ -3,10 +3,9 @@
 ## 46.1 Accessibility Architecture
 
 Android's accessibility framework is one of the platform's most sophisticated
-subsystems. It provides a mechanism by which users with disabilities --
-including visual, motor, hearing, and cognitive impairments -- can interact
-with every application on the device, even those whose developers never
-anticipated such use. The architecture is designed around three pillars:
+subsystems. It lets users with disabilities -- including visual, motor, hearing,
+and cognitive impairments -- interact with every application on the device.
+This includes applications whose developers never anticipated such use. The architecture is designed around three pillars:
 **event observation**, **content introspection**, and **action injection**.
 
 At the highest level, the accessibility framework connects three categories of
@@ -174,8 +173,8 @@ public static final long ROOT_NODE_ID =
 
 The `makeNodeId` function packs a view ID and a virtual descendant ID into
 a single `long`. This supports `AccessibilityNodeProvider`, which allows a
-single `View` to report itself as a tree of virtual nodes -- essential for
-custom views that draw multiple interactive elements.
+single `View` to report itself as a tree of virtual nodes. This is essential
+for custom views that draw multiple interactive elements.
 
 ### 46.1.5 AccessibilityNodeInfo Actions
 
@@ -370,9 +369,9 @@ wm.computeWindowsForAccessibility(displayId);
 ```
 
 **Step 5: Dispatch to services.** The actual dispatch calls
-`notifyAccessibilityServicesDelayedLocked()` twice -- the boolean parameter
-is `isDefault`, so the first call notifies non-default services and the
-second notifies default services (those declaring `flagDefault` in their
+`notifyAccessibilityServicesDelayedLocked()` twice. The boolean parameter
+is `isDefault`. For that reason, the first call notifies non-default services. The
+second call notifies default services (those declaring `flagDefault` in their
 `AccessibilityServiceInfo`):
 
 ```java
@@ -494,10 +493,11 @@ public AccessibilityManagerService(Context context) {
 ```
 
 In Android 17 the constructor wires up two collaborators that older releases
-did not have at this point: `ProxyManager` (for accessibility on proxy-owned
-virtual displays, section 46.2.16) and a `UserManagerInternal`
-(`mUmi`) handle used both for the visible-background-user listener and, later,
-for checking the Advanced Protection Mode user restriction (section 46.12).
+did not have at this point. The first is `ProxyManager` (for accessibility on
+proxy-owned virtual displays, section 46.2.16). The second is a
+`UserManagerInternal` (`mUmi`) handle. This handle is used both for the
+visible-background-user listener and, later, for checking the Advanced Protection
+Mode user restriction (section 46.12).
 Note that the `FullScreenMagnificationController` is no longer created here --
 it is owned and lazily constructed by `MagnificationController`.
 
@@ -543,9 +543,9 @@ private void init() {
 
 This initialization sequence demonstrates how AMS connects to the input
 system, settings database, and window manager at startup. Compared with
-Android 16, two of the key gestures -- toggling magnification and toggling
-Voice Access -- are now registered unconditionally rather than behind feature
-flags, reflecting that the keyboard-shortcut work for those features has
+Android 16, two of the key gestures are now registered unconditionally rather
+than behind feature flags. These gestures toggle magnification and toggle Voice
+Access. This reflects that the keyboard-shortcut work for those features has
 shipped. The flags `enableTalkbackAndMagnifierKeyGestures` and
 `enableVoiceAccessKeyGestures` that gated them in earlier drafts have been
 removed. The remaining flags (`enableColorInversionKeyGestures`,
@@ -588,17 +588,17 @@ private static final class LocalServiceImpl
 ```
 
 This interface allows `InputMethodManagerService` to coordinate with
-accessibility services for input method session management, and allows
+accessibility services for input method session management. It also allows
 other system services to trigger system actions through the accessibility
 framework.
 
 ### 46.2.6 Window State Changed Event Postponement
 
 A notable detail in the event dispatch pipeline is the postponement logic for
-`TYPE_WINDOW_STATE_CHANGED` events. When an app reports a window state change
-but the corresponding window is not yet registered in the accessibility window
-list (a race condition between the app process and WindowManagerService), AMS
-postpones the event for up to 500ms:
+`TYPE_WINDOW_STATE_CHANGED` events. When an app reports a window state change,
+the window may not yet be registered in the accessibility window list. This is a
+race condition between the app process and WindowManagerService. In this case
+AMS postpones the event for up to 500ms:
 
 ```java
 // AccessibilityManagerService.java, line 281
@@ -621,7 +621,7 @@ public void sendAccessibilityEventForCurrentUserLocked(AccessibilityEvent event)
 ```
 
 Note that in Android 17 this lookup keys off `event.getRealWindowId()` rather
-than the logical window ID, which matters for Picture-in-Picture windows whose
+than the logical window ID. This matters for Picture-in-Picture windows whose
 visible window ID is remapped.
 
 ### 46.2.7 Service Binding
@@ -693,7 +693,7 @@ final WeakReference<AccessibilityUserState> mUserStateWeakReference;
 ### 46.2.8 Security Model
 
 The accessibility framework has an extensive security model because
-accessibility services are granted extraordinary power -- they can read screen
+accessibility services are granted extraordinary power. They can read screen
 content, observe user input, and inject actions. The security controls are:
 
 1. **Permission requirement**: Services must declare
@@ -736,7 +736,7 @@ content, observe user input, and inject actions. The security controls are:
    managed through `AccessibilityUserState`. Profile parents share
    accessibility state with their managed profiles.
 
-9. **Advanced Protection Mode (AAPM)**: New in Android 17, when the device
+9. **Advanced Protection Mode (AAPM)**: New in Android 17. When the device
    owner enables Advanced Protection Mode, AMS can be told to disallow
    non-tool accessibility services entirely. This integration is described in
    detail in section 46.12.
@@ -745,7 +745,7 @@ content, observe user input, and inject actions. The security controls are:
 
 AMS uses a single lock (`mLock`) for all state synchronization. Operations
 that must not hold the lock during execution (such as Binder calls to service
-processes) use a resyncing pattern -- they copy needed state under the lock,
+processes) use a resyncing pattern. They copy needed state under the lock,
 release it, and then make the outbound call.
 
 AMS processes events on the main handler to ensure serialization:
@@ -833,7 +833,7 @@ public class FingerprintGestureDispatcher
 ```
 
 This enables TalkBack to use fingerprint swipes for navigation (swipe up/down
-on the sensor to scroll through items) without requiring the user to touch
+on the sensor to scroll through items). The user does not need to touch
 the screen.
 
 ### 46.2.13 SystemActionPerformer
@@ -1016,7 +1016,7 @@ stateDiagram-v2
 
 2. **Tree Querying**: When an event indicates a meaningful state change (focus
    moved, window changed, text updated), TalkBack queries the accessibility
-   tree starting from the event source or the root of the active window.
+   tree. The query starts from the event source or the root of the active window.
 
 3. **Content Processing**: TalkBack analyzes the `AccessibilityNodeInfo`
    tree to determine what to speak. It considers:
@@ -1034,9 +1034,9 @@ stateDiagram-v2
 5. **Haptic and Audio Feedback**: Navigation events produce earcons (short
    audio cues) and haptic feedback to provide non-visual context.
 
-6. **Gesture Navigation**: In touch exploration mode, the user navigates by
-   swiping (left/right to move between elements, up/down to change navigation
-   granularity) and double-tapping to activate.
+6. **Gesture Navigation**: In touch exploration mode, the user swipes to
+   navigate (left/right to move between elements, up/down to change navigation
+   granularity). The user double-taps to activate.
 
 ### 46.3.2 AccessibilityService Lifecycle
 
@@ -1196,8 +1196,8 @@ Braille keyboard input, supporting deafblind users.
 
 ## 46.4 Switch Access
 
-Switch Access is Android's scanning-based accessibility service that enables
-users with severe motor impairments to interact with the device using one or
+Switch Access is Android's scanning-based accessibility service. It lets
+users with severe motor impairments interact with the device through one or
 more physical switches (buttons, keyboard keys, or Bluetooth devices).
 
 ### 46.4.1 Operating Principle
@@ -1231,7 +1231,7 @@ stateDiagram-v2
 
 ### 46.4.2 Implementation Architecture
 
-Switch Access runs as an `AccessibilityService` and leverages the same APIs
+Switch Access runs as an `AccessibilityService` and uses the same APIs
 as TalkBack. Its unique behavior centers on:
 
 1. **Key Event Interception**: Switch Access requests `flagRequestFilterKeyEvents`
@@ -1247,8 +1247,8 @@ as TalkBack. Its unique behavior centers on:
    order.
 
 4. **Action Menus**: When an element is selected, Switch Access shows a menu
-   of available actions (click, long click, scroll, etc.) derived from the
-   node's `AccessibilityAction` list.
+   of available actions (click, long click, scroll, etc.). The menu comes
+   from the node's `AccessibilityAction` list.
 
 ### 46.4.3 KeyEvent Filtering
 
@@ -1294,8 +1294,8 @@ sequenceDiagram
 Accessibility services can create overlay windows using
 `TYPE_ACCESSIBILITY_OVERLAY`. These windows:
 
-- Sit at window layer 31 -- above system alert, drag, and navigation-bar
-  windows, but below the accessibility magnification overlay, secure system
+- Sit at window layer 31. This is above system alert, drag, and navigation-bar
+  windows. It is below the accessibility magnification overlay, secure system
   overlay, boot progress, and pointer layers
 - Are created through the service's `WindowManager`
 - Are automatically removed when the service disconnects
@@ -1386,10 +1386,9 @@ import android.hardware.input.VirtualMouseScrollEvent;
 private VirtualMouse mVirtualMouse = null;
 ```
 
-Routing through `VirtualMouse` (rather than the older bespoke
-`MouseEventHandler`, which was deleted in 17) means mouse-keys motion goes
-through the standard virtual-device path and gets a unique device name, so it
-coexists cleanly with real pointing devices.
+The older bespoke `MouseEventHandler` was deleted in 17. Mouse-keys motion now
+goes through `VirtualMouse` and the standard virtual-device path. It gets a
+unique device name, so it coexists cleanly with real pointing devices.
 
 When enabled, designated keys move the cursor and simulate clicks. The
 interceptor supports both a primary key layout and the numeric keypad, but the
@@ -1405,7 +1404,7 @@ if (keyCode == mouseKeyEvent.getNumpadKeyCode(inputDevice) && !isNumLockOn) {
 ```
 
 A per-device capability cache (`mDeviceNumpadCapabilityCache`) records whether
-each connected keyboard actually has the required numpad keys, so the feature
+each connected keyboard actually has the required numpad keys. So the feature
 degrades gracefully on keyboards without a numeric keypad. Mouse keys is
 registered as a shortcut target through:
 
@@ -1617,8 +1616,8 @@ user to toggle between full-screen and window magnification.
 ### 46.5.6 Scale Constraints
 
 The `MagnificationScaleProvider` enforces scale bounds. In Android 17 the
-bounds are no longer hardcoded literals; they are pulled from
-`MagnificationConstants`, and the maximum is a system property so OEMs can
+bounds are no longer hardcoded literals. They come from
+`MagnificationConstants`. The maximum is a system property, so OEMs can
 raise the ceiling:
 
 ```java
@@ -1653,9 +1652,9 @@ frameworks/base/services/accessibility/java/com/android/server/accessibility/
 ```
 
 The shortcuts require Alt+Meta held together (and explicitly neither Ctrl
-nor Shift): Alt+Meta+`=` zooms in, Alt+Meta+`-` zooms out, and
-Alt+Meta+arrow keys pan while magnified. The handler implements repeat key behavior with a
-configurable initial delay and a repeat interval of 60ms:
+nor Shift). Alt+Meta+`=` zooms in, Alt+Meta+`-` zooms out, and
+Alt+Meta+arrow keys pan while magnified. The handler implements repeat key
+behavior with a configurable initial delay and a repeat interval of 60ms:
 
 ```java
 // MagnificationController.java, line 140
@@ -1666,8 +1665,8 @@ Android 17's desktop and connected-display work touches magnification only at
 the flag level so far. The `desktop_magnification_settings_polish` flag
 (`packages/apps/Settings/aconfig/accessibility/accessibility_flags.aconfig`,
 namespace `accessibility`, marked `PURPOSE_BUGFIX`) polishes the magnification
-settings UI for touch and keyboard input form factors rather than adding a new
-magnification mode, and `enable_autoclick_for_connected_displays`
+settings UI for touch and keyboard input form factors. It does not add a new
+magnification mode. The `enable_autoclick_for_connected_displays` flag
 (`frameworks/base/services/accessibility/accessibility.aconfig`, also a bugfix
 flag) fixes autoclick on external displays. There is no separate desktop
 magnification engine; the same `FullScreenMagnificationController`, which already
@@ -1686,9 +1685,10 @@ and gated on the
 resource.
 
 When enabled, `FullScreenMagnificationController.setAlwaysOnMagnificationEnabled()`
-records the state, and on user context changes (`onUserContextChanged()`) the
-controller zooms back to 100% instead of resetting magnification entirely, so
-it can be immediately re-adjusted without the triple-tap activation gesture.
+records the state. On user context changes (`onUserContextChanged()`) the
+controller zooms back to 100% instead of resetting magnification entirely. So
+magnification can be adjusted again immediately, without the triple-tap activation
+gesture.
 
 ### 46.5.9 Magnification and Window Manager Integration
 
@@ -1747,8 +1747,8 @@ private boolean mMagnificationFollowKeyboardEnabled = false;
 When `mMagnificationFollowTypingEnabled` is true and the user is typing in a
 text field, the magnification viewport automatically pans to keep the cursor
 visible. The companion `mMagnificationFollowKeyboardEnabled` flag controls
-whether the viewport also follows keyboard focus changes; its settings
-default is conditional -- follow-keyboard defaults on only when the
+whether the viewport also follows keyboard focus changes. Its settings
+default is conditional. Follow-keyboard defaults on only when the
 `enable_magnification_viewport_prioritization` aconfig flag is enabled (to
 avoid viewport jitter), and off otherwise. The cursor
 following mode is configured through:
@@ -1772,9 +1772,9 @@ ACCESSIBILITY_MAGNIFICATION_CURSOR_FOLLOWING_MODE_EDGE       = 2;
 
 `AccessibilityInputFilter` reads this mode
 (`getMagnificationCursorFollowingMode()`) and applies it through the
-`FullScreenMagnificationPointerMotionEventFilter`, which decides whether the
-viewport pans continuously with the pointer, recenters on it, or only nudges
-when the pointer reaches the viewport edge.
+`FullScreenMagnificationPointerMotionEventFilter`. This filter decides whether
+the viewport pans continuously with the pointer, recenters on it, or only
+nudges when the pointer reaches the viewport edge.
 
 ### 46.5.11 Magnification Thumbnail
 
@@ -1787,8 +1787,8 @@ frameworks/base/services/accessibility/java/com/android/server/accessibility/
 ```
 
 This gives users spatial awareness of their magnified viewport's position
-relative to the full screen, particularly useful at high zoom levels where
-the visible portion is a small fraction of the total screen area.
+relative to the full screen. It is particularly useful at high zoom levels,
+where the visible portion is a small fraction of the total screen area.
 
 ### 46.5.12 Pointer Motion Event Filtering
 
@@ -1978,7 +1978,7 @@ view.setAccessibilityDataSensitive(
 
 Marking a view accessibility-data-sensitive restricts the view and all of its
 descendants to accessibility services whose
-`AccessibilityServiceInfo.isAccessibilityTool` is true; non-tool services see
+`AccessibilityServiceInfo.isAccessibilityTool` is true. Non-tool services see
 neither its nodes nor its events. The flag propagates down the hierarchy and
 is also inferred from `filterTouchesWhenObscured`. This keeps sensitive data
 (such as password field content) away from services that are not declared
@@ -2022,9 +2022,9 @@ multiple changed children might produce a single event with multiple
 ### 46.6.9 Event Recycling and Pooling
 
 `AccessibilityEvent` objects were historically pooled to reduce garbage
-collection pressure, but object pooling has been discontinued:
+collection pressure. Object pooling has been discontinued.
 `AccessibilityEvent.obtain()` is deprecated and now simply allocates a new
-instance, and `recycle()` is a deprecated no-op (the same is true of
+instance. `recycle()` is a deprecated no-op (the same is true of
 `AccessibilityNodeInfo`):
 
 ```java
@@ -2050,7 +2050,7 @@ The timing guarantees of the accessibility event system are:
    `AccessibilityManager.sendAccessibilityEvent()` are synchronous.
 
 2. **Binder crossing**: The call from `AccessibilityManager` to AMS is
-   a one-way Binder transaction, meaning the caller does not block waiting
+   a one-way Binder transaction. This means the caller does not block while it waits
    for AMS to process the event.
 
 3. **AMS processing**: AMS processes events on its main handler, which
@@ -2122,8 +2122,8 @@ views. Commonly used for form fields:
 ```
 
 In the accessibility tree, the `EditText` node's `labeledBy` property points
-to the `TextView` node, so screen readers can announce "Username, edit text"
-when the field gains focus.
+to the `TextView` node. Screen readers can then announce "Username, edit
+text" when the field gains focus.
 
 ### 46.7.2 Semantic Properties in AccessibilityNodeInfo
 
@@ -2319,14 +2319,16 @@ View.IMPORTANT_FOR_ACCESSIBILITY_NO               // Excluded
 View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS // Excluded with children
 ```
 
-The `AUTO` mode (default) uses heuristics: a View is considered important if
-it is actionable (clickable, long-clickable, or focusable), has input
-listeners or a touch delegate, has an `AccessibilityNodeProvider` or
-`AccessibilityDelegate`, is a live region, is an accessibility pane, or is a
-heading. A content description alone does not make a View important. The
-`NO_HIDE_DESCENDANTS` option is useful for container views that should be
-treated as a single accessible unit -- for example, a card view where the
-entire card is clickable and individual children should not be independently
+The `AUTO` mode (default) uses heuristics. A View is important if it is
+actionable (clickable, long-clickable, or focusable). A View is also important
+if it has input listeners or a touch delegate. The same is true if it has an
+`AccessibilityNodeProvider` or `AccessibilityDelegate`, is a live region, is an
+accessibility pane, or is a heading. A content description alone does not make
+a View important.
+
+The `NO_HIDE_DESCENDANTS` option is useful for container views that should be
+treated as a single accessible unit. An example is a card view where the
+entire card is clickable. The individual children should not be independently
 focusable.
 
 ### 46.7.10 Live Regions
@@ -2394,9 +2396,9 @@ This enables accessibility services to detect small text, poor contrast
 ratios, and other visual accessibility issues beyond just missing labels.
 
 The `AccessibilityNodeInfo` carries these relationships through
-`traversalBefore` and `traversalAfter` properties, allowing screen readers to
-navigate in the application's intended order rather than the default tree
-traversal order.
+`traversalBefore` and `traversalAfter` properties. Screen readers can then
+navigate in the application's intended order, not the default tree traversal
+order.
 
 ---
 
@@ -2478,9 +2480,9 @@ as follows:
 | Two-finger drag | Two-pointer `ACTION_MOVE` | Single-pointer `ACTION_MOVE` injected into the view hierarchy (the app scrolls normally) |
 | Swipe gesture | Fast `ACTION_MOVE` | Gesture event to service |
 
-This transformation is the key insight: touch events are converted to hover
-events so that the accessibility service can announce what is under the finger
-without activating it.
+This transformation is the key insight. Touch events become hover events.
+The accessibility service can then announce what is under the finger without
+activating it.
 
 ### 46.8.4 Hover Events and Accessibility Focus
 
@@ -2541,19 +2543,21 @@ flowchart LR
 Each transformation in the chain can consume, modify, or pass through events.
 `AccessibilityInputFilter` builds the per-display motion chain with
 `addFirstEventHandler` (`enableFeaturesForDisplay`), which prepends each enabled
-feature, so the order of `addFirstEventHandler` calls -- autoclick, touch
-exploration, generic-motion, magnification, then motion-event injection --
-reverses into a head-to-tail order of motion-event injection, then
+feature. The order of `addFirstEventHandler` calls is autoclick, touch
+exploration, generic-motion, magnification, then motion-event injection. As a result, this
+order reverses into a head-to-tail order of motion-event injection, then
 magnification gesture detection, then touch exploration, then autoclick. The
 order matters: magnification gestures are detected before touch exploration, so
 a triple-tap for magnification is not misinterpreted as a touch exploration
-gesture. Key-event handlers are installed by `enableDisplayIndependentFeatures`
-with the same `addFirstEventHandler` method, which prepends them to the front
-of the *same* default-display chain, ahead of `MotionEventInjector`:
+gesture.
+
+Key-event handlers are installed by `enableDisplayIndependentFeatures`
+with the same `addFirstEventHandler` method. This method prepends them to the
+front of the *same* default-display chain, ahead of `MotionEventInjector`.
 `MagnificationKeyHandler`, `MouseKeysInterceptor` (new in 17), and
-`KeyboardInterceptor` all extend `BaseEventStreamTransformation`, so they
-handle key events and simply pass motion events through into the motion chain
-behind them.
+`KeyboardInterceptor` all extend `BaseEventStreamTransformation`. They handle
+key events and simply pass motion events through into the motion chain behind
+them.
 
 The chain is configured based on feature flags:
 
@@ -2643,7 +2647,7 @@ private static final float MAX_DRAGGING_ANGLE_COS = 0.525321989f; // cos(pi/4)
 ```
 
 If two pointers move with an angle greater than 45 degrees between their
-vectors, they are not considered a drag and the state transitions to
+vectors, the gesture is not a drag. The state then transitions to
 `STATE_DELEGATING` instead.
 
 ### 46.8.9 The SendHoverEnterAndMoveDelayed Pattern
@@ -2733,9 +2737,9 @@ distinct IDs.
 
 Touch exploration supports multi-display devices. Each display can have its
 own touch exploration state, and the `AccessibilityInputFilter` maintains
-per-display `TouchExplorer` instances. This means that on a device with
-multiple screens (such as an automotive device with a center console and
-rear-seat displays), touch exploration operates independently on each display.
+per-display `TouchExplorer` instances. On a device with multiple screens,
+touch exploration operates independently on each display. An example is an
+automotive device with a center console and rear-seat displays.
 
 ---
 
@@ -2753,8 +2757,8 @@ frameworks/base/core/java/com/android/internal/accessibility/
 ### 46.9.1 Shortcut Types
 
 The shortcut types are defined as a bitmask `@IntDef` named `UserShortcutType`.
-In Android 17 the set grew to eight active types, and the numeric values are
-not contiguous (some bit positions were retired as the design evolved):
+In Android 17 the set grew to eight active types. The numeric values are not
+contiguous (some bit positions were retired as the design evolved):
 
 ```java
 // ShortcutConstants.java -- UserShortcutType
@@ -2801,7 +2805,7 @@ graph TB
 ### 46.9.2 The Hardware Shortcut (Volume Keys)
 
 The hardware shortcut is triggered by pressing and holding both volume up and
-volume down keys simultaneously for approximately 3 seconds. This is
+volume down keys simultaneously for about 3 seconds. This is
 configured through:
 
 ```
@@ -2817,9 +2821,9 @@ keyguard.
 
 ### 46.9.3 The Software Shortcut (Accessibility Button)
 
-The accessibility button appears either as an icon in the navigation bar (in
-3-button navigation mode) or as a floating action button (in gesture
-navigation mode). Its mode is controlled by:
+The accessibility button appears as an icon in the navigation bar (in 3-button
+navigation mode). In gesture navigation mode, it appears as a floating action
+button. Its mode is controlled by:
 
 ```java
 // Settings.Secure
@@ -2896,9 +2900,9 @@ import static com.android.hardware.input.Flags.enableTalkbackKeyGestures;
 The `enableTalkbackAndMagnifierKeyGestures` and `enableVoiceAccessKeyGestures`
 flags used in earlier releases were removed once toggling magnification and
 Voice Access by keyboard became unconditional. These gestures let users with
-physical keyboards (including external keyboards connected to tablets) toggle
-TalkBack, magnification, Select to Speak, Voice Access, and color inversion
-without touching the screen.
+physical keyboards toggle TalkBack, magnification, Select to Speak, Voice
+Access, and color inversion without touching the screen. External keyboards
+connected to tablets are included.
 
 ### 46.9.7 Shortcut Configuration and Persistence
 
@@ -2924,8 +2928,8 @@ The triple-tap magnification key,
 `MAGNIFICATION_SHORTCUT_SETTINGS` list.
 
 The `AccessibilityUserState` class tracks the complete mapping of shortcut
-types to target services per user, and `ShortcutUtils` provides helper
-methods for reading and writing these assignments.
+types to target services per user. `ShortcutUtils` provides helper methods for
+reading and writing these assignments.
 
 ### 46.9.8 Shortcut Activation Flow
 
@@ -2968,9 +2972,9 @@ com.android.internal.accessibility.dialog.AccessibilityShortcutChooserActivity
 ```
 
 The chooser displays all assigned targets with their icons and labels. It also
-provides an "Edit shortcuts" button that switches the same dialog into an
-in-place edit mode where targets can be checked and unchecked, with a "Done"
-button to return -- it does not link out to Settings. (The
+provides an "Edit shortcuts" button. This button switches the same dialog into
+an in-place edit mode where targets can be checked and unchecked. A "Done"
+button returns to the chooser. The dialog does not link out to Settings. (The
 `TYPE_KEYGUARD_DIALOG` window type is used elsewhere, by the hardware
 shortcut's first-use warning dialog raised by `AccessibilityShortcutController`
 -- see section 46.9.2.)
@@ -3015,8 +3019,8 @@ volume adjustments, and routing preferences without navigating through the
 full settings hierarchy.
 
 In Android 17 the hearing-device story gained a small but useful piece of
-glue: a `HearingDevicePhoneCallNotificationController` that AMS constructs when
-the `hearingDevicesInputRoutingControl` settings-lib flag is set, and starts
+glue. It is a `HearingDevicePhoneCallNotificationController`. AMS constructs it
+when the `hearingDevicesInputRoutingControl` settings-lib flag is set. It starts
 listening for call state in `init()`:
 
 ```
@@ -3024,17 +3028,17 @@ frameworks/base/services/accessibility/java/com/android/server/accessibility/
     HearingDevicePhoneCallNotificationController.java
 ```
 
-It surfaces a notification during phone calls so a hearing-aid user can route
-the call audio to (or away from) their hearing devices without digging through
-settings mid-call.
+It shows a notification during phone calls. A hearing-aid user can use it to
+route the call audio to (or away from) their hearing devices. The user does not
+need to dig through settings in the middle of the call.
 
 ## 46.10 Keyboard Key Gestures and the Top-Row Accessibility Key
 
 Android 17 substantially matures the keyboard-driven accessibility story that
-began in earlier releases. Two things changed: a number of key gestures that
-used to be feature-flagged became always-on, and a new dedicated
-**top-row accessibility key** shortcut type was introduced for keyboards that
-ship a physical accessibility key on the function row.
+began in earlier releases. Two things changed. A number of key gestures that
+used to be feature-flagged became always-on. Also, Android 17 introduced a new
+dedicated **top-row accessibility key** shortcut type for keyboards that ship a
+physical accessibility key on the function row.
 
 ### 46.10.1 Key Gestures Registered by AMS
 
@@ -3081,10 +3085,10 @@ if (gestureType
 ```
 
 The whole feature is gated by `android.view.accessibility.Flags`
-`enableA11yTopRowShortcut()`. When that flag is off, AMS skips both the gesture
-registration and the per-user reads/writes of the top-row target list
-(`AccessibilityManagerService.java`, lines 711, 3786, and 4065), so a device
-that does not ship the key sees no behavioral change.
+`enableA11yTopRowShortcut()`. When that flag is off, AMS skips the gesture
+registration. It also skips the per-user reads and writes of the top-row target
+list (`AccessibilityManagerService.java`, lines 711, 3786, and 4065). So a
+device that does not ship the key sees no behavioral change.
 
 ```mermaid
 flowchart TD
@@ -3103,9 +3107,9 @@ Alongside the top-row key, Android 17 adds `UserShortcutType.QUICK_ACCESS`
 (value `1 << 8`), persisted in
 `Settings.Secure.ACCESSIBILITY_QUICK_ACCESS_TARGETS`. AMS reads and writes its
 targets through the same `readAccessibilityShortcutTargetsLocked` /
-`updateAccessibilityShortcutTargetsLocked` machinery used by every other
-shortcut type (`AccessibilityManagerService.java`, lines 3790 and 3923),
-keeping the shortcut model uniform as new entry points are added.
+`updateAccessibilityShortcutTargetsLocked` machinery that every other
+shortcut type uses (`AccessibilityManagerService.java`, lines 3790 and 3923).
+This keeps the shortcut model uniform when new entry points are added.
 
 ## 46.11 Mouse Keys and Virtual Pointer Control
 
@@ -3129,11 +3133,11 @@ import android.hardware.input.VirtualMouseScrollEvent;
 ```
 
 A fresh `VirtualMouse` is created whenever the mouse-keys feature is turned on
-in Settings and is given a unique device name. Sending relative-motion, button,
-and scroll events through it means the synthesized pointer flows through the
-standard input path and is indistinguishable, downstream, from a real mouse --
-which fixes a class of bugs where the bespoke path diverged from real-mouse
-behavior.
+in Settings and is given a unique device name. Relative-motion, button, and
+scroll events are sent through it. So the synthesized
+pointer flows through the standard input path. Downstream, it is
+indistinguishable from a real mouse. This fixes a class of bugs where the
+bespoke path diverged from real-mouse behavior.
 
 ### 46.11.2 Numpad Keys Require Num Lock
 
@@ -3151,14 +3155,14 @@ if (keyCode == mouseKeyEvent.getNumpadKeyCode(inputDevice) && !isNumLockOn) {
 ```
 
 A per-device capability cache (`mDeviceNumpadCapabilityCache`) records whether
-each connected keyboard has the full set of numpad keys, so the numpad mapping
+each connected keyboard has the full set of numpad keys. So the numpad mapping
 is only offered on keyboards that actually have a numeric keypad.
 
 ## 46.12 Advanced Protection Mode for Accessibility Services
 
-The most security-significant accessibility change in Android 17 is the
-integration of the accessibility framework with **Advanced Protection Mode**
-(APM, also written AAPM in the source). Advanced Protection Mode is a
+In Android 17, the accessibility framework is integrated with **Advanced Protection
+Mode** (APM, also written AAPM in the source). This is the most
+security-significant accessibility change in that release. Advanced Protection Mode is a
 device-wide high-security posture; when the user turns it on, a set of
 registered "features" tighten various subsystems. One of those features,
 `FEATURE_ID_RESTRICT_NON_TOOL_A11Y_SERVICES`, restricts which accessibility
@@ -3168,10 +3172,10 @@ services may run.
 
 Accessibility services are among the most powerful things a user can grant on
 Android: they can read screen content, observe input, and inject actions. That
-power is exactly what malware abuses. Advanced Protection Mode addresses this
-by allowing only services that genuinely declare themselves as accessibility
-tools (`isAccessibilityTool="true"` in their metadata) to run, shutting down
-everything else.
+power is exactly what malware abuses. Advanced Protection Mode lets only
+the services that genuinely declare themselves as accessibility tools run
+(`isAccessibilityTool="true"` in their metadata). It shuts down everything
+else.
 
 ### 46.12.2 The Feature Registration
 
@@ -3198,10 +3202,10 @@ public class AccessibilityServiceAdvancedProtectionProvider
 
 ### 46.12.3 How AMS Wires Itself In
 
-AMS registers for APM state changes at boot, but only after
-`PHASE_BOOT_COMPLETED` (so that the Device Policy and Advanced Protection
-services are available) and only when the `extendAapmToA11yServices()` flag is
-set:
+AMS registers for APM state changes at boot. It does this only after
+`PHASE_BOOT_COMPLETED`, so that the Device Policy and Advanced Protection
+services are available. It also does this only when the
+`extendAapmToA11yServices()` flag is set:
 
 ```java
 // AccessibilityManagerService.java, line 1021
@@ -3245,9 +3249,10 @@ void handleAdvancedProtectionModeStateChanged(
 }
 ```
 
-Routing through a Device Policy restriction (rather than a bespoke check) lets
-the rest of the framework treat APM-driven blocking the same way it already
-treats enterprise-managed accessibility allowlists.
+The decision is routed through a Device Policy restriction instead of a
+bespoke check. This lets the rest of the framework treat APM-driven blocking
+the same way that it already treats enterprise-managed accessibility
+allowlists.
 
 ### 46.12.5 Computing the Permitted Set
 
@@ -3286,10 +3291,10 @@ flowchart TD
 ```
 
 The key precedence: an explicit **enterprise admin allowlist wins over APM**.
-Only when there is no admin allowlist and APM is active does AMS switch to
-`getPermittedServicesStrictApm()`, which scans installed services and permits
+AMS switches to `getPermittedServicesStrictApm()` only when there is no admin
+allowlist and APM is active. This method scans installed services. It permits
 only packages that contain at least one service marked as an accessibility
-tool, filtering out everything that declares itself a non-tool service.
+tool. It filters out everything that declares itself a non-tool service.
 
 ### 46.12.6 Logging Before Enforcement
 
@@ -3304,22 +3309,24 @@ AccessibilityManagerInternal.AccessibilityFeatureRestrictedCounts
 ```
 
 This returns the number of currently enabled services and assigned shortcuts
-whose packages are not in the final permitted set, computed with the same
+whose packages are not in the final permitted set. The counts are computed with the same
 legacy-versus-strict logic as the enforcement path.
 
 ## 46.13 The EyeDropper App
 
 EyeDropper (`packages/apps/EyeDropper/`, package `com.android.eyedropper`) is a
-small system app that lets the user pick a single pixel on the display and
-returns that pixel's color to the caller. It is a general-purpose color picker:
-any app can invoke it through the public `OPEN_EYE_DROPPER` intent and get back the
-ARGB value of the chosen pixel. Its on-screen reticle has accessibility roots:
-the dimensions and drawing were adapted from the Accessibility Scanner color
-picker (`res/values/dimens.xml` notes the reticle is "copied from Accessibility
+small system app. It lets the user pick a single pixel on the display and
+returns that pixel's color to the caller. It is a general-purpose color picker.
+Any app can invoke it through the public `OPEN_EYE_DROPPER` intent and get back the
+ARGB value of the chosen pixel.
+
+Its on-screen reticle has accessibility roots.
+The dimensions and drawing were adapted from the Accessibility Scanner color
+picker. `res/values/dimens.xml` notes the reticle is "copied from Accessibility
 Scanner Color Picker," and `ui/touchscreen/TouchscreenReticle.kt` cites the
-accessibility auditor's picker UI). That lineage is where it sits in this
-chapter, but the intent itself is framed for any caller, not tied to a specific
-low-vision or color-vision feature.
+accessibility auditor's picker UI. That lineage is where it sits in this
+chapter. However, the intent itself is framed for any caller. It is not tied to
+a specific low-vision or color-vision feature.
 
 ### 46.13.1 What It Does and How It Is Invoked
 
@@ -3338,33 +3345,34 @@ public static final String ACTION_OPEN_EYE_DROPPER =
         "android.intent.action.OPEN_EYE_DROPPER";
 ```
 
-A caller starts the activity for a result; on selection the activity sets
-`RESULT_OK` with `Intent.EXTRA_COLOR` holding the ARGB integer, and on
-cancellation it sets `RESULT_CANCELED`
-(`MainActivity.sendColor`/`onAbort`). The action is gated by the
-`enable_eye_dropper_api` aconfig flag (`packages/apps/EyeDropper/flags/`), and
-the activity is themed transparent so it overlays whatever is on screen.
+A caller starts the activity for a result. On selection, the activity sets
+`RESULT_OK`, and `Intent.EXTRA_COLOR` holds the ARGB integer. On cancellation,
+it sets `RESULT_CANCELED` (`MainActivity.sendColor`/`onAbort`). The action is
+gated by the `enable_eye_dropper_api` aconfig flag
+(`packages/apps/EyeDropper/flags/`). The activity is themed transparent, so it
+overlays whatever is on screen.
 
 ### 46.13.2 How a Color Gets Picked
 
 `MainActivity` does not draw the picker itself. On first window focus it
-captures a screenshot of every connected display and binds to
-`EyeDropperControllerService`, handing it the per-display screenshots through a
+captures a screenshot of every connected display. It then binds to
+`EyeDropperControllerService` and hands it the per-display screenshots through a
 local binder (`EyeDropperServiceConnection`). The capture goes through
-`IWindowManager.screenCapture` with both the secure-content and
-protected-content policies set to `REDACT`, so protected surfaces come back
-blacked out rather than readable (`util/ScreenCaptureHelper.kt`). The captured
+`IWindowManager.screenCapture`. Both the secure-content and protected-content
+policies are set to `REDACT`, so protected surfaces come back blacked out
+rather than readable (`util/ScreenCaptureHelper.kt`). The captured
 hardware bitmap is copied to a software `ARGB_8888` bitmap so individual pixels
 can be read with `getPixel()`.
 
-The service renders a transparent overlay per display and runs one of two input
-modes: a pointer/reticle mode for desktop windowing (cursor driven) and a
-touchscreen reticle mode (`ui/touchscreen/`). When the user commits a pixel, the
-overlay reports the coordinate, the service reads the color from that display's
-screenshot, removes every overlay, and the activity returns the color to the
-caller. Input-device or display changes, a configuration change, or the escape
-key route through the same abort path, so the request always ends in a result
-or a cancel.
+The service renders a transparent overlay per display. It runs one of two input
+modes. One is a pointer/reticle mode for desktop windowing (cursor driven). The
+other is a touchscreen reticle mode (`ui/touchscreen/`).
+
+When the user commits a pixel, the overlay reports the coordinate. The service
+reads the color from that display's screenshot and removes every overlay. Then
+the activity returns the color to the caller. Input-device or display changes,
+a configuration change, or the escape key route through the same abort path.
+So the request always ends in a result or a cancel.
 
 ```mermaid
 sequenceDiagram
@@ -3383,7 +3391,7 @@ sequenceDiagram
     MA-->>Caller: "RESULT_OK + EXTRA_COLOR (or RESULT_CANCELED)"
 ```
 
-The app holds three privileged permissions to do this work:
+The app holds three privileged permissions for this work. It uses
 `INTERNAL_SYSTEM_WINDOW` to add the overlay, `READ_FRAME_BUFFER` for the screen
 capture, and `INJECT_EVENTS` to read the cursor position
 (`AndroidManifest.xml`).
@@ -3512,8 +3520,8 @@ Perform these interactions and observe the state transitions in logcat:
 3. **Two-finger drag**: Place two fingers and scroll. Observe the transition
    to `STATE_DRAGGING`.
 
-4. **Swipe gestures**: Perform a right swipe to move to the next element,
-   then a left swipe to move to the previous element.
+4. **Swipe gestures**: Perform a right swipe to move to the next element.
+   Then perform a left swipe to move to the previous element.
 
 5. **Two-finger triple-tap**: Observe the shortcut activation.
 
@@ -3909,8 +3917,9 @@ AccessibilityEvent event = uiAutomation.executeAndWaitForEvent(
 ```
 
 `UiAutomation` connects to AMS through a special
-`UiAutomationManager.sendAccessibilityEventLocked()` pathway that ensures
-test events are always dispatched regardless of normal filtering rules.
+`UiAutomationManager.sendAccessibilityEventLocked()` pathway. This pathway makes
+sure that test events are always dispatched regardless of normal filtering
+rules.
 
 ### 46.14.13 Exercise: Observe the EventStreamTransformation Pipeline
 
@@ -3937,7 +3946,7 @@ adb shell settings put secure \
 ```
 
 The order of transformations matters. Magnification gesture detection runs
-before touch exploration, so a triple-tap for magnification is intercepted
+before touch exploration. So it intercepts a triple-tap for magnification
 before TouchExplorer can interpret it as double-tap-plus-single-tap.
 
 ### 46.14.14 Exercise: Performance Profiling
@@ -3972,17 +3981,17 @@ Common performance pitfalls:
 
 ## Summary
 
-This chapter explored Android's accessibility framework from the lowest levels
-of the system service through to the user-facing features that make the
-platform usable for people with disabilities.
+This chapter explored Android's accessibility framework. It started at the
+lowest levels of the system service. It ended at the user-facing features that
+make the platform usable for people with disabilities.
 
 The key architectural insights are:
 
 1. **Centralized coordination**: `AccessibilityManagerService` is the single
    point of coordination for all accessibility functionality. It manages event
    dispatch, service binding, security enforcement, window tracking, input
-   filtering, and magnification, and it now also enforces Advanced Protection
-   Mode restrictions on accessibility services.
+   filtering, and magnification. It now also enforces Advanced Protection Mode
+   restrictions on accessibility services.
 
 2. **Event-driven observation**: The accessibility event system allows services
    to passively observe UI changes without modifying app behavior. The event
@@ -4002,16 +4011,18 @@ The key architectural insights are:
    the input event stream without modifying the input driver layer.
 
 6. **Layered security**: The framework's security model balances the need for
-   powerful capabilities with user protection through permission requirements,
-   explicit consent, event filtering, source stripping, and non-tool warnings.
+   powerful capabilities with user protection. It does this through permission
+   requirements, explicit consent, event filtering, source stripping, and
+   non-tool warnings.
 
 The accessibility framework demonstrates one of AOSP's most elegant design
-patterns: a centralized service that mediates between producers (applications)
-and consumers (accessibility services) through a rich event and node protocol,
-all while maintaining strong security boundaries. Understanding this
-architecture is essential for anyone building custom accessibility services,
-auditing applications for accessibility compliance, or working on AOSP
-platform features that interact with the accessibility subsystem.
+patterns. A centralized service mediates between producers (applications) and
+consumers (accessibility services) through a rich event and node protocol. At
+the same time, it keeps strong security boundaries. This architecture is
+essential for anyone who builds custom accessibility services. It is also
+essential for anyone who audits applications for accessibility compliance. The
+same is true for anyone who works on AOSP platform features that interact with
+the accessibility subsystem.
 
 ## Key Source Files Reference
 

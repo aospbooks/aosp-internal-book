@@ -2,39 +2,40 @@
 
 SystemUI is the Android process responsible for nearly everything visible on screen
 outside of the currently focused application.  It draws the status bar, the
-notification shade, Quick Settings, the lock screen, the navigation bar, the
-volume dialog, the power menu, the screenshot experience, and the recent-apps
-overlay.  It lives in a single APK that runs as a persistent system service
-under the UID `android.uid.systemui` and cannot be killed without the framework
-automatically restarting it through `RescueParty`.
+notification shade, Quick Settings, the lock screen, and the navigation bar.  It
+also draws the volume dialog, the power menu, the screenshot experience, and the
+recent-apps overlay.  It lives in a single APK that runs as a persistent system
+service under the UID `android.uid.systemui`.  The framework automatically
+restarts it through `RescueParty` if it is killed.
 
 SystemUI is one of the largest single packages in AOSP.  Its source directory
 contains over 180 sub-packages under
 `frameworks/base/packages/SystemUI/src/com/android/systemui/`, covering domains
 from `accessibility` to `wmshell`.
-The codebase is undergoing a multi-year migration: legacy single-class
+The codebase is undergoing a multi-year migration. Legacy single-class
 god-objects are being replaced by a layered architecture (data repository ->
-domain interactor -> UI view-model, broadly an MVVM/MVI shape) with Dagger
-dependency injection, Kotlin coroutines, and Jetpack Compose.
+domain interactor -> UI view-model, broadly an MVVM/MVI shape). The new
+architecture uses Dagger dependency injection, Kotlin coroutines, and Jetpack
+Compose.
 
 Android 17 carries this migration further than any prior release.  Two
 structural shifts dominate this chapter:
 
 - **The Scene framework ("flexiglass")** -- a Compose `SceneTransitionLayout`
   that replaces the hand-rolled `NotificationPanelViewController` /
-  `CentralSurfacesImpl` swipe and state machinery with declarative *scenes*
+  `CentralSurfacesImpl` swipe and state machinery. It uses declarative *scenes*
   (Lockscreen, Shade, QuickSettings, Gone) and *overlays* (Bouncer,
   NotificationsShade, QuickSettingsShade). It is gated by `SceneContainerFlag`.
-- **The `pods/` modularisation** -- a new top-level `pods/` directory inside the
-  SystemUI package into which self-contained feature modules (scene, shade, qs,
-  statusbar, notifications, brightness, user, ...) are being extracted as
-  independently buildable Soong modules. Code moved into `pods/` keeps its
+- **The `pods/` modularization** -- a new top-level `pods/` directory inside the
+  SystemUI package. Self-contained feature modules (scene, shade, qs,
+  statusbar, notifications, brightness, user, ...) are being extracted into it
+  as independently buildable Soong modules. Code moved into `pods/` keeps its
   `com.android.systemui.*` package name, so a class like `Scenes` can move from
   `src/` to `pods/scene/src/api/` without changing its fully-qualified name.
 
-This chapter examines every major subsystem in detail, tracing the code from
-process startup through each visible surface, and folds the Android 17 changes
-into each section as it goes.
+This chapter examines every major subsystem in detail. It traces the code from
+process startup through each visible surface. It also includes the Android 17
+changes in each section.
 
 ---
 
@@ -87,7 +88,7 @@ public class SystemUIService extends Service {
 ```
 
 The `Application` subclass is `SystemUIApplicationImpl`.  Its `onCreate`
-initialises the Dagger graph and registers for `BOOT_COMPLETED`:
+initializes the Dagger graph and registers for `BOOT_COMPLETED`:
 
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/application/impl/
@@ -389,13 +390,15 @@ Alongside this `src/` tree, Android 17 adds a sibling `pods/` directory at the
 top of the SystemUI package
 (`frameworks/base/packages/SystemUI/pods/`).  Each *pod* is a self-contained
 feature module with its own Soong build target and its own `src/`, `ui/`, and
-test sources -- `pods/scene/`, `pods/shade/`, `pods/qs/`, `pods/statusbar/`,
-`pods/notifications/`, `pods/brightness/`, `pods/user/`, and more.  Code that
+test sources.  Examples are `pods/scene/`, `pods/shade/`, `pods/qs/`, `pods/statusbar/`,
+`pods/notifications/`, `pods/brightness/`, `pods/user/`, and more.
+
+Code that
 moves into a pod keeps its `com.android.systemui.*` package name, so the move is
 invisible to callers.  For example, the canonical `Scenes` and scene-key
 definitions now live at
 `frameworks/base/packages/SystemUI/pods/scene/src/api/shared/model/Scenes.kt`
-under package `com.android.systemui.scene.shared.model`, while the rest of the
+under package `com.android.systemui.scene.shared.model`.  The rest of the
 scene framework (interactors, startables, view-models) still lives under
 `src/com/android/systemui/scene/`.  When a path in this chapter does not resolve
 under `src/`, check the matching `pods/` module.
@@ -421,7 +424,7 @@ graph LR
 
 ## 48.2  Status Bar
 
-The status bar is the narrow strip at the top of the screen that displays the
+The status bar is the narrow strip at the top of the screen.  It displays the
 clock, notification icons, battery level, signal strength, and system status
 icons.  It is one of the first visual elements created during SystemUI startup.
 
@@ -429,9 +432,9 @@ icons.  It is one of the first visual elements created during SystemUI startup.
 
 `CentralSurfaces` is an interface extending `Dumpable`, `LifecycleOwner`, and
 `CoreStartable`.  Its implementation, `CentralSurfacesImpl`, is a large
-class (it has been shrinking as logic continues to be extracted) that
-historically served as the central coordinator for the status bar,
-notification shade, keyguard, and more:
+class that is shrinking as logic continues to be extracted.  It historically
+served as the central coordinator for the status bar, notification shade,
+keyguard, and more:
 
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/
@@ -491,7 +494,7 @@ window.
 ### 48.2.3  Home Status Bar Pipeline
 
 In earlier releases the visible content of the collapsed status bar was driven
-by a single `CollapsedStatusBarFragment` -- a `Fragment` that inflated
+by a single `CollapsedStatusBarFragment`.  This `Fragment` inflated
 `R.layout.status_bar` and implemented `CommandQueue.Callbacks`,
 `StatusBarStateController.StateListener`, and `SystemStatusAnimationCallback`
 directly.  Android 17 has finished decomposing that god-fragment into a *home
@@ -507,8 +510,8 @@ frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/pipeline/sh
 ```
 
 The per-display window scope is provided by `HomeStatusBarComponent`, a Dagger
-`@Subcomponent` re-created each time a new `PhoneStatusBarView` is created (the
-component that used to be called `StatusBarFragmentComponent`):
+`@Subcomponent`.  It is re-created each time a new `PhoneStatusBarView` is
+created.  This component used to be called `StatusBarFragmentComponent`:
 
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/phone/
@@ -533,10 +536,10 @@ now as flows rather than callbacks:
   calls, screen recording, and media projection (the `statusbar/chips/` package)
 - **shade expansion** -- fading out icons as the shade expands
 
-When the Scene framework is enabled (`SceneContainerFlag`, section 48.16), the
-status bar can also be hosted by a Compose root
-(`statusbar/pipeline/shared/ui/composable/StatusBarRoot.kt`) instead of the
-inflated View hierarchy.
+When the Scene framework is enabled (`SceneContainerFlag`, section 48.16), a
+Compose root can also host the status bar
+(`statusbar/pipeline/shared/ui/composable/StatusBarRoot.kt`).  This root
+replaces the inflated View hierarchy.
 
 ### 48.2.4  PhoneStatusBarView
 
@@ -552,9 +555,9 @@ public class PhoneStatusBarView extends FrameLayout {
 
 The view controller (`PhoneStatusBarViewController`, now Kotlin) coordinates
 touch handling and drives the `HomeStatusBarViewBinder` (section 48.2.3).
-Dark/light icon tinting is applied by `LightBarController` from the per-stack
-`AppearanceRegion` / `APPEARANCE_LIGHT_STATUS_BARS` appearance that
-WindowManager pushes to SystemUI through `CommandQueue` -- the controller does
+Dark/light icon tinting is applied by `LightBarController`.  It uses the
+per-stack `AppearanceRegion` / `APPEARANCE_LIGHT_STATUS_BARS` appearance that
+WindowManager pushes to SystemUI through `CommandQueue`.  The controller does
 not sample screen content itself.
 
 ### 48.2.5  Status Bar Icon Pipeline
@@ -615,9 +618,9 @@ the `OngoingPrivacyChip`. Each item carries a `PrivacyType` (defined in
 `PrivacyItem.kt`): `TYPE_CAMERA`, `TYPE_MICROPHONE`, `TYPE_LOCATION`, and
 `TYPE_MEDIA_PROJECTION`, each with its own icon and label.
 
-Which sources are shown is controlled by two `DeviceConfig` flags in the
-`privacy` namespace, read by `PrivacyConfig`: `PROPERTY_MIC_CAMERA_ENABLED`
-covers camera and microphone, and a separate path gates location. The AppOps
+Two `DeviceConfig` flags in the `privacy` namespace control which sources are
+shown.  `PrivacyConfig` reads them.  `PROPERTY_MIC_CAMERA_ENABLED` covers camera
+and microphone, and a separate path gates location. The AppOps
 that drive each are split in `AppOpsPrivacyItemMonitor`: `OPS_MIC_CAMERA` covers
 the camera and record-audio ops, while `OPS_LOCATION` is `OP_FINE_LOCATION`.
 When `locationAvailable` is off, location ops are filtered out and never become
@@ -630,8 +633,8 @@ companion flags `location_indicators_animation` and `location_indicators_outline
 `PrivacyConfig.locationAvailable` is initialized from
 `locationIndicatorsEnabled()`, so the flag is what enables the indicator at all.
 When the flag is on, a location access produces a distinct chip rather than
-reusing the camera/microphone style: `PrivacyConfig.privacyItemsAreLocationOnly()`
-reports whether every active item is `TYPE_LOCATION`, and when that holds,
+reusing the camera/microphone style.  `PrivacyConfig.privacyItemsAreLocationOnly()`
+reports whether every active item is `TYPE_LOCATION`.  When that holds,
 `getPrivacyColor()` returns `R.color.privacy_chip_location_only_background`. With
 `location_indicators_outline` also on, `getPrivacyOutlineColor()` and
 `getPrivacyOutlineStroke()` give the location-only chip a 1px outline instead of
@@ -640,7 +643,7 @@ the filled background used for camera and microphone.
 The flag also changes how long a location chip lingers.
 `PrivacyItemController.processNewList()` holds a location-only set for
 `TIME_TO_HOLD_INDICATORS_FOR_LOCATION` (10 seconds) rather than the
-`TIME_TO_HOLD_INDICATORS` (5 seconds) used for other accesses, so a brief
+`TIME_TO_HOLD_INDICATORS` (5 seconds) used for other accesses.  As a result, a brief
 location read stays visible long enough for the user to notice. Tapping any of
 these chips still opens the privacy dialog (`PrivacyDialogControllerV2`) listing
 which apps used which sources.
@@ -688,7 +691,7 @@ current state:
 
 - Touch tracking and velocity-based expansion/collapse
 - QS expansion within the shade
-- Keyguard-specific behaviour (clock, notifications on lock screen)
+- Keyguard-specific behavior (clock, notifications on lock screen)
 - Split shade on large screens (notifications left, QS right)
 - Blur effects during expansion
 
@@ -800,7 +803,7 @@ graph TD
     E --> K["PULSING"]
 ```
 
-Each `ScrimState` defines alpha values and tint colours for the scrims.
+Each `ScrimState` defines alpha values and tint colors for the scrims.
 Transitions between states animate these properties smoothly.
 
 ### 48.3.6  Lockscreen-to-Shade Transition
@@ -950,11 +953,11 @@ sequenceDiagram
 
 ### 48.4.5  Built-in Tiles
 
-AOSP ships roughly 30 built-in QS tiles.  The set has shifted in Android 17:
+AOSP ships roughly 30 built-in QS tiles.  The set has shifted in Android 17.
 `ModesTile.kt` and `ModesDndTile.kt` (the "Modes" / Do-Not-Disturb rework),
 `RecordIssueTile.kt` (developer issue recording), `FlashlightTileWithLevel.kt`
-(brightness-adjustable torch), and `SensorPrivacyToggleTile.java` are present,
-while the old `DreamTile.java` has been dropped:
+(brightness-adjustable torch), and `SensorPrivacyToggleTile.java` are present.
+The old `DreamTile.java` has been dropped:
 
 ```
 frameworks/base/packages/SystemUI/src/com/android/systemui/qs/tiles/
@@ -1082,9 +1085,9 @@ frameworks/base/packages/SystemUI/src/com/android/systemui/qs/pipeline/
 
 ### 48.4.8  QSPanel Layout
 
-Earlier releases rendered the full QS panel with a `QSPanel` View (using
-`TileLayout` or `PagedTileLayout`) and the Quick QS strip with `QuickQSPanel`,
-each managed by its own controller.  That entire legacy View hierarchy has been
+Earlier releases rendered the full QS panel with a `QSPanel` View (which used
+`TileLayout` or `PagedTileLayout`). They rendered the Quick QS strip with
+`QuickQSPanel`. Each of the two had its own controller.  That entire legacy View hierarchy has been
 removed in Android 17 -- none of those classes exist in the tree any more, and
 QS is Compose-only.
 
@@ -1437,10 +1440,10 @@ public class VolumeDialogComponent
 }
 ```
 
-The `Events.java` telemetry class (section 48.7.4) is unchanged and is shared by
-both the dialog and the newer **volume panel** (`volume/panel/`), the
-large-screen settings-style panel that hosts media output, spatial audio, and
-per-app volume controls.
+The `Events.java` telemetry class (section 48.7.4) is unchanged. Both the dialog
+and the newer **volume panel** (`volume/panel/`) share it. The volume panel is
+the large-screen settings-style panel that hosts media output, spatial audio,
+and per-app volume controls.
 
 ### 48.7.4  Volume Events
 
@@ -1845,13 +1848,14 @@ graph TD
 
 ### 48.10.5  Connected Displays
 
-Status bar functionality now extends to connected displays unconditionally: a
+Status bar functionality now extends to connected displays unconditionally. A
 `HomeStatusBarComponent` (and its bound `PhoneStatusBarView` plus
-`HomeStatusBarViewModel`, section 48.2.3) is created per-display, each with its
+`HomeStatusBarViewModel`, section 48.2.3) is created per-display. Each has its
 own icon pipeline and visibility management.  (The `StatusBarConnectedDisplays`
-flag that once gated this has been removed and survives only in TODO comments;
-the connected-display *chip* is still gated by the real aconfig flag
-`status_bar_is_connected_display_chip_controlled_by_config`.)
+flag that once gated this has been removed. It survives only in TODO comments.
+The real aconfig flag
+`status_bar_is_connected_display_chip_controlled_by_config` still gates the
+connected-display *chip*.)
 
 Around this sits a small connected-display UI stack.  `ConnectedDisplayInteractor`
 (`src/com/android/systemui/display/domain/interactor/ConnectedDisplayInteractor.kt`)
@@ -1864,11 +1868,13 @@ gated by `status_bar_is_connected_display_chip_controlled_by_config`.  When a
 display is first plugged in, `ExternalDisplayConnectionDialog`
 (`src/com/android/systemui/display/ui/view/ExternalDisplayConnectionDialog.kt`,
 with the Compose path behind `enable_compose_external_display_dialog`) asks the
-user whether to mirror or extend.  The per-display classes are built by the
+user whether to mirror or extend.
+
+The per-display classes are built by the
 `SystemUIDisplaySubcomponent` and `PerDisplaySystemUIModule`
-(`src/com/android/systemui/display/dagger/`): the subcomponent is a
-`@PerDisplaySingleton` scope created when a display appears and whose
-coroutine scope is cancelled when the display is removed, so display-scoped
+(`src/com/android/systemui/display/dagger/`). The subcomponent is a
+`@PerDisplaySingleton` scope. It is created when a display appears. Its
+coroutine scope is canceled when the display is removed, so display-scoped
 controllers tear down with their display.
 
 ---
@@ -1918,7 +1924,7 @@ public class NavigationBarView extends FrameLayout {
 }
 ```
 
-The view uses `ButtonDispatcher` to abstract button behaviour across different
+The view uses `ButtonDispatcher` to abstract button behavior across different
 button implementations (physical, software, or gesture targets):
 
 ```mermaid
@@ -1955,7 +1961,7 @@ and `AC` (absolute dp, centred); `NavigationBarInflaterView` picks the spec
 matching the current navigation mode.  Note that even the gestural spec still
 declares `back` and `ime_switcher` slots around the `home_handle`.
 
-This allows OEMs to customise button order and sizes through overlays.
+This allows OEMs to customize button order and sizes through overlays.
 
 ### 48.11.4  Gesture Navigation
 
@@ -2045,11 +2051,11 @@ available on phone form factors.
 ## 48.12  Monet / Dynamic Color / Material You
 
 Android 12 introduced **Material You**, a design language where the entire
-system UI derives its colour palette from the user's wallpaper.  The engine
-behind this is called **Monet** -- a colour-science pipeline that extracts a
-seed colour from `WallpaperColors`, generates tonal palettes through the
-Material Color Utilities library, and applies the resulting colours as
-fabricated resource overlays across every package.
+system UI derives its color palette from the user's wallpaper.  The engine
+behind this is called **Monet**. Monet is a color-science pipeline. It
+extracts a seed color from `WallpaperColors` and generates tonal palettes
+through the Material Color Utilities library. Then it applies the resulting
+colors as fabricated resource overlays across every package.
 
 ### 48.12.1  End-to-End Pipeline
 
@@ -2101,19 +2107,19 @@ graph TB
 ### 48.12.2  Colour Extraction -- Seed Selection
 
 `ColorScheme.getSeedColors()` implements the Monet seed-selection algorithm.
-Given `WallpaperColors` (which contains all quantized colours with population
+Given `WallpaperColors` (which contains all quantized colors with population
 data), it:
 
 1. **Builds a hue histogram** -- 360 slots, each accumulating the proportion
-   of colours with that hue.
-2. **Scores each colour** by a weighted combination of hue proportion (70%)
-   and chroma distance from the 48.0 target (`ACCENT1_CHROMA`) -- the chroma
-   term is weighted 0.3 above the target but only 0.1 below it.
-3. **Filters low-chroma colours** (chroma < 5) which would produce grey
+   of colors with that hue.
+2. **Scores each color** by a weighted combination of hue proportion (70%)
+   and chroma distance from the 48.0 target (`ACCENT1_CHROMA`). The chroma
+   term has weight 0.3 above the target but only 0.1 below it.
+3. **Filters low-chroma colors** (chroma < 5), which would produce gray
    themes.
 4. **Selects hue-distinct seeds** -- iteratively reduces the minimum hue
    distance from 90 degrees down to 15, picking up to 4 seeds.
-5. **Falls back to `GOOGLE_BLUE` (0xFF1b6ef3)** if no suitable colour
+5. **Falls back to `GOOGLE_BLUE` (0xFF1b6ef3)** if no suitable color
    exists.
 
 ```java
@@ -2127,7 +2133,7 @@ public static List<Integer> getSeedColors(WallpaperColors wallpaperColors, boole
 ```
 
 For Live Wallpapers where quantization population is zero, the method trusts
-the ordering of the three main colours directly, filtering only by minimum
+the ordering of the three main colors directly, filtering only by minimum
 chroma.
 
 ### 48.12.3  The ColorScheme Class
@@ -2148,8 +2154,8 @@ public class ColorScheme {
 }
 ```
 
-Each palette is constructed from `Hct` (Hue-Chroma-Tone) colour space via
-the Material library's `TonalPalette`.  The class delegates to a style-specific
+Each palette is constructed from `Hct`
+(Hue-Chroma-Tone) color space via the Material library's `TonalPalette`.  The class delegates to a style-specific
 `DynamicScheme` based on `ThemeStyle`:
 
 | ThemeStyle | DynamicScheme | Character |
@@ -2166,10 +2172,10 @@ the Material library's `TonalPalette`.  The class delegates to a style-specific
 | `CLOCK` | `SchemeClock` | Custom SystemUI scheme for lock screen clocks |
 | `CLOCK_VIBRANT` | `SchemeClockVibrant` | High-chroma clock variant |
 
-Android 17 also moves the Material library forward: `ColorScheme` constructs
-each `DynamicScheme` from a *list* of seed `Hct` values (multi-seed support) and
-a `SpecVersion` (`SPEC_2026` is the current default), rather than a single seed
-under the older spec.
+Android 17 also moves the Material library forward. `ColorScheme` constructs
+each `DynamicScheme` from a *list* of seed `Hct` values (multi-seed support)
+and a `SpecVersion` (`SPEC_2026` is the current default). The older spec
+used a single seed.
 
 ### 48.12.4  TonalPalette and Shade Stops
 
@@ -2184,12 +2190,12 @@ public static final List<Integer> SHADE_KEYS =
 Shade 0 is white, shade 1000 is black.  The `getAtTone(shade)` method maps
 the 0-1000 range to the Material library's 0-100 tone scale via
 `(1000 - shade) / 10`.  This produces Android's `system_accent1_0` through
-`system_accent1_1000` resource colours.
+`system_accent1_1000` resource colors.
 
 ### 48.12.5  ThemeOverlayController -- The Orchestrator
 
 `ThemeOverlayController` is a `CoreStartable` that wires together wallpaper
-change detection, colour scheme generation, and overlay application:
+change detection, color scheme generation, and overlay application:
 
 ```java
 // frameworks/base/packages/SystemUI/src/com/android/systemui/theme/
@@ -2221,9 +2227,9 @@ public class ThemeOverlayController implements CoreStartable, Dumpable {
 
 ### 48.12.6  Colour Event Deferral
 
-The controller uses a sophisticated deferral mechanism to avoid jarring
-mid-use colour changes.  When the user is looking at the screen, colour
-events are suppressed until the display goes off:
+The controller uses a deferral mechanism to avoid jarring
+mid-use color changes.  When the user is looking at the screen, the
+controller suppresses color events until the display goes off:
 
 ```mermaid
 sequenceDiagram
@@ -2275,7 +2281,7 @@ private void createOverlays(int color) {
 }
 ```
 
-Every colour token gets `_light` and `_dark` resource variants:
+Every color token gets `_light` and `_dark` resource variants:
 
 ```java
 overlay.setResourceValue(prefix + "_light", TYPE_INT_COLOR_ARGB8,
@@ -2284,13 +2290,13 @@ overlay.setResourceValue(prefix + "_dark", TYPE_INT_COLOR_ARGB8,
     p.second.getArgb(mDarkColorScheme.getMaterialScheme()), null);
 ```
 
-This applies to every token list, including the fixed colours
-(e.g. `primaryFixed`): they go through the same code path and get both
-variants -- fixed colours simply resolve to the same value in both schemes.
+This applies to every token list, including the fixed colors
+(e.g. `primaryFixed`). They go through the same code path and get both
+variants. Fixed colors simply resolve to the same value in both schemes.
 
 ### 48.12.8  DynamicColors Token Mapping
 
-The `DynamicColors` class generates the full set of colour tokens:
+The `DynamicColors` class generates the full set of color tokens:
 
 ```java
 // frameworks/libs/systemui/monet/src/com/android/systemui/monet/DynamicColors.java
@@ -2310,7 +2316,7 @@ public class DynamicColors {
 }
 ```
 
-The token names are mapped to Android resource names with the prefix
+The token names map to Android resource names with the prefix
 `android:color/system_`.  For example, `accent1_500` becomes
 `android:color/system_accent1_500`.
 
@@ -2341,16 +2347,17 @@ public class ThemeOverlayApplier implements Dumpable {
 ```
 
 The applier first disables all currently enabled overlays in the affected
-categories, then registers new fabricated overlays, and enables them -- all
-in a single `OverlayManagerTransaction` to minimise configuration changes.
+categories. Then it registers new fabricated overlays and enables them. All
+of this happens in a single `OverlayManagerTransaction` to minimize
+configuration changes.
 
-Categories in `SYSTEM_USER_CATEGORIES` are applied to both the current user
-and user 0 (system user), ensuring SystemUI and framework processes see the
-correct colours.
+The applier applies categories in `SYSTEM_USER_CATEGORIES` to both the
+current user and user 0 (system user). This makes sure SystemUI and
+framework processes see the correct colors.
 
 ### 48.12.10  Settings Integration
 
-Theme customisation is persisted in
+Theme customization is persisted in
 `Settings.Secure.THEME_CUSTOMIZATION_OVERLAY_PACKAGES` as a JSON object:
 
 ```json
@@ -2365,15 +2372,15 @@ Theme customisation is persisted in
 ```
 
 The `ThemeOverlayController` monitors this setting and re-evaluates on every
-change.  When the wallpaper changes and no preset colour is selected, it
-updates this setting automatically, recording the colour source and timestamp.
+change.  When the wallpaper changes and no preset color is selected, it
+updates this setting automatically. It records the color source and timestamp.
 
 ### 48.12.11  Hardware Default Colours
 
-Starting with Android 15, the `hardwareColorStyles` flag enables OEMs to
-provide device-specific default colour palettes during the Setup Wizard.
+Since Android 15, the `hardwareColorStyles` flag lets OEMs
+provide device-specific default color palettes during the Setup Wizard.
 Before the device is provisioned, the controller reads hardware defaults
-(seed colour + style + source) and persists them as the initial theme
+(seed color + style + source). It persists them as the initial theme
 setting.
 
 ### 48.12.12  Contrast Support
@@ -2389,7 +2396,7 @@ new ColorScheme(seed, isDark, mThemeStyle, mContrast)
 // mContrast flows through to DynamicScheme's contrastLevel parameter
 ```
 
-This adjusts the tonal mapping so that foreground/background colour pairs
+This adjusts the tonal mapping so that foreground/background color pairs
 maintain the selected contrast ratio.
 
 ### 48.12.13  Key Source Paths (Monet)
@@ -2418,7 +2425,7 @@ those interfaces live in their own AOSP library at `frameworks/base/libs/WindowM
 called *WM Shell* throughout the codebase (Java package
 `com.android.wm.shell`). This section walks through what WM Shell is, how it
 integrates with SystemUI, and how its per-feature subpackages map to the
-multi-window experiences a user sees on screen.
+multi-window experiences. A user sees these experiences on screen.
 
 ### 48.13.1  Shell Is a Library, Not a Process
 
@@ -2432,12 +2439,12 @@ features without bloating `system_server`.
 
 This division has a concrete reason. Multi-window UX (PIP windows, split
 view dividers, freeform window decorations, bubble badges) needs to render
-Views, listen to gestures, and react to configuration changes — work that
+Views, listen to gestures, and react to configuration changes. This work
 naturally belongs in a foreground UI process rather than the system server.
 SystemUI is already a long-lived foreground process with rendering, input,
 and IPC plumbing in place, so the Shell library piggy-backs on it. On Wear,
 TV, or Auto, a different SystemUI variant links a different form-factor
-Shell module (see 48.13.7), but the loading mechanism is the same.
+Shell module (see 48.13.7). The loading mechanism is the same.
 
 ```mermaid
 flowchart LR
@@ -2519,9 +2526,9 @@ Two design rules show in this signature:
 
 The `@WMSingleton` scope ensures each feature gets exactly one instance
 per Shell. `WMSingleton` is a custom Dagger scope defined in
-`WMSingleton.java` — it is *not* `@Singleton`, because the SysUI side has
-its own `@SysUISingleton`, and the two scopes need to coexist in the same
-process without colliding.
+`WMSingleton.java`. It is *not* `@Singleton`. This is because the SysUI side has its own
+`@SysUISingleton`, and the two scopes need to coexist in the same process
+without colliding.
 
 ### 48.13.3  ShellInterface: The Lifecycle Facade
 
@@ -2553,10 +2560,10 @@ each registered Shell feature.
 
 This shape means the Shell does not poll SystemUI; SystemUI *pushes*
 state changes. The SysUI-side adapter is `com.android.systemui.wmshell.WMShell`,
-a `@SysUISingleton CoreStartable` whose `start()` method wires every
-SystemUI signal SystemUI emits — `KeyguardStateController`,
-`WakefulnessLifecycle`, `ConfigurationController`, `UserTracker`,
-`CommandQueue` — to the corresponding `ShellInterface` method.
+a `@SysUISingleton CoreStartable`. Its `start()` method wires every
+SystemUI signal to the corresponding `ShellInterface` method. The signals
+come from `KeyguardStateController`, `WakefulnessLifecycle`,
+`ConfigurationController`, `UserTracker`, and `CommandQueue`.
 
 ### 48.13.4  ShellInit: Ordered Initialization
 
@@ -2607,18 +2614,18 @@ ProtoLog (see 48.13.10) so regressions in Shell start-up cost show up in
 traces.
 
 In debug builds, adding a callback after `init()` throws. This is a
-deliberate guard: late init usually means a feature got constructed
-through lazy injection on the main thread instead of at component
-build-time, which would defeat the dependency-ordered startup.
+deliberate guard. Late init usually means a feature got constructed through
+lazy injection on the main thread, instead of at component build-time. That would
+defeat the dependency-ordered startup.
 
 ### 48.13.5  ShellTaskOrganizer: The Bridge to WindowManager
 
-Shell features need to *observe* and *manipulate* the system's task tree:
-PIP needs to know when a task enters picture-in-picture mode,
-split-screen needs to reparent tasks under its divider, transitions need
+Shell features need to *observe* and *manipulate* the system's task tree.
+PIP needs to know when a task enters picture-in-picture mode.
+Split-screen needs to reparent tasks under its divider. Transitions need
 to inspect what just appeared. `system_server`'s
 `ActivityTaskManagerService` exposes that observation surface through the
-`TaskOrganizer` API, and `ShellTaskOrganizer` is the Shell's single
+`TaskOrganizer` API. `ShellTaskOrganizer` is the Shell's single
 implementation of it:
 
 ```java
@@ -2684,7 +2691,7 @@ Each subpackage owns its model, its UI (often a Compose or View tree
 that renders inside a Shell-owned window), and its public interface in
 `WMComponent`. Cross-package interactions go through Shell-internal
 contracts (`Transitions`, `ShellTaskOrganizer` listeners,
-`ShellController` callbacks) rather than direct calls — the same
+`ShellController` callbacks) rather than direct calls. The same
 isolation discipline that keeps `WMComponent`'s surface minimal applies
 inside the library too.
 
@@ -2692,11 +2699,11 @@ inside the library too.
 
 The same `WMComponent` interface is satisfied by different Dagger
 modules depending on the build target. The largest module is
-`WMShellModule` (~phone/tablet/foldable behaviour); TV builds substitute
-`TvWMShellModule`, which includes `TvPipModule` (TV-specific PIP) and
+`WMShellModule` (~phone/tablet/foldable behavior). TV builds substitute
+`TvWMShellModule`. It includes `TvPipModule` (TV-specific PIP) and
 overrides two providers with TV implementations: the starting-window type
 algorithm (`TvStartingWindowTypeAlgorithm`) and the split-screen controller
-(`TvSplitScreenController`) -- it substitutes TV variants rather than
+(`TvSplitScreenController`). It substitutes TV variants rather than
 disabling features. The TV variant is selected through `TvWMComponent`:
 
 ```blueprint
@@ -2705,22 +2712,20 @@ disabling features. The TV variant is selected through `TvWMComponent`:
 //   TvWMComponent     includes TvWMShellModule
 ```
 
-A SystemUI build picks one or the other based on its product flavour.
+A SystemUI build picks one or the other based on its product flavor.
 Wear and Auto plug in their own variants the same way. OEMs that ship a
 custom form factor (Chromebook, AR headset, …) typically add another
-Subcomponent rather than forking the Shell library, because every
-variant still benefits from upstream feature work going into the base
-`WMShellModule`.
+Subcomponent rather than forking the Shell library. This is because every variant still
+benefits from upstream feature work going into the base `WMShellModule`.
 
 The base module `WMShellBaseModule` is shared across variants (the
-phone/tablet `WMShellModule` is larger still): it binds the transports
-(`ShellExecutor`,
-`HandlerThread`, `Choreographer`), the cross-cutting services
-(`ShellInit`, `ShellController`, `ShellCommandHandler`,
-`ProtoLogController`, `ShellTaskOrganizer`, `Transitions`,
-`DisplayController`), and a long list of providers for things every form
-factor needs (back animation, drag-and-drop, splash screens, IME
-position tracking).
+phone/tablet `WMShellModule` is larger still). It binds the transports
+(`ShellExecutor`, `HandlerThread`, `Choreographer`). It also binds the
+cross-cutting services (`ShellInit`, `ShellController`,
+`ShellCommandHandler`, `ProtoLogController`, `ShellTaskOrganizer`,
+`Transitions`, `DisplayController`). Finally, it binds a long list of
+providers for things every form factor needs (back animation,
+drag-and-drop, splash screens, IME position tracking).
 
 ### 48.13.8  Transitions: Driving Animations from Shell
 
@@ -2732,10 +2737,11 @@ implementation* into Shell, while `system_server` still owns the
 `com.android.wm.shell.transition.Transitions`:
 
 - `system_server` calls `ITransitionPlayer#onTransitionReady(...)` over
-  Binder -- the player interface that Shell's `Transitions` registers with
-  `WindowOrganizer` -- handing the Shell a `TransitionInfo` that lists the
-  windows appearing / disappearing / changing.  (`IShellTransitions` is the
-  separate interface Shell *exports* for registering remote transitions.)
+  Binder. This is the player interface that Shell's `Transitions` registers
+  with `WindowOrganizer`. The call hands the Shell a `TransitionInfo` that
+  lists the windows appearing / disappearing / changing.  (`IShellTransitions`
+  is the separate interface Shell *exports* for registering remote
+  transitions.)
 - `Transitions` matches the info against registered `TransitionHandler`s
   in priority order. The first handler that accepts becomes the animator
   for that transition.
@@ -2750,9 +2756,9 @@ divider drag, desktop window animate, predictive back) registers its own
 the fallback when nothing else handles the transition.
 
 `ShellTransitions` is the small interface SystemUI receives through
-`WMComponent` (`getShellTransitions()`); it exposes only the hooks that
+`WMComponent` (`getShellTransitions()`). It exposes only the hooks that
 SystemUI needs (e.g. registering its own handlers for shade and keyguard
-animations) and hides the internals.
+animations). It hides the internals.
 
 ### 48.13.9  TaskView: Embedding a Task in a View
 
@@ -2804,7 +2810,7 @@ java_genrule {
 }
 ```
 
-The build emits two artefacts:
+The build emits two artifacts:
 
 - A `.srcjar` of *rewritten* Shell sources, where each `ProtoLog.v(GROUP, "format", args)`
   becomes a numeric ID plus its arg values, dropping the format string
@@ -2813,11 +2819,11 @@ The build emits two artefacts:
   protobuf-encoded map from log ID back to format string.
 
 This split keeps Shell log statements cheap (one ID + args, no string
-work in the hot path) while still letting `dumpsys` and trace tools
+work in the hot path). It still lets `dumpsys` and trace tools
 reconstruct human-readable lines on demand. Chapter 58's tracing section
-covers ProtoLog in detail; for Shell purposes, the key point is that
-`grep`ing the Shell source for human log text returns the
-*pre-transform* code, which is what developers read and review.
+covers ProtoLog in detail. For Shell purposes, the key point is this: `grep`
+of the Shell source for human log text returns the
+*pre-transform* code. This is the code that developers read and review.
 
 ### 48.13.11  The Jetpack Half (libs/WindowManager/Jetpack)
 
@@ -2834,8 +2840,8 @@ Source: `frameworks/base/libs/WindowManager/Jetpack/src/androidx/window/extensio
 `area/`, `bubble/`, `embedding/`, `layout/`, `util/` subpackages).
 
 The two libraries share a parent directory because they share a domain
-(WindowManager-adjacent client code) and historically share contributors,
-but they are otherwise independent: the Shell runs inside SystemUI; the
+(WindowManager-adjacent client code) and historically share contributors.
+They are otherwise independent. The Shell runs inside SystemUI. The
 Jetpack extensions library is loaded into each app's process via the
 extensions discovery API.
 
@@ -2895,14 +2901,17 @@ change into the corresponding `ShellInterface` / per-feature method
 
 ## 48.14  Low-Light Dream Library
 
-Sections 48.5 and (later) 48.15 mention the `DREAMING` keyguard state — the
-period where a `DreamService` (Android's screensaver mechanism, often called
-a *daydream*) is showing on top of the lock screen. The system dream is
-chosen by `DreamManagerService`, but on form factors that want to switch to
-a *different* dream in low ambient light — typically a dim, clock-only
-screensaver on a smart display, tablet, or Hub — the choice is mediated by
-a small library at `frameworks/base/libs/dream/lowlight/`, packaged as
-`LowLightDreamLib` and linked into SystemUI variants that need it.
+Sections 48.5 and (later) 48.15 mention the `DREAMING` keyguard state. This
+is the period where a `DreamService` (Android's screensaver mechanism, often
+called a *daydream*) is showing on top of the lock screen. The system dream
+is chosen by `DreamManagerService`.
+
+Some form factors want to switch to
+a *different* dream in low ambient light. A typical case is a dim,
+clock-only screensaver on a smart display, tablet, or Hub. On these form
+factors, a small library mediates the choice. The library is at
+`frameworks/base/libs/dream/lowlight/`, packaged as
+`LowLightDreamLib`. It is linked into SystemUI variants that need it.
 
 This section walks through the library's surface, the state machine it
 implements, and how SystemUI consumes it from its `lowlight/` package.
@@ -3007,21 +3016,21 @@ Three details worth noting:
 - **The animation is awaited, not raced.** The `coroutineScope.launch`
   blocks on the coordinator's `waitForLowLightTransitionAnimation`
   before swapping dreams. The swap happens *after* the host's enter/exit
-  animator completes — so a SystemUI Compose animation runs first, then
+  animator completes. So a SystemUI Compose animation runs first, then
   the dream cuts. The `CancellationException` branch deliberately falls
-  through to still call `setSystemDreamComponent`, so a "wake while
+  through to still call `setSystemDreamComponent`. So a "wake while
   transitioning" still leaves the system in a coherent state instead of
   half-transitioned.
 
 The `WRITE_DREAM_STATE` annotation reflects the underlying
-`DreamManagerService` permission: only the system UID and apps holding
+`DreamManagerService` permission. Only the system UID and apps holding
 `android.permission.WRITE_DREAM_STATE` (a signature-or-system
-permission) can call this method, which matches the SystemUI process
+permission) can call this method. This matches the SystemUI process
 profile.
 
 ### 48.14.3  LowLightTransitionCoordinator: Letting the Host Animate First
 
-A naked dream swap looks abrupt — the screen would cut from the regular
+A naked dream swap looks abrupt. The screen would cut from the regular
 dream (or the lock screen wallpaper) to the low-light dream with no
 fade. `LowLightTransitionCoordinator` lets the host register *one*
 enter listener and *one* exit listener, each of which returns an
@@ -3054,7 +3063,7 @@ Two design choices stand out:
   multiple subsystems would race in ways the dream swap can't recover
   from. The host picks one orchestrator (usually a
   `lowlightclock` UI controller in the SystemUI variant that owns the
-  low-light surface) and that orchestrator is responsible for fanning
+  low-light surface). That orchestrator is responsible for fanning
   out internally.
 - **Returning `null` means "no animation, swap immediately."** The
   helper resumes the continuation synchronously when the listener
@@ -3062,14 +3071,14 @@ Two design choices stand out:
   extra event-loop hop.
 
 The 2000ms default timeout (`config_lowLightTransitionTimeoutMs`) is a
-floor: a stuck animation cannot block the dream forever, and
+floor. A stuck animation cannot block the dream forever.
 `setAmbientLightMode` logs the timeout and proceeds with the swap.
 
 ### 48.14.4  Dagger Wiring on the Host Side
 
 A SystemUI variant that wants the library injects a
-`LowLightDreamComponent.Factory` from its top-level component and
-provides the two values the library can't know: the system
+`LowLightDreamComponent.Factory` from its top-level component. The variant
+also provides the two values the library cannot know: the system
 `DreamManager` and the dream `ComponentName?`.
 
 ```kotlin
@@ -3110,9 +3119,9 @@ object LowLightDreamModule {
 
 `@Named(LOW_LIGHT_DREAM_COMPONENT)` is the key seam. A product that
 defines a low-light dream points the binding at e.g.
-`com.example.systemui/.LowLightDream`; a product that does not want one
+`com.example.systemui/.LowLightDream`. A product that does not want one
 binds `null`, and `LowLightDreamManager.setAmbientLightMode` becomes a
-no-op. The library compiles into every SystemUI flavour either way.
+no-op. The library compiles into every SystemUI flavor either way.
 
 ### 48.14.5  Consumption Path: SystemUI's lowlight Package
 
@@ -3122,7 +3131,7 @@ subscribes to the device light sensor and a debounce algorithm to
 classify ambient light as `AMBIENT_LIGHT_MODE_LIGHT`,
 `AMBIENT_LIGHT_MODE_DARK`, or `AMBIENT_LIGHT_MODE_UNDECIDED`.
 `LowLightBehaviorCoreStartable` is the `CoreStartable` that ties that
-signal together with keyguard, dock, and power state; when low-light
+signal together with keyguard, dock, and power state. When low-light
 behavior calls for the low-light dream, `LowLightClockDreamAction`
 (in `lowlightclock/`) invokes
 `lowLightDreamManager.setAmbientLightMode(mode)`. The library handles
@@ -3158,8 +3167,8 @@ The library is intentionally agnostic about *what* the low-light dream
 shows. In practice these are minimal, dim, mostly-static surfaces —
 common patterns are a low-brightness clock, an album-art screensaver,
 or a date/weather panel. The point of swapping at the `DreamService`
-level instead of inside one dream is composition: the regular dream
-can be a third-party screensaver picked by the user, while the
+level instead of inside one dream is composition. The regular dream
+can be a third-party screensaver picked by the user. The
 low-light dream is a system-controlled, high-contrast,
 low-power-budget surface. The library is the bridge that lets a SystemUI
 variant flip between them without forcing every dream to implement
@@ -3167,7 +3176,7 @@ its own dim mode.
 
 For the broader screensaver / `DreamService` architecture (DreamManagerService,
 `DreamOverlayService`, doze + AOD interaction), see Chapter 48 §48.5
-(Lock Screen) and §48.15 (Keyguard Deep Dive), which trace the
+(Lock Screen) and §48.15 (Keyguard Deep Dive). Those sections trace the
 `DREAMING` state through the keyguard state machine.
 
 ### 48.14.7  Key Source Files Reference (LowLightDreamLib)
@@ -3189,7 +3198,7 @@ For the broader screensaver / `DreamService` architecture (DreamManagerService,
 
 Section 48.5 introduced the lock screen architecture.  This section explores
 the internal state machine, biometric unlock modes, bouncer flow, AOD
-transitions, and the MVI modernisation in much greater detail, drawing on the
+transitions, and the MVI modernization in much greater detail.  It uses the
 full keyguard source tree.
 
 ### 48.15.1  Keyguard State Machine
@@ -3262,8 +3271,8 @@ stateDiagram-v2
 ```
 
 States marked `@Deprecated` (`DREAMING`, `PRIMARY_BOUNCER`, `GLANCEABLE_HUB`,
-`GONE`, `OCCLUDED`) are being replaced by the Scene Container framework, which
-maps them to scenes and overlays and manages transitions through
+`GONE`, `OCCLUDED`) are being replaced by the Scene Container framework.  The
+framework maps them to scenes and overlays.  It manages transitions through
 `SceneTransitionLayout` (section 48.16).
 
 ### 48.15.2  Awake vs Asleep State Classification
@@ -3285,8 +3294,8 @@ management:
 | OCCLUDED | X | |
 | UNDEFINED | X | |
 
-This classification drives the `ThemeOverlayController` deferred-colour
-logic (section 48.12.6) and various power-dependent behaviours.
+This classification drives the `ThemeOverlayController` deferred-color
+logic (section 48.12.6) and various power-dependent behaviors.
 
 ### 48.15.3  KeyguardTransitionInteractor
 
@@ -3403,8 +3412,8 @@ enum class BiometricUnlockMode {
 ```
 
 Android 17 renamed the older `WAKE_AND_UNLOCK*` / `UNLOCK_COLLAPSING` constants
-to the `WAKE_AND_DISMISS*` / `DISMISS` family and split the no-auth-needed cases
-into `*_UNLOCKED` variants, so the enum now has ten values rather than the
+to the `WAKE_AND_DISMISS*` / `DISMISS` family.  It also split the no-auth-needed
+cases into `*_UNLOCKED` variants.  As a result, the enum now has ten values rather than the
 earlier eight.  The mode determines the keyguard state transition:
 
 ```mermaid
@@ -3528,7 +3537,7 @@ sequenceDiagram
     FADE->>DSC: Wake screen
 ```
 
-Doze parameters control AOD behaviour:
+Doze parameters control AOD behavior:
 
 - **DozeParameters.getAlwaysOn()** -- whether AOD is enabled
 - **DozeParameters.shouldControlScreenOff()** -- animation vs immediate off
@@ -3537,7 +3546,7 @@ Doze parameters control AOD behaviour:
 
 ### 48.15.9  KeyguardRepository -- The Data Layer
 
-The `KeyguardRepository` interface centralises all keyguard state:
+The `KeyguardRepository` interface centralizes all keyguard state:
 
 ```
 frameworks/base/packages/SystemUI/src/com/android/systemui/keyguard/data/repository/
@@ -3650,9 +3659,9 @@ Scene framework -- known internally by its codename **flexiglass** -- is the
 single largest architectural change in Android 17 SystemUI.  It replaces the
 hand-written swipe, expansion, and state-machine code in
 `NotificationPanelViewController`, `CentralSurfacesImpl`, and
-`StatusBarKeyguardViewManager` with a declarative Compose model: the lock
-screen, shade, quick settings, and bouncer become *scenes* and *overlays* laid
-out by a `SceneTransitionLayout`.
+`StatusBarKeyguardViewManager` with a declarative Compose model.  In this
+model, the lock screen, shade, quick settings, and bouncer become *scenes* and
+*overlays* laid out by a `SceneTransitionLayout`.
 
 ### 48.16.1  Scenes, Overlays, and Scene Families
 
@@ -3695,7 +3704,7 @@ layouts:
 | Split | Large screens / unfolded foldables | `Shade` scene with notifications + QS side by side |
 | Dual | Large screens (dual-shade flag) | `NotificationsShade` and `QuickSettingsShade` overlays, shown independently |
 
-`Scenes.Gone` is, despite its name, not a visible scene: it represents the
+`Scenes.Gone` is, despite its name, not a visible scene.  It represents the
 absence of any scene-framework content (the device is unlocked and an app owns
 the screen).  Scene *families* (e.g. `SceneFamilies.Home`) are aliases that a
 resolver maps to a concrete scene depending on device state.
@@ -3719,7 +3728,7 @@ data class SceneContainerConfig(
 
 `SceneContainerFrameworkModule` provides the concrete config.  The scene set is
 `Gone`, `Communal`, `Dream`, `Occluded`, `Lockscreen`, and (when not in
-dual-shade mode) `QuickSettings` and `Shade`; the overlay set is
+dual-shade mode) `QuickSettings` and `Shade`.  The overlay set is
 `NotificationsShade`, `QuickSettingsShade`, `Bouncer`, and -- when the
 `StatusBarPopupChips` flag is on -- `QuickActions`.
 
@@ -3742,11 +3751,11 @@ fun SceneTransitionLayout(
 )
 ```
 
-The library is independent of SystemUI; it owns the swipe gesture detection
-(`SwipeToScene`, `DraggableHandler`, `SwipeAnimation`), the predictive-back
-handler (`PredictiveBackHandler`), shared-element animation across scenes
-(`SharedElement`, `MovableElement`), and the transition DSL (`TransitionDsl`)
-that describes how to animate from one scene to another.  SystemUI's own scene
+The library is independent of SystemUI.  It owns the swipe gesture detection
+(`SwipeToScene`, `DraggableHandler`, `SwipeAnimation`) and the predictive-back
+handler (`PredictiveBackHandler`).  It also owns shared-element animation across
+scenes (`SharedElement`, `MovableElement`) and the transition DSL
+(`TransitionDsl`) that describes how to animate from one scene to another.  SystemUI's own scene
 composables (`SceneContainer`, `GoneScene`, `Overlay`, `SceneContainerTransitions`)
 live in `compose/features/src/com/android/systemui/scene/ui/composable/`.
 
@@ -3803,10 +3812,10 @@ class SceneInteractor @Inject constructor(/* ... */) {
 ```
 
 `changeScene` requests an *animated* transition; `snapToScene` jumps instantly.
-`transitionState` is a Compose snapshot-state `TransitionState`; the deprecated
+`transitionState` is a Compose snapshot-state `TransitionState`.  The deprecated
 `transitionStateFlow` companion exposes an `ObservableTransitionState` that is
-either `Idle(scene)` or `Transition(fromScene, toScene, progress)` -- the same
-shape the `compose/scene` library consumes to drive its animations.  Reads of
+either `Idle(scene)` or `Transition(fromScene, toScene, progress)`.  The
+`compose/scene` library consumes the same shape to drive its animations.  Reads of
 the current scene as a Compose `State` (`currentSceneAsState`) let composables
 recompose as the scene changes.
 
@@ -3849,7 +3858,7 @@ Each `hydrate*` method wires one slice of state:
   handler so the system back gesture moves between scenes correctly.
 
 This is what lets `KeyguardState.mapToSceneContainerContent()` (section 48.15.10)
-translate the legacy keyguard state machine into scene/overlay keys: the
+translate the legacy keyguard state machine into scene/overlay keys.  The
 keyguard transition interactors still run, and `SceneContainerStartable` projects
 their output onto the scene container.
 
@@ -3874,10 +3883,10 @@ object SceneContainerFlag {
 framework off regardless of the aconfig flag, set early in the `Application`
 constructor.  Throughout the codebase, refactored call sites use
 `SceneContainerFlag.isUnexpectedlyInLegacyMode()` / `assertInLegacyMode()` guards
-so that legacy and new paths cannot silently both run.  Because the flag is not
-yet enabled by default on phones, the legacy controllers documented earlier in
-this chapter remain the shipping code path in Android 17, with the scene
-framework running ahead of them behind the flag.
+so that legacy and new paths cannot silently both run.  The flag is not
+yet enabled by default on phones.  So the legacy controllers documented earlier
+in this chapter remain the shipping code path in Android 17.  The scene
+framework runs ahead of them behind the flag.
 
 ### 48.16.7  Key Source Paths (Scene Framework)
 
@@ -4055,7 +4064,7 @@ multibinding.  In the relevant tile Dagger module (e.g. `QSModule` /
 abstract QSTileImpl<?> bindCaffeineTile(CaffeineTile tile);
 ```
 
-No factory edit is required; the map is assembled from every `@IntoMap`
+No factory edit is required.  The map is assembled from every `@IntoMap`
 binding.
 
 ### 48.17.3  Step 3: Add Drawable Resources
@@ -4217,12 +4226,12 @@ every system-level UI surface on Android.  This chapter covered:
 
 The codebase is transitioning from monolithic controllers to a layered
 data/domain/UI architecture with Dagger DI, Kotlin coroutines, and Jetpack
-Compose.  Key modernisation efforts in Android 17 include:
+Compose.  Key modernization efforts in Android 17 include:
 
 - **Scene framework ("flexiglass")** -- replacing `CentralSurfacesImpl` and
   `NotificationPanelViewController` with a Compose `SceneTransitionLayout` of
   scenes and overlays (`SceneContainerFlag`, section 48.16)
-- **`pods/` modularisation** -- extracting feature modules (scene, shade, qs,
+- **`pods/` modularization** -- extracting feature modules (scene, shade, qs,
   statusbar, notifications, ...) into independently buildable Soong modules
 - **Home status bar pipeline** -- replacing `CollapsedStatusBarFragment` with an
   MVVM `HomeStatusBarViewModel` / `HomeStatusBarViewBinder`

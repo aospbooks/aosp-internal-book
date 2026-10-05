@@ -20,18 +20,20 @@ Chapters 51–53.
 
 Android has evolved from a platform that merely _runs_ apps into one that
 _understands_ them. A constellation of on-device intelligence services now
-connects user intent to app behavior: the **AppFunctions** framework lets
-assistants invoke arbitrary app functionality through a typed RPC contract;
-**Computer Control** gives AI agents a virtual display they can tap, swipe,
-and screenshot; **OnDeviceIntelligence** runs large ML models -- LLMs and other
-generative or large inference workloads -- in an isolated sandbox; and
-**NNAPI** exposes hardware accelerators to any native workload. Together with AppSearch, Content Capture, AdServices, and Federated
+connects user intent to app behavior.
+
+The **AppFunctions** framework lets assistants invoke arbitrary app
+functionality through a typed RPC contract. **Computer Control** gives AI agents
+a virtual display they can tap, swipe, and screenshot. **OnDeviceIntelligence**
+runs large ML models -- LLMs and other generative or large inference workloads
+-- in an isolated sandbox. **NNAPI** exposes hardware accelerators to any native
+workload. Together with AppSearch, Content Capture, AdServices, and Federated
 Learning, these subsystems form Android's AI nervous system.
 
-This chapter traces every layer -- from the public SDK class down through AIDL
-interfaces, into the system\_server service implementation, and out to the
-sandboxed or HAL process on the far side. Every code path is backed by real
-source files in the current AOSP tree.
+This chapter traces every layer. It starts at the public SDK class and goes down
+through AIDL interfaces. It continues into the system\_server service
+implementation and out to the sandboxed or HAL process on the far side. Real source files in the
+current AOSP tree back every code path.
 
 ---
 
@@ -140,7 +142,7 @@ Several architectural themes recur across every AI subsystem:
    processes. `OnDeviceSandboxedInferenceService` declares
    `android:isolatedProcess="true"`. `IsolatedTrainingService` loads TFLite in
    a separate process. Even `ComputerControlSession` operates through a virtual
-   display that is separated from the default display.
+   display that is separate from the default display.
 
 2. **Typed contracts over open-ended Bundles.** AppFunctions uses
    `GenericDocument` (from AppSearch) as its parameter wire format. ODI uses
@@ -170,24 +172,24 @@ Several architectural themes recur across every AI subsystem:
 The AppFunctions framework, introduced as a beta feature in Android 16, reaches
 broad availability in Android 17. It provides a standardized mechanism for AI
 assistants (agents) to discover and invoke functionality exposed by arbitrary
-apps (targets). An assistant can say "save XYZ into my notes" and the framework
-routes the request to the appropriate `AppFunctionService` implementation
-without the assistant needing any compile-time dependency on the note-taking
+apps (targets). An assistant can say "save XYZ into my notes". The framework
+routes the request to the appropriate `AppFunctionService` implementation.
+The assistant has no compile-time dependency on the note-taking
 app.
 
 Android 17 grows the framework well beyond the original static, manifest-only
 model. The headline additions, each detailed later in this chapter, are:
 
 - **Runtime (dynamic) function registration**: an app can register an
-  `AppFunction` callback at runtime from an `Activity` or `Service` instead of
-  declaring a separate `AppFunctionService` component (`registerAppFunction`,
+  `AppFunction` callback at runtime from an `Activity` or `Service`. The app
+  does not declare a separate `AppFunctionService` component (`registerAppFunction`,
   guarded by `FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS`).
 - **First-class discovery, state, and observation APIs** moved onto
   `AppFunctionManager`: `searchAppFunctions`, `getAppFunctionStates`,
   `getAppFunctionActivityStates`, and `observeAppFunctions`.
-- **An access-management framework**: per (agent, target) access state and
-  flags, a user-facing management UI, and a signed agent allowlist served by the
-  platform `AllowlistManager` rather than a `DeviceConfig` string.
+- **An access-management framework**: it has per (agent, target) access state
+  and flags, a user-facing management UI, and a signed agent allowlist. The
+  platform `AllowlistManager` serves the allowlist, not a `DeviceConfig` string.
 - **New permissions**: `DISCOVER_APP_FUNCTIONS` (discovery without execution)
   and `EXECUTE_APP_FUNCTIONS_SYSTEM` (privileged system agents that bypass the
   allowlist), alongside the original `EXECUTE_APP_FUNCTIONS`.
@@ -353,9 +355,9 @@ The enabled state is persisted in AppSearch as an
 `setAppFunctionEnabled` applies **only** to functions backed by a static
 `AppFunctionService` component. Runtime functions registered via
 `registerAppFunction` (51.2.x) are enabled exactly while their registration is
-live, so their enabled state is governed by `registerAppFunction` /
-`AppFunctionRegistration.unregister` rather than this method; calling it for a
-runtime-registered function throws `IllegalArgumentException`.
+live. Their enabled state is governed by `registerAppFunction` /
+`AppFunctionRegistration.unregister`, not by this method. A call to this
+method for a runtime-registered function throws `IllegalArgumentException`.
 
 Android 17 also exposes the full runtime state, not just the enabled bit. The
 `AppFunctionState` parcelable
@@ -395,10 +397,10 @@ defined in `AppFunctionManager` (`ACCESS_FLAG_*`):
 
 In Android 17 the agent allowlist is no longer a `DeviceConfig` string. It is
 served by the platform `AllowlistManager`
-(`frameworks/base/core/java/android/os/allowlist/AllowlistManager.java`), which
-maps a signed agent package to the set of target packages it may access (a
-`SignedPackage` keyed by package name plus certificate digest, with a wildcard
-target for "all targets"). The AppFunctions service reads it through
+(`frameworks/base/core/java/android/os/allowlist/AllowlistManager.java`). It
+maps a signed agent package to the set of target packages it
+may access. A `SignedPackage` is keyed by package name plus certificate digest,
+with a wildcard target for "all targets". The AppFunctions service reads it through
 `SystemAppFunctionAllowlistReader`
 (`frameworks/base/services/appfunctions/.../allowlist/SystemAppFunctionAllowlistReader.java`),
 which caches per-agent results in an `LruCache`:
@@ -418,8 +420,8 @@ public class SystemAppFunctionAllowlistReader implements AppFunctionAllowlistRea
 
 `CallerValidatorImpl` checks both the runtime permission and this allowlist
 before any execution proceeds. An agent holding `EXECUTE_APP_FUNCTIONS_SYSTEM`
-is treated as a privileged system agent and skips the allowlist entirely;
-agents holding only `EXECUTE_APP_FUNCTIONS` must be allowlisted for the target.
+is treated as a privileged system agent and skips the allowlist entirely.
+Agents that hold only `EXECUTE_APP_FUNCTIONS` must be allowlisted for the target.
 
 ### 51.2.5 The AIDL Interfaces
 
@@ -589,9 +591,9 @@ typed wrappers that pack/unpack these documents.
 ### 51.2.8 Attribution and Interaction Logging
 
 Every execution can carry an `AppInteractionAttribution` describing the
-interaction that triggered it. In Android 17 this attribution type was promoted
-out of the appfunctions package into `android.app` so it can be shared with the
-broader App Interaction API, and it is gated by `FLAG_ENABLE_APP_INTERACTION_API`:
+interaction that triggered it. In Android 17 this attribution type moved out of
+the appfunctions package into `android.app`. This lets the broader App
+Interaction API share it. The flag `FLAG_ENABLE_APP_INTERACTION_API` gates it:
 
 ```java
 // frameworks/base/core/java/android/app/AppInteractionAttribution.java
@@ -601,18 +603,18 @@ public static final int INTERACTION_TYPE_USER_QUERY = 1;
 public static final int INTERACTION_TYPE_USER_SCHEDULED = 2;
 ```
 
-An attribution carries the interaction type, an optional custom-type string
-(when the type is `INTERACTION_TYPE_OTHER`), and an optional interaction `Uri`
-that links back to the originating context. The privacy UI uses it to explain to
+An attribution carries the interaction type and an optional custom-type string
+(when the type is `INTERACTION_TYPE_OTHER`). It also carries an optional
+interaction `Uri` that links back to the originating context. The privacy UI uses it to explain to
 the user *why* a function ran.
 
 Rather than persisting a per-call history database, Android 17 records each
 execution to the platform metrics pipeline (statsd). The system server's
 `AppFunctionsLoggerWrapper`
 (`frameworks/base/services/appfunctions/.../AppFunctionsLoggerWrapper.java`)
-runs on a shared background executor and emits a structured event for every
-success or error, normalizing the public attribution constants and tagging the
-function's type:
+runs on a shared background executor. It emits a structured event for every
+success or error. It also normalizes the public attribution constants and tags
+the function's type:
 
 ```java
 // frameworks/base/services/appfunctions/.../AppFunctionsLoggerWrapper.java
@@ -630,10 +632,13 @@ void logAppFunctionSuccess(
         @AppFunctionMetadata.AppFunctionType int appFunctionType) { ... }
 ```
 
-The logged event captures the calling UID, target, the interaction type derived
-from the request's `AppInteractionAttribution`, the function type (static vs.
-dynamic, global vs. activity-scoped), the response code, and the execution
-latency measured from after the service bind completed.
+The logged event captures these values:
+
+- The calling UID and the target.
+- The interaction type, derived from the request's `AppInteractionAttribution`.
+- The function type (static vs. dynamic, global vs. activity-scoped).
+- The response code.
+- The execution latency, measured from after the service bind completed.
 
 ### 51.2.9 Error Handling
 
@@ -717,8 +722,8 @@ The `AppFunctionStaticMetadata` documents themselves are indexed into
 AppSearch by the AppSearch apps-indexer (the schema is owned by
 `com.android.server.appsearch.appsindexer`, per
 `AppFunctionStaticMetadataHelper`). When a package is installed, updated, or
-the device boots, the `MetadataSyncAdapter` *reads* those static documents
-and creates or removes the matching `AppFunctionRuntimeMetadata` documents
+the device boots, the `MetadataSyncAdapter` *reads* those static documents.
+It creates or removes the matching `AppFunctionRuntimeMetadata` documents
 (which carry the per-function enabled state) so the two stay in sync. Agents
 discover functions by querying AppSearch:
 
@@ -797,14 +802,14 @@ This design pattern is essential because:
    The `AtomicBoolean.compareAndSet()` ensures only the first call succeeds.
 
 2. **RemoteException swallowing** -- If the calling process has died by the
-   time the result arrives, the `RemoteException` is logged and swallowed
-   rather than crashing the system server.
+   time the result arrives, the `RemoteException` is logged and
+   swallowed. The system server does not crash.
 
 3. **Completion hooks** -- The `BeforeCompletionCallback` and
-   `CompletionCallback`s allow the system server to perform actions (like
+   `CompletionCallback`s let the system server perform actions (like
    logging, URI grants, and access history recording) around the callback
-   delivery; multiple completion callbacks can be appended onto one wrapper
-   and are invoked in order:
+   delivery. Multiple completion callbacks can be appended onto one wrapper.
+   They are invoked in order:
 
 ```java
     public interface CompletionCallback {
@@ -824,7 +829,8 @@ This design pattern is essential because:
    the system to distinguish binding overhead from execution time.
 
 5. **Disable mechanism** -- The `disable()` method can prevent any further
-   callback delivery, used when the request is cancelled or timed out.
+   callback delivery. It is used when the request is canceled or
+   timed out.
 
 ### 51.2.13 The executeAppFunction Implementation Deep Dive
 
@@ -1070,9 +1076,9 @@ public void onUserStopped(@NonNull TargetUser user) {
 }
 ```
 
-When the dynamic-functions flag is on, the per-user AppSearch observer is owned
-by `AppFunctionMetadataObserver` (which fans changes out both to internal
-metadata caches and to client `observeAppFunctions` callbacks). The runtime
+When the dynamic-functions flag is on, `AppFunctionMetadataObserver` owns the
+per-user AppSearch observer. The observer fans changes out both to internal
+metadata caches and to client `observeAppFunctions` callbacks. The runtime
 registry is keyed by user so that registrations made by one user's processes are
 torn down when that user stops.
 
@@ -1094,8 +1100,9 @@ graph TD
 ```
 
 The reader hashes the agent's latest signing certificate into a `SignedPackage`
-and asks `AllowlistManager` for that agent's valid targets, caching the result
-in an `LruCache` so repeated executions by the same agent skip the IPC:
+and asks `AllowlistManager` for that agent's valid targets. The reader caches
+the result in an `LruCache`, so repeated executions by the same agent skip the
+IPC:
 
 ```java
 // frameworks/base/services/appfunctions/.../allowlist/SystemAppFunctionAllowlistReader.java
@@ -1123,9 +1130,9 @@ Three behaviors are worth noting:
 - **Wildcard targets**: an agent allowlisted with the wildcard package may
   access any target.
 - **Change listening**: on first use the reader registers an
-  `OnAllowlistChangedListener` (request id `ALLOWLIST_ID_APP_FUNCTION`) so cache
-  entries are invalidated when the platform allowlist updates, rather than being
-  reloaded from a config string at boot.
+  `OnAllowlistChangedListener` (request id `ALLOWLIST_ID_APP_FUNCTION`).
+  Cache entries are invalidated when the platform allowlist updates. They are
+  not reloaded from a config string at boot.
 
 ### 51.2.17 URI Grants for AppFunction Responses
 
@@ -1145,8 +1152,8 @@ mPermissionOwner = mUriGrantsManagerInternal.newUriPermissionOwner("appfunctions
 
 The `AppFunctionUriGrant` objects in the response specify which URIs should be
 granted to the agent. The grant is issued through
-`mUriGrantsManager.grantUriPermissionFromOwner(mPermissionOwner, ...)`, tying it
-to the AppFunctions permission owner so the system can revoke it later; the
+`mUriGrantsManager.grantUriPermissionFromOwner(mPermissionOwner, ...)`. This ties
+it to the AppFunctions permission owner, so the system can revoke it later. The
 grants live until the owner releases them or the device reboots.
 
 ### 51.2.18 Shell Command Support
@@ -1172,9 +1179,9 @@ Available via `adb shell cmd app_function`.
 
 The framework is a `SystemService`. `AppFunctionManagerService.onStart()`
 publishes the binder under `Context.APP_FUNCTION_SERVICE` (only when
-`AppFunctionManagerConfiguration.isSupported(context)` is true) and optionally
-publishes the `AppInteractionService` local service when the App Interaction
-API flag is on:
+`AppFunctionManagerConfiguration.isSupported(context)` is true). It also
+publishes the `AppInteractionService` local service, but only when the App
+Interaction API flag is on:
 
 ```java
 // frameworks/base/services/appfunctions/.../AppFunctionManagerService.java
@@ -1192,23 +1199,25 @@ public void onStart() {
 
 Per-user state is set up and torn down through `onUserStarting`,
 `onUserUnlocked`, `onUserStopping`, and `onUserStopped` (51.2.15). The agent
-allowlist is no longer primed at a boot phase; it is fetched lazily from
-`AllowlistManager` on first use and kept fresh by a change listener (51.2.16).
+allowlist is no longer primed at a boot phase. It is fetched lazily from
+`AllowlistManager` on first use. A change listener keeps it fresh (51.2.16).
 
 ---
 
 ## 51.3 Computer Control
 
-Computer Control, which debuted (flag-gated) in Android 16 and was substantially
-expanded and reworked in Android 17, is the framework that lets AI agents
-programmatically interact with applications through a virtual display. Instead
-of requiring apps to implement specific APIs, an agent can launch any app on a
-headless virtual display, observe the screen via screenshots, inject tap/swipe
-events, and read accessibility trees -- the same paradigm used by "computer
-use" AI agents. Because it is built on top of `VirtualDeviceManager`, Computer
-Control's virtual-display, input, and lifecycle machinery is covered in depth in
-Chapter 52 (CompanionDeviceManager and Virtual Devices); this section focuses on
-the agent-facing session API and how it complements AppFunctions.
+Computer Control is the framework that lets AI agents programmatically interact
+with applications through a virtual display. It debuted (flag-gated) in Android
+16 and was substantially expanded and reworked in Android 17. An agent does not
+need apps to implement specific APIs. The agent can launch any app on a headless
+virtual display, observe the screen with screenshots, inject tap/swipe events,
+and read accessibility trees. This is the same paradigm that "computer use" AI
+agents use.
+
+Computer Control is built on top of `VirtualDeviceManager`. For that reason,
+its virtual-display, input, and lifecycle machinery is covered in depth in Chapter
+52 (CompanionDeviceManager and Virtual Devices). This section focuses on the
+agent-facing session API and how it complements AppFunctions.
 
 **Source tree (Android 17):**
 
@@ -1379,9 +1388,9 @@ public void clearStabilityListener();
 ```
 
 Note that in Android 17 the platform session no longer exposes public
-low-level `sendKeyEvent` / `sendTouchEvent` methods: agents drive the UI through
-the gesture API (`tap`, `swipe`, `longPress`, `performAction`) and `insertText`,
-and the session translates these to the underlying `VirtualTouchscreen` /
+low-level `sendKeyEvent` / `sendTouchEvent` methods. Agents drive the UI through
+the gesture API (`tap`, `swipe`, `longPress`, `performAction`) and `insertText`.
+The session translates these to the underlying `VirtualTouchscreen` /
 `VirtualDpad`.
 
 Screenshots are captured through an `ImageReader` whose `Surface` is handed
@@ -1466,8 +1475,8 @@ public interface StabilityListener {
 ```
 
 The platform `ComputerControlAccessibilityProxy` (51.3.27) watches accessibility
-events and a first-frame signal to decide when the display content has settled,
-then invokes the registered `StabilityListener`.
+events and a first-frame signal. It uses them to decide when the display content
+has settled. Then it invokes the registered `StabilityListener`.
 
 ### 51.3.7 Accessibility Integration
 
@@ -1485,9 +1494,9 @@ final class ComputerControlAccessibilityProxy extends AccessibilityDisplayProxy 
 ```
 
 This gives the agent structured information about the UI (view hierarchy,
-content descriptions, bounding boxes) without relying solely on pixel-level
-screenshot analysis, and it doubles as the source of the stability signal
-(51.3.27).
+content descriptions, bounding boxes). The agent does not rely only on
+pixel-level screenshot analysis. The tree also serves as the source of the
+stability signal (51.3.27).
 
 ### 51.3.8 Automated Package Listener
 
@@ -1532,8 +1541,8 @@ inject input events.
 
 In Android 17 the extension library exposes a high-level, gesture-oriented API
 rather than low-level event wrappers. The earlier `TouchEvent` / `KeyEvent`
-wrapper classes and a `sendTouchEvent` path are gone; an agent works in screen
-coordinates and lets the extension translate to platform input:
+wrapper classes and a `sendTouchEvent` path are gone. An agent works in screen
+coordinates, and the extension translates them to platform input:
 
 ```java
 // frameworks/base/libs/computercontrol/.../ComputerControlSession.java
@@ -1544,10 +1553,10 @@ public void longPress(int x, int y);
 public void performAction(@Action int actionCode);  // only ACTION_GO_BACK is defined
 ```
 
-Each call forwards to the platform `ComputerControlSession`, which routes the
-gesture to the session's `VirtualTouchscreen` or `VirtualDpad` and resets the
-stability state so the agent's `StabilityListener` can detect when the UI has
-re-settled (51.3.27).
+Each call forwards to the platform `ComputerControlSession`. That session routes
+the gesture to the session's `VirtualTouchscreen` or `VirtualDpad`. It also
+resets the stability state, so the agent's `StabilityListener` can detect when
+the UI has re-settled (51.3.27).
 
 ### 51.3.11 Text Insertion API
 
@@ -1577,16 +1586,17 @@ public Image getScreenshot();
 ```
 
 Together with the accessibility tree (51.3.7) and the stability signal
-(51.3.27), this completes the perceive-act loop: an agent screenshots, reasons
-about the pixels (and/or the accessibility nodes), acts via `tap`/`swipe`/
-`insertText`, waits for `onSessionStable()`, then screenshots again.
+(51.3.27), this completes the perceive-act loop. An agent takes a screenshot and
+reasons about the pixels (and/or the accessibility nodes). Then it acts with
+`tap`/`swipe`/`insertText`, waits for `onSessionStable()`, and takes a
+screenshot again.
 
 ### 51.3.13 Interactive Mirror and Co-Pilot Pattern
 
 In Android 17 the extension-layer `ComputerControlSession` returns the platform
-`InteractiveMirror` directly rather than wrapping it in a separate type, and the
-extension library ships a `MirrorView` (a `FrameLayout`) that hosts the mirror
-inside an agent's own UI:
+`InteractiveMirror` directly. It does not wrap it in a separate type. The
+extension library also ships a `MirrorView` (a `FrameLayout`) that hosts the
+mirror inside an agent's own UI:
 
 ```java
 // frameworks/base/libs/computercontrol/.../ComputerControlSession.java
@@ -1618,9 +1628,9 @@ public void close() {
 }
 ```
 
-Close is a one-liner that delegates to the platform session; the cleanup —
-including unregistering the accessibility proxy — happens in the session's
-`onClosed` lifecycle callback rather than inside `close()` itself, so the
+Close is a one-liner that delegates to the platform session. The cleanup
+(including the unregistering of the accessibility proxy) happens in the
+session's `onClosed` lifecycle callback and not inside `close()` itself. So the
 same teardown runs whether the agent closed the session or the framework
 did.
 
@@ -1646,16 +1656,16 @@ graph TB
     J -->|No| L["onSessionUnstable(reason)"]
 ```
 
-The agent registers a `StabilityListener` with a chosen timeout `Duration`; the
+The agent registers a `StabilityListener` with a chosen timeout `Duration`. The
 tracker fires `onSessionStable()` once accessibility events and first-frame
-signals stay quiet for that long, and reports `onSessionUnstable(reason)` while
+signals stay quiet for that long. It reports `onSessionUnstable(reason)` while
 the screen is still churning (51.3.27).
 
 ### 51.3.16 Extension Library File Inventory (Android 17)
 
-The extension library was slimmed down in Android 17; the low-level input
-wrappers and the separate idle/stability trackers were removed in favor of the
-platform stability proxy and a gesture-level API:
+The extension library was slimmed down in Android 17. The low-level input
+wrappers and the separate idle/stability trackers were removed. The platform
+stability proxy and a gesture-level API replace them:
 
 | File | Purpose |
 |------|---------|
@@ -1688,9 +1698,10 @@ graph TD
 The extension library described in subsections 51.3.1–51.3.16 is the
 **agent-side** API: the client an agent app links and calls. The
 **system-server side** of Computer Control lives in a sibling package inside
-the VirtualDeviceManager (VDM) service tree and contains the actual session
-state, the policy gates, the binder objects the extension stubs talk to, and
-the integration with the input, display, and accessibility stacks.
+the VirtualDeviceManager (VDM) service tree. It contains the actual session
+state, the policy gates, and the binder objects the extension stubs talk to. It
+also contains the integration with the input, display, and accessibility
+stacks.
 
 **Source tree:**
 
@@ -1707,9 +1718,9 @@ frameworks/base/services/companion/java/com/android/server/companion/virtual/com
 ```
 
 In Android 17 UI-stability detection moved out of a dedicated server-side
-calculator and into the agent-side `ComputerControlAccessibilityProxy`, which
-tracks accessibility events and fires the session's `StabilityListener`
-(51.3.6). The diagram below shows how the extension-side session relates to its
+calculator. It now lives in the agent-side `ComputerControlAccessibilityProxy`.
+The proxy tracks accessibility events and fires the session's
+`StabilityListener` (51.3.6). The diagram below shows how the extension-side session relates to its
 system-server counterparts.
 
 ```mermaid
@@ -1750,11 +1761,11 @@ whether the consent *dialog* is needed:
    `noteOpNoThrow(OP_COMPUTER_CONTROL, request.attributionSource(), ...)`
    (`frameworks/base/services/companion/java/com/android/server/companion/virtual/computercontrol/ComputerControlSessionProcessor.java`).
    `MODE_IGNORED` and `MODE_ERRORED` fail the request outright with
-   `ERROR_PERMISSION_DENIED`. `MODE_ALLOWED` — meaning the user previously
-   chose "Always Allow" for this agent package — skips the consent dialog
-   (subject to the per-target-app consent check when
-   `computer_control_per_app_consent` is on) and proceeds to session
-   creation. Only `MODE_DEFAULT` routes through the consent-dialog flow.
+   `ERROR_PERMISSION_DENIED`. `MODE_ALLOWED` means the user previously chose
+   "Always Allow" for this agent package. It skips the consent dialog (subject
+   to the per-target-app consent check when `computer_control_per_app_consent`
+   is on) and proceeds to session creation. Only `MODE_DEFAULT` routes through
+   the consent-dialog flow.
 2. **Concurrent-session cap.** `checkSessionCreationPreconditionsLocked()`
    first tests the constant `MAXIMUM_CONCURRENT_SESSIONS`
    (`ComputerControlSessionProcessor.java`, currently `1` in Android 17),
@@ -1770,54 +1781,55 @@ whether the consent *dialog* is needed:
    processor launches `RequestComputerControlAccessActivity` via an
    `IntentSender` returned to the agent.
 
-The preconditions in steps 2-4 are not skipped by `MODE_ALLOWED`:
+`MODE_ALLOWED` does not skip the preconditions in steps 2-4.
 `createSession()` unconditionally re-runs
-`checkSessionCreationPreconditionsLocked(request)` before constructing the
-session, so the AppOps result short-circuits only the dialog.
+`checkSessionCreationPreconditionsLocked(request)` before it constructs the
+session. So the AppOps result short-circuits only the dialog.
 
 The class header documents the role explicitly: *"This class enforces session
 creation policies, such as limiting the number of concurrent..."*
 (`ComputerControlSessionProcessor.java`).
 
 Once the policy flow completes successfully, the processor constructs a
-`ComputerControlSessionImpl`, handing it the request and a
-`VirtualDeviceFactory`; it is the session impl's own constructor that
-creates the underlying `VirtualDevice`, the trusted `VirtualDisplay`, and
-the session's virtual input devices (51.3.20). The processor then hands the
+`ComputerControlSessionImpl` and gives it the request and a
+`VirtualDeviceFactory`. The session impl's own constructor creates the
+underlying `VirtualDevice`, the trusted `VirtualDisplay`, and the session's
+virtual input devices (51.3.20). The processor then hands the
 session's binder back to the caller through the original
 `ComputerControlSession.Callback`.
 
 The session limit is global, not per-agent. In Android 17 it is `1`, so the
 framework admits a single Computer Control session at a time. The limit is a
-defensive bound, not a tuning knob — hitting it indicates either an agent-side
-leak (failure to close sessions) or a second agent racing for control that the
-system declines to admit without a deliberate policy change.
+defensive bound, not a tuning knob. If a request hits it, that indicates either
+an agent-side leak (failure to close sessions) or a second agent that races for
+control. The system declines to admit that agent without a deliberate policy
+change.
 
 ### 51.3.20 ComputerControlSessionImpl: The Session Binder
 
 `ComputerControlSessionImpl` is the actual binder object that backs
 `IComputerControlSession.aidl`
 (`frameworks/base/services/companion/java/com/android/server/companion/virtual/computercontrol/ComputerControlSessionImpl.java`).
-It is the largest single file in the Computer Control system-server package,
-but its size is dominated by input routing, parameter validation, and
-lifecycle teardown — not by business logic.
+It is the largest single file in the Computer Control system-server package.
+Input routing, parameter validation, and lifecycle teardown dominate its size,
+not business logic.
 
 Its responsibilities, ordered by lifecycle:
 
 - **Construction.** Receives the session request (with the calling agent's
   attribution and the requested `targetPackageNames` allowlist) and a
-  `VirtualDeviceFactory` from the processor, and in its own constructor
+  `VirtualDeviceFactory` from the processor. In its own constructor it
   creates the `VirtualDevice`, the trusted `VirtualDisplay`, the
   `VirtualDpad`/`VirtualTouchscreen`, and the `VirtualAudioDevice`.
 - **Input dispatch.** Implements `tap`, `swipe`, `longPress`, `insertText`, and
   `performAction` by routing to the appropriate virtual input device or to
   the IME-integration path (51.3.29).
 - **Display surface.** Accepts the client-supplied `Surface` via
-  `initialize()` and renders the virtual display into it; the agent-side
-  session pulls screenshot frames from its own `ImageReader` (51.3.3), so
-  there is no server-side `getScreenshot()` call.
+  `initialize()` and renders the virtual display into it. The agent-side
+  session pulls screenshot frames from its own `ImageReader` (51.3.3). So there
+  is no server-side `getScreenshot()` call.
 - **Application launch.** Implements `launchApplication(packageName)` after
-  checking the package against the session's allowlist; a launch of an
+  checking the package against the session's allowlist. A launch of an
   automated package by someone other than the agent surfaces
   `AutomatedAppLaunchWarningActivity` (51.3.24).
 - **Stability.** Every input dispatch and app launch resets the session's
@@ -1830,17 +1842,17 @@ Its responsibilities, ordered by lifecycle:
   VirtualDevice, and clears the session's row in the
   `AutomatedPackagesRepository`.
 
-The binder-on-binder structure — agent holds an `IComputerControlSession`
-stub, system server holds an `IComputerControlSessionCallback` stub — is the
-standard AOSP pattern; the death-link runs both ways so neither side can
-hold the other's resources after a process exit.
+The binder-on-binder structure is the standard AOSP pattern. The agent holds an
+`IComputerControlSession` stub, and the system server holds an
+`IComputerControlSessionCallback` stub. The death-link runs both ways, so
+neither side can hold the other's resources after a process exit.
 
 ### 51.3.21 Virtual Input Devices: Product IDs and Trusted Display
 
-In Android 17 a Computer Control session owns two virtual input devices, each
-constructed with a fixed product ID in a Computer-Control-reserved product-ID
-range so the input system can distinguish them from physical inputs and from
-other virtual-display sessions:
+In Android 17 a Computer Control session owns two virtual input devices. Each
+has a fixed product ID in a Computer-Control-reserved product-ID range. This
+lets the input system distinguish them from physical inputs and from other
+virtual-display sessions:
 
 | Device | Product ID | Constant | Purpose |
 |--------|-----------|----------|---------|
@@ -1848,25 +1860,25 @@ other virtual-display sessions:
 | Virtual touchscreen | `0xCC03` | `PRODUCT_ID_TOUCHSCREEN` | Tap, swipe, long-press gestures |
 
 The constants are declared in `ComputerControlSessionImpl` (with a fixed
-`VENDOR_ID` of `0x0000`). Note there is no separate virtual keyboard device:
-key events flow through the `VirtualDpad` (`sendKeyEvent`), and rich text entry
+`VENDOR_ID` of `0x0000`). Note there is no separate virtual keyboard device.
+Key events flow through the `VirtualDpad` (`sendKeyEvent`). Rich text entry
 routes through the IME integration path (51.3.29). The `0xCC` prefix carves out
 a Computer-Control-reserved block inside the broader VDM virtual-input
-product-ID space; see Chapter 52 for the generic `VirtualInputDevice` scheme
+product-ID space. See Chapter 52 for the generic `VirtualInputDevice` scheme
 that hosts Computer Control's inputs.
 
 The session's display is a **trusted** `VirtualDisplay` (created with
 `VIRTUAL_DISPLAY_FLAG_TRUSTED | VIRTUAL_DISPLAY_FLAG_ALWAYS_UNLOCKED`).
-After creating it, the session explicitly configures three behaviors that
-distinguish it from a stock virtual display — these are separate calls, not
+After the session creates it, the session explicitly configures three behaviors
+that distinguish it from a stock virtual display. These are separate calls, not
 side effects of the trust flag:
 
 1. **Animations disabled.** `setAnimationsDisabledForDisplay(...)`
-   suppresses system and app animations on this display so the agent's
+   suppresses system and app animations on this display. This means the agent's
    per-action stability detection does not have to wait for animation
-   completion before reading the next state.
+   completion before it reads the next state.
 2. **IME hidden.** `setDisplayImePolicy(displayId, DISPLAY_IME_POLICY_HIDE)`
-   keeps soft keyboards from auto-showing on the display; text input either
+   keeps soft keyboards from auto-showing on the display. Text input either
    uses `VirtualDpad` key events or routes through the IME integration path
    in 51.3.29.
 3. **Focus-stealing disabled.** `setCanStealTopFocusForDisplay(..., false)`
@@ -1909,12 +1921,11 @@ sequenceDiagram
     Ext-->>Agent: callback.onSessionCreated(session)
 ```
 
-The consent step is conditional: an agent that has been granted **Always
-Allow** in a prior session skips the dialog because the AppOps record carries
-that decision forward. The AppOps record is per-package and per-user, so
-revoking via Settings sends the next request back through the dialog path
-without the agent noticing on the request itself — the agent simply observes
-the dialog appear or not.
+The consent step is conditional. An agent with **Always Allow** granted in a
+prior session skips the dialog, because the AppOps record carries that decision
+forward. The AppOps record is per-package and per-user. So revoking via Settings
+sends the next request back through the dialog path. The agent does not notice
+this on the request itself. It simply observes the dialog appear or not.
 
 Once `onSessionCreated` fires, the agent owns a binder it can call repeatedly
 without round-tripping through the processor. Each input call goes
@@ -1942,8 +1953,8 @@ implementing robust retry logic distinguishes them by behavior:
 - `ERROR_SESSION_LIMIT_REACHED` is transient — wait and retry.
 - `ERROR_DEVICE_LOCKED` is user-blocked — prompt the user to unlock; retry
   on screen-on.
-- `ERROR_PERMISSION_DENIED` is durable for the request — escalate to the user
-  through the agent's own UX before requesting again, and consider that
+- `ERROR_PERMISSION_DENIED` is durable for the request. Escalate to the user
+  through the agent's own UX before the agent requests again. Note that
   re-requesting too aggressively will surface to the user as harassment.
 
 The device-locked gate is checked at creation, not maintained for the session
@@ -1956,9 +1967,9 @@ behavior and break agents that legitimately span a brief screen-off.
 
 The per-session consent dialog is `RequestComputerControlAccessActivity`
 (`frameworks/base/packages/VirtualDeviceManager/src/com/android/virtualdevicemanager/RequestComputerControlAccessActivity.java`).
-It is a platform-signed activity inside the VDM platform package that the
-agent cannot launch directly; it is launched only via the `IntentSender`
-returned by the processor when consent is missing.
+It is a platform-signed activity inside the VDM platform package. The agent
+cannot launch it directly. It is launched only via the `IntentSender` that the
+processor returns when consent is missing.
 
 The dialog presents three choices:
 
@@ -1974,20 +1985,22 @@ The activity carries `android:filterTouchesWhenObscured="true"` — the same
 anti-tapjacking flag used by `RequestPermissionActivity` — so that an overlay
 window cannot pass touches through to the consent buttons. This matters
 because a Computer Control consent grant is particularly attractive to a
-tapjacking adversary: a successful grant gives the adversary's agent the
-ability to drive the user's other apps from inside a sanctioned session.
+tapjacking adversary. A successful grant lets the adversary's agent drive the
+user's other apps from inside a sanctioned session.
 
-When the *user or another app* launches a package that a Computer Control
-session is currently driving, the system surfaces
+Consider the case where the *user or another app* launches a package that a
+Computer Control session is currently driving. Then the system surfaces
 `AutomatedAppLaunchWarningActivity`
-(`frameworks/base/packages/VirtualDeviceManager/src/com/android/virtualdevicemanager/AutomatedAppLaunchWarningActivity.java`)
-to warn them that the app is under automation, naming the automating package
-and offering to stop the automation. The warning is deliberately suppressed
-when the agent itself initiates the launch —
+(`frameworks/base/packages/VirtualDeviceManager/src/com/android/virtualdevicemanager/AutomatedAppLaunchWarningActivity.java`).
+It warns them that the app is under automation. The warning names the automating
+package and offers to stop the automation.
+
+The warning is deliberately
+suppressed when the agent itself initiates the launch.
 `AutomatedPackagesRepository.createAutomatedAppLaunchWarningIntent()` returns
-no intent when the calling package is the session's own device owner — so it
-protects the user from unknowingly stepping into an automated app, not from
-the agent's sanctioned launches.
+no intent when the calling package is the session's own device owner. So the
+warning protects the user from unknowingly stepping into an automated app. It
+does not apply to the agent's sanctioned launches.
 
 ### 51.3.25 AppOps and Per-Session Tracking
 
@@ -2006,16 +2019,16 @@ AppOps records grants with a mode (`MODE_ALLOWED`, `MODE_IGNORED`,
 session creation calls
 `noteOpNoThrow(OP_COMPUTER_CONTROL, request.attributionSource(), ...)`
 in `ComputerControlSessionProcessor`. The result determines the
-next step: `MODE_IGNORED` and `MODE_ERRORED` fail the request outright with
-`ERROR_PERMISSION_DENIED`; `MODE_ALLOWED` skips the consent dialog (subject
+next step. `MODE_IGNORED` and `MODE_ERRORED` fail the request outright with
+`ERROR_PERMISSION_DENIED`. `MODE_ALLOWED` skips the consent dialog (subject
 to the per-target-app consent check when `computer_control_per_app_consent`
-is on); only `MODE_DEFAULT` routes through the consent-dialog flow. The
-preconditions — concurrent-session cap, cross-device auth, keyguard, and the
-visible-window check — are evaluated in `createSession()` regardless of the
-mode. The no-throw variant
-returns the mode as an int instead of throwing `SecurityException`, which
-is the right shape for a router that branches on the result rather than
-bailing out.
+is on). Only `MODE_DEFAULT` routes through the consent-dialog flow.
+
+The preconditions are evaluated in `createSession()` regardless of the mode. They
+are the concurrent-session cap, cross-device auth, keyguard, and the
+visible-window check. The no-throw variant returns the mode as an int instead
+of throwing `SecurityException`. This is the right shape for a router that
+branches on the result rather than bailing out.
 
 This is the same machinery used for sensitive ops like `OP_CAMERA`,
 `OP_RECORD_AUDIO`, and `OP_FINE_LOCATION`. Treating Computer Control as an
@@ -2032,59 +2045,61 @@ out:
 The matching permission `android.permission.ACCESS_COMPUTER_CONTROL`
 (`frameworks/base/core/res/AndroidManifest.xml`) has protection level
 `internal|privileged` and is itself gated by the
-`android.companion.virtualdevice.flags.computer_control_access` feature flag,
-meaning only privileged (preinstalled) agents can *request* a Computer Control
-session in the first place. The AppOps layer adds the per-grant user-facing
-control on top of that platform-level gate; the two together implement defense
-in depth: a non-privileged third-party app cannot even ask, and a privileged
-agent cannot grant itself.
+`android.companion.virtualdevice.flags.computer_control_access` feature flag.
+This means only privileged (preinstalled) agents can *request* a Computer
+Control session in the first place. The AppOps layer adds the per-grant
+user-facing control on top of that platform-level gate. The two together
+implement defense in depth. A non-privileged third-party app cannot even ask,
+and a privileged agent cannot grant itself.
 
 ### 51.3.26 Anti-Tampering Mechanisms
 
-The threat model around Computer Control assumes a malicious app could
-attempt to (a) trick a user into granting Computer Control consent, (b)
-hijack an already-granted session, or (c) ride a granted session into apps
-the user did not intend to expose. The framework defends each with a
-distinct mechanism:
+The threat model around Computer Control assumes that a malicious app could
+attempt three attacks. Attack (a) tricks a user into granting Computer
+Control consent. Attack (b) hijacks an already-granted session. Attack (c)
+rides a granted session into apps the user did not intend to expose. The
+framework defends each with a distinct mechanism:
 
 1. **FilterTouches on consent activities.** Both
    `RequestComputerControlAccessActivity` and
    `AutomatedAppLaunchWarningActivity` are declared with a FilterTouches theme
    (`Theme.RequestComputerControlAccessActivity.FilterTouches` /
    `Theme.AutomatedAppLaunchWarningActivity.FilterTouches` in the VDM
-   `res/values/themes.xml`, each setting `android:filterTouchesWhenObscured`),
-   so an overlay window cannot
-   pass touches through to the consent buttons. This blocks the classic
+   `res/values/themes.xml`, each setting `android:filterTouchesWhenObscured`).
+   An overlay window therefore cannot pass touches through to the consent
+   buttons. This blocks the classic
    tapjacking attack against permission dialogs — the same pattern that
    surfaced through `SYSTEM_ALERT_WINDOW` abuse in earlier Android releases.
 2. **Per-session package allowlist.** `ComputerControlSessionImpl` rejects
    an agent's `launchApplication(packageName)` unless `packageName` was
    declared in `targetPackageNames` at session creation (the constructor
    copies them into `mAllowlistedPackages`). A Computer Control session that
-   opened a messaging app cannot subsequently launch a banking app inside
+   opened a messaging app cannot later launch a banking app inside
    the same session. `ComputerControlAllowlistController` operates one level
-   up: it is the device-wide policy that validates the agent
+   up. It is the device-wide policy that validates the agent
    (`isPackageAllowedToCreateSession`) and target packages
    (`isPackageAutomatable`) before the session is created at all.
 3. **Automated-app warning for the user.** When the user or another app
    launches a package that a session is currently driving, the system
-   surfaces `AutomatedAppLaunchWarningActivity` (51.3.24), warning them the
-   app is under automation and offering to stop it; the warning is
-   suppressed when the agent itself initiates the launch.
+   shows `AutomatedAppLaunchWarningActivity` (51.3.24). The warning tells them
+   the app is under automation and offers to stop it. The warning does not
+   appear when the agent itself initiates the launch.
 4. **Binder death monitoring.** `ComputerControlSessionImpl` calls
    `Binder.linkToDeath()` on the agent's callback binder. If the agent
-   process is killed — by oom-killer, by the user swiping it from Recents,
-   by a crash — the system auto-closes the session and releases the
-   `VirtualDevice`. This prevents a long-lived orphan session from
+   process is killed, the system auto-closes the session and releases the
+   `VirtualDevice`. The cause can be the oom-killer, a swipe by the user in
+   Recents, or a crash. This prevents a long-lived orphan session from
    continuing to drive the device after its operator has gone away.
 
-The mechanisms compose. An attacker who somehow bypassed tapjacking
-protection on the consent activity (mechanism 1) and obtained a session
-would still be blocked by the activity allowlist (mechanism 2) from
-expanding the session's reach; a user who wandered into an app the session
-was silently driving would be warned and offered a stop button
-(mechanism 3); an attacker whose implant process died would release the
-session immediately (mechanism 4).
+The mechanisms compose. An attacker might bypass tapjacking protection on
+the consent activity (mechanism 1) and obtain a session. The activity
+allowlist (mechanism 2) would still block the attacker from expanding the
+session's reach.
+
+A user might wander into an app that the session was silently driving. The
+user would be warned and offered a stop button (mechanism 3). If the implant
+process of an attacker died, the session would be released immediately
+(mechanism 4).
 
 ### 51.3.27 Stability Detection via the Accessibility Proxy
 
@@ -2111,20 +2126,21 @@ public void setStabilityListener(
 public void clearStabilityListener();
 ```
 
-The tracker watches two streams of evidence: accessibility events flowing from
+The tracker watches two streams of evidence: accessibility events from
 the controlled apps (`onAccessibilityEvent`) and a first-frame signal
 (`onFirstFrameReceived`). Each input dispatch, app launch, or caller
-interaction calls `resetStabilityState(reason)` with an `@UnstableReason`,
-restarting the quiet period; when no further events arrive for the configured
-`duration`, the tracker fires `onSessionStable()`. While the UI is churning it
-reports `onSessionUnstable(reason)` so the agent knows *why* the screen is not
-yet settled (for example, a caller interaction or an in-flight launch).
+interaction calls `resetStabilityState(reason)` with an `@UnstableReason`.
+This call restarts the quiet period. When no further events arrive for the
+configured `duration`, the tracker fires `onSessionStable()`. While the UI
+churns, the tracker reports `onSessionUnstable(reason)`. The agent then knows
+*why* the screen is not yet settled (for example, a caller interaction or an
+in-flight launch).
 
-Because the timeout is caller-supplied rather than a fixed per-event-class
-constant, an agent can tune it: short for snappy single-tap flows, longer for
-cold-start app launches. The framework merely emits the signal; the agent
-chooses whether to wait for `onSessionStable()` (for instance, before capturing
-a post-action screenshot) or to proceed immediately.
+The timeout is caller-supplied, not a fixed per-event-class constant. So an
+agent can tune it: short for snappy single-tap flows, longer for
+cold-start app launches. The framework merely emits the signal. The agent
+chooses whether to wait for `onSessionStable()` (for instance, before it
+captures a post-action screenshot) or to proceed immediately.
 
 ### 51.3.28 AutomatedPackagesRepository and Launcher Indicators
 
@@ -2142,25 +2158,25 @@ Computer Control session. It serves two consumers:
 
 The repository fires
 `onAutomatedPackagesChanged(String automatingPackage, List<String> automatedPackages, UserHandle user)`
-whenever the set transitions, telling listeners which agent is automating
-which packages, for which user. Each `ComputerControlSessionImpl` registers its
+whenever the set transitions. The call tells listeners which agent is
+automating which packages, for which user. Each `ComputerControlSessionImpl` registers its
 allowlisted packages on session start and unregisters them on session close.
-The repository reference-counts each package, so it only exits the "automated"
-state when the last referring session closes — robust to a future increase in
-`MAXIMUM_CONCURRENT_SESSIONS` above its current value of `1`.
+The repository reference-counts each package. So it only exits the "automated"
+state when the last referring session closes. This is robust to a future
+increase in `MAXIMUM_CONCURRENT_SESSIONS` above its current value of `1`.
 
 This is the user-transparency contract the framework commits to. An
-automated app is always visually distinguishable from a user-driven one,
-even when the agent and user are interleaving control through the
+automated app is always visually distinguishable from a user-driven one.
+This holds even when the agent and the user interleave control through the
 interactive mirror (51.3.13). The user is never left guessing whether
 something happening on screen was their tap or the agent's.
 
 ### 51.3.29 IME Integration: IRemoteComputerControlInputConnection
 
 When the typing path is enabled, `insertText()` must route text into the
-focused input field through the standard IME pipeline so that input
+focused input field through the standard IME pipeline. This way, input
 validation, autocorrect, password masking, and accessibility events all
-fire the same way they would for a soft-keyboard tap. The mechanism is
+fire the same way as for a soft-keyboard tap. The mechanism is
 `IRemoteComputerControlInputConnection.aidl`
 (`frameworks/base/core/java/com/android/internal/inputmethod/IRemoteComputerControlInputConnection.aidl`).
 
@@ -2175,22 +2191,23 @@ The flow:
   keyed by the client's self-reported display ID.
 - The remote connection wraps the focused window's `InputConnection`. The
   interface exposes `commitText()`, `replaceText()`, `sendKeyEvent()`, and
-  `performEditorAction()`; `insertText()` calls `replaceText()` when
-  `replaceExisting` is set, `commitText()` otherwise, and
-  `performEditorAction()` when `commit` is true — the same methods a soft
-  keyboard would use.
+  `performEditorAction()`. The method `insertText()` calls `replaceText()`
+  when `replaceExisting` is set, `commitText()` otherwise, and
+  `performEditorAction()` when `commit` is true. These are the same methods
+  a soft keyboard would use.
 - The target app sees text arrive through its normal `InputConnection`
   callback, indistinguishable in shape from a soft-keyboard caller.
 
 Keying the map by display ID matters because each Computer Control session
 owns its own trusted display. In Android 17 `MAXIMUM_CONCURRENT_SESSIONS` is
-`1`, so a single session is live at a time; the display ID still disambiguates
-which session's text routes where and keeps the design ready for a larger cap.
+`1`, so a single session is live at a time. The display ID still disambiguates
+which session's text routes where. It also keeps the design ready for a
+larger cap.
 
-`insertText()` is `InputConnection`-only: if no
+`insertText()` is `InputConnection`-only. If no
 `ComputerControlInputConnectionData` is registered for the session's display
-(no focused editor has started input there), the call logs an error —
-*"Unable to insert text: No input connection..."* — and is dropped. There is
+(no focused editor has started input there), the call logs an error and is
+dropped. The error reads *"Unable to insert text: No input connection..."*. There is
 no fallback to synthesizing key events through the `VirtualDpad`; an agent
 that wants text to land must first focus an editable field.
 
@@ -2212,14 +2229,14 @@ flags are:
 | `computer_control_support_v5` | The Computer Control "v5" API surface |
 
 A device can ship Computer Control's core surface (`computer_control_access`
-on) without committing to every policy layer — useful for staged rollout, where
-the per-app consent model and the assistant-role requirement land
-incrementally. Conversely, a device can ship with all flags on for a full
+on) and need not commit to every policy layer. This is useful for staged
+rollout, where the per-app consent model and the assistant-role requirement
+land incrementally. Conversely, a device can ship with all flags on for a full
 posture from day one.
 
-The flag set is also useful as a roadmap reading: a reader who finds Computer
+The flag set is also useful as a roadmap reading. A reader who finds Computer
 Control at an unfamiliar stage of evolution can inspect which flags are on
-(`adb shell device_config get virtual_devices <flag_name>`) to determine which
+(`adb shell device_config get virtual_devices <flag_name>`). This shows which
 features the running device actually supports, independent of what the API
 surface advertises.
 
@@ -2235,24 +2252,25 @@ not alongside it. Three architectural consequences follow:
    filesystem level.
 2. **Lifecycle owner.** `VirtualDeviceManagerService` owns the
    `ComputerControlSessionProcessor` instance and the
-   `AutomatedPackagesRepository`. When VDM tears down — for example, when
-   the last virtual device is released and VDM enters its idle path —
-   Computer Control state tears down with it. Computer Control cannot
+   `AutomatedPackagesRepository`. When VDM tears down,
+   Computer Control state tears down with it. An example is when the last
+   virtual device is released and VDM enters its idle path. Computer Control cannot
    outlive its parent.
 3. **Reuse of VDM primitives.** Computer Control does not invent its own
    display, input, or surface-capture stack. It composes the existing VDM
    primitives (`VirtualDevice`, `VirtualDisplay`, `VirtualDpad`,
    `VirtualTouchscreen`) under a Computer-Control-specific session policy. The
-   Computer Control additions are narrow: the trust-flag combination on the
-   display, the fixed product IDs on the inputs (51.3.21), the session-scoped
-   consent and AppOps tracking (51.3.24–51.3.25), and the
-   accessibility-proxy stability detector (51.3.27).
+   Computer Control additions are narrow. They are the trust-flag combination
+   on the display and the fixed product IDs on the inputs (51.3.21). They also
+   include the session-scoped consent and AppOps tracking (51.3.24–51.3.25)
+   and the accessibility-proxy stability detector (51.3.27).
 
-Chapter 52 walks the general VDM machinery: how a `VirtualDevice` is
-constructed and registered, how virtual displays surface into
-WindowManager, how virtual input events dispatch through `InputDispatcher`,
-and how the broader companion-device ecosystem (BLE associations, remote
-device authentication) sits alongside VDM. A reader interested in *how*
+Chapter 52 walks the general VDM machinery. It covers how a `VirtualDevice` is
+constructed and registered, and how virtual displays surface into
+WindowManager. It also covers how virtual input events dispatch through
+`InputDispatcher`. Last, it describes how the broader companion-device
+ecosystem (BLE associations, remote device authentication) sits alongside
+VDM. A reader interested in *how*
 the trusted `VirtualDisplay` is wired into WindowManager and *what*
 WindowManager does differently on it should follow that cross-reference.
 A reader interested in *why* Computer Control composes those primitives the
@@ -2263,31 +2281,33 @@ stays in this chapter.
 
 The first widely-shipped consumer of Computer Control is the **Gemini in
 Android** assistant. The internal codename for the agent loop is **Bonobo**
-(the log prefix `#bnb#` appears in app traces); the agent runs in the AGSA
-process (`com.google.android.googlequicksearchbox`) and consumes the
-AOSP-public Computer Control API documented in this chapter. AOSP itself
+(the log prefix `#bnb#` appears in app traces). The agent runs in the AGSA
+process (`com.google.android.googlequicksearchbox`). It consumes the
+AOSP-public Computer Control API documented in this chapter.
+
+AOSP itself
 does not ship a Computer Control agent —
 `frameworks/base/libs/computercontrol/` and the system-server package
 described above are framework code, not application code. The agent is
-GMS-side and is not part of this checkout, but its existence as the first
-production Computer Control consumer is what shaped the API's current
+GMS-side and is not part of this checkout. Its existence as the first
+production Computer Control consumer shaped the API's current
 surface.
 
 Two patterns observable in the Gemini consumer are worth surfacing for any
 new Computer Control agent:
 
 - **Dual-path fallback with AppFunctions.** The agent declares two
-  `<uses-library>` entries in its manifest:
+  `<uses-library>` entries in its manifest,
   `com.android.extensions.appfunctions` and
   `com.android.extensions.computercontrol`. It prefers AppFunctions
   (the structured-API path of section 51.2) for apps that publish
-  `AppFunctionService`-backed functions, and falls back to Computer Control
-  for apps that don't. The same agent can drive both because the two
-  frameworks compose at the SDK extension level: an agent links both,
+  `AppFunctionService`-backed functions. For apps that do not, it falls back
+  to Computer Control. The same agent can drive both because the two
+  frameworks compose at the SDK extension level. An agent links both and
   queries `AppFunctionManager` first, and uses Computer Control for the
-  apps where the function discovery returns empty.
+  apps where function discovery returns empty.
 - **Live mirror as the user-trust surface.** The agent renders the
-  `InteractiveMirror` (51.3.5) inside its chat UI so the user
+  `InteractiveMirror` (51.3.5) inside its chat UI. This way the user
   watches the actions in real time and can hand control back at any
   moment via the touch-forwarding path. This matches the framework's
   intent: Computer Control does not make the live view *optional*, it
@@ -2325,49 +2345,51 @@ The loop terminates when the server responds with `HAND_OVER` or when the
 user takes manual control via the mirror. The action vocabulary
 (`TAP`, `SCROLL`, `GO_BACK`, `INSERT_TEXT`, `WAIT`, `HAND_OVER`) maps
 one-to-one onto the `ComputerControlSession` methods documented in 51.3.3
-and the navigation `performAction` codes — the agent does not synthesize
-inputs the framework does not expose, and every action the framework
-accepts can be issued by the agent. The bidirectional `ProcessQuery`
+and the navigation `performAction` codes. The agent does not synthesize
+inputs that the framework does not expose. The agent can issue every action
+that the framework accepts.
+
+The bidirectional `ProcessQuery`
 stream is the gRPC channel the agent uses to upload screenshots and
-receive actions; that stream is GMS-side and not part of this checkout,
-but its shape matters because it explains the **server-driven** nature of
-the loop: the agent is a thin executor that asks the server what to do
+receive actions. That stream is GMS-side and not part of this checkout.
+Its shape still matters, because it explains the **server-driven** nature of
+the loop. The agent is a thin executor that asks the server what to do
 next after every observation.
 
-Beyond Gemini, Computer Control is shipping first on the highest-end Pixel
-and Galaxy devices and broadening as the feature flags above ramp. New
-consumers adopting Computer Control should expect the API surface to
-remain stable along the lines described in this chapter while the policy
+Beyond Gemini, Computer Control ships first on the highest-end Pixel
+and Galaxy devices and broadens as the feature flags above ramp. New
+consumers of Computer Control should expect the API surface to
+remain stable along the lines described in this chapter. The policy
 layer (which flags are on by default) continues to tighten.
 
 ### 51.3.33 Android 17 Security and Capability Changes
 
 Computer Control shipped (flag-gated) in Android 16, but Android 17 reworked several parts of
-it -- this is the "substantially expanded and reworked" of the section opener:
+it. This is the "substantially expanded and reworked" of the section opener:
 
 - **Permission hardening.** The gating permission `ACCESS_COMPUTER_CONTROL` moved from 16's
   `internal|knownSigner` (cert-pinned through `config_accessComputerControlKnownSigners`) to 17's
   `internal|privileged` (`core/res/AndroidManifest.xml:9531`), backed by a
-  `privapp-permissions-platform.xml` entry -- i.e. from signer-pinning to the privileged-app
+  `privapp-permissions-platform.xml` entry. The change is from signer-pinning to the privileged-app
   allowlist model. A new signature permission `MANAGE_COMPUTER_CONTROL_CONSENT`
   (`AndroidManifest.xml:9537`) guards the consent-management surface.
 - **Per-app consent.** The consent model moved from 16's session/global `computer_control_consent`
-  flag to 17's per-target-app `computer_control_per_app_consent` (in the flag set of 51.3.30): the
-  user now grants or denies an agent's access *per target app* rather than once for a whole
-  session; the grant is recorded against the existing `OPSTR_COMPUTER_CONTROL` AppOp
-  (`"android:computer_control"`, which itself predates 17 -- the per-app gating is the 17 change).
+  flag to 17's per-target-app `computer_control_per_app_consent` (in the flag set of 51.3.30). The
+  user now grants or denies an agent's access *per target app*, not once for a whole
+  session. The grant is recorded against the existing `OPSTR_COMPUTER_CONTROL` AppOp
+  (`"android:computer_control"`, which itself predates 17). The per-app gating is the 17 change.
 - **Audio capture and injection.** New server components `ComputerControlAudioCapture` and
   `ComputerControlAudioInjector` (backed by a `VirtualAudioDevice` created in
-  `ComputerControlSessionImpl`) let a session capture and inject audio on its virtual device --
-  a capability absent in 16, extending the agent's observe/act loop past screen and input.
+  `ComputerControlSessionImpl`) let a session capture and inject audio on its virtual device.
+  This capability is absent in 16. It extends the agent's observe/act loop past screen and input.
 - **The "observe" half made explicit.** `ComputerControlSession.getAccessibilityWindows()`
   (`core/java/android/companion/virtual/computercontrol/ComputerControlSession.java:798`) is the
-  accessibility-window read the agent uses to *see* structured UI -- the counterpart to the
-  screenshot path -- delegating to the internal `ComputerControlAccessibilityProxy` (a
+  accessibility-window read the agent uses to *see* structured UI. It is the counterpart to the
+  screenshot path. It delegates to the internal `ComputerControlAccessibilityProxy` (a
   package-private `AccessibilityDisplayProxy` subclass, 51.3.27).
 
-The virtual-keyboard removal (text now routes through the IME path of 51.3.29) and the full
-six-flag set are covered in 51.3.29-51.3.30; the items above are the security-model and
+Sections 51.3.29-51.3.30 cover the virtual-keyboard removal and the full six-flag set.
+Text now routes through the IME path of 51.3.29. The items above are the security-model and
 capability deltas layered on top in 17.
 
 ---
@@ -2701,8 +2723,8 @@ This allows apps to:
 
 The system can push processing-state updates into the sandboxed service via
 `updateProcessingState(Bundle processingState, IProcessingUpdateStatusCallback callback)`
-on the service's binder stub, which dispatches to the service's
-`onUpdateProcessingState()` override; the
+on the service's binder stub. The stub dispatches to the service's
+`onUpdateProcessingState()` override. The
 `IProcessingUpdateStatusCallback` reports back whether the service accepted
 the update.
 
@@ -2907,9 +2929,9 @@ graph TB
 - Memory limits enforced by the system
 - Process can be killed by the system at any time
 
-This design means that even if an attacker compromises the inference engine
-(e.g., through a model weight poisoning attack), they cannot exfiltrate
-data from the device.
+This design means that an attacker cannot exfiltrate data from the device.
+This holds even if the attacker compromises the inference engine
+(e.g., through a model weight poisoning attack).
 
 ### 51.4.19 Typed Content and the Embedding / Image-Description Models (Android 17)
 
@@ -2930,8 +2952,8 @@ adds a *typed* layer on top, gated by the `on_device_intelligence_26q2` flag
   both, all `@FlaggedApi(FLAG_ON_DEVICE_INTELLIGENCE_26Q2)`.
 
 These extend ODI from "run an opaque generative model over a Bundle" to "call a typed embedding
-or image-description model over structured multimodal content," which is the shape agentic
-features need for retrieval (embeddings) and visual grounding (image description) -- still inside
+or image-description model over structured multimodal content." This is the shape agentic
+features need for retrieval (embeddings) and visual grounding (image description). It stays inside
 the same sandboxed-inference isolation of 51.4.18.
 
 ---
@@ -2944,7 +2966,7 @@ now delivered as a Mainline module.
 
 Android 17 also introduces a new, higher-level NPU access surface seeded under
 `frameworks/base/core/java/android/npumanager/`. That subsystem (NpuManager) is
-covered in its own chapter (Chapter 53); this section stays focused on NNAPI,
+covered in its own chapter (Chapter 53). This section stays focused on NNAPI,
 the long-standing C-level accelerator path that today's native ML workloads
 still target.
 
@@ -3286,10 +3308,10 @@ and capabilities:
 | 7 | — | Vendor extensions |
 | 8 | — | Flatbuffer model format |
 
-Feature levels above 5 deliberately have no Android API-level mapping: the
+Feature levels above 5 deliberately have no Android API-level mapping. The
 enum values are `ANEURALNETWORKS_FEATURE_LEVEL_6 = 1000006`, `..._7 =
-1000007`, and `..._8 = 1000008`, because the NNAPI specification can be
-updated between Android API releases. Code must compare the outputs of
+1000007`, and `..._8 = 1000008`. The reason is that the NNAPI specification
+can be updated between Android API releases. Code must compare the outputs of
 `ANeuralNetworksDevice_getFeatureLevel` /
 `ANeuralNetworks_getRuntimeFeatureLevel` against the `FeatureLevelCode`
 constants, never against `Build.VERSION.SDK_INT`.
@@ -3454,9 +3476,9 @@ producing useful aggregate models.
 
 > **Android 17 status: deprecation.** The ODP public API surface is now marked
 > `@Deprecated` behind the new `odp_depreciation_enabled` flag
-> (`packages/modules/OnDevicePersonalization/flags/ondevicepersonalization_flags.aconfig:78`).
-> The module and the architecture below still ship, but new code should not target the ODP
-> APIs; the agentic/on-device-inference direction the platform is investing in is the
+> (`packages/modules/OnDevicePersonalization/flags/ondevicepersonalization_flags.aconfig:78`). The module and
+> the architecture below still ship, but new code should not target the ODP APIs.
+> The platform invests in the agentic/on-device-inference direction. This direction is the
 > OnDeviceIntelligence + ContentSafety family (51.4, 51.15). The section below documents the
 > mechanism as it stands, with that deprecation in mind.
 
@@ -4135,8 +4157,8 @@ SearchResults results = session.search("important meeting", spec);
 
 ### 51.8.6 The IcingSearchEngine
 
-Under the hood, AppSearch is backed by the IcingSearchEngine, a C++ library
-that provides:
+Under the hood, the IcingSearchEngine, a C++ library, backs AppSearch.
+This library provides:
 
 - Full-text indexing with BM25F scoring
 - Prefix matching
@@ -4409,12 +4431,12 @@ IcingSearchEngine supports multiple ranking strategies:
 
 BM25F (Best Matching 25 with Field weighting) is the default relevance
 algorithm.  It considers term frequency, inverse document frequency, and
-document length normalisation across indexed properties with configurable
+document length normalization across indexed properties with configurable
 field weights.
 
 **Optimization:**
 
-`AppSearchImpl` periodically optimises the Icing index:
+`AppSearchImpl` periodically optimizes the Icing index:
 
 ```java
 @VisibleForTesting static final int CHECK_OPTIMIZE_INTERVAL = 100;
@@ -4422,7 +4444,7 @@ field weights.
 // If significant space can be reclaimed, run optimize()
 ```
 
-Optimisation compacts the index, removing tombstoned documents and
+Optimization compacts the index, removing tombstoned documents and
 rebuilding internal data structures.
 
 ### 51.8.15 Schema Management Deep Dive
@@ -4560,7 +4582,7 @@ graph TB
 
 All read operations (queries, document retrieval, schema inspection) run
 concurrently under the READ lock.  All mutating operations (schema changes,
-document puts/deletes, optimisation) require the exclusive WRITE lock.  The
+document puts/deletes, optimization) require the exclusive WRITE lock.  The
 `@WorkerThread` annotation enforces that no AppSearch operations run on the
 main thread.
 
@@ -4579,7 +4601,7 @@ IcingSearchEngine enforces TTL by:
 
 1. Recording `creationTimestampMillis` + `ttlMillis` as the expiry time
 2. During `optimize()`, deleting documents past their expiry
-3. Excluding expired documents from search results even before optimisation
+3. Excluding expired documents from search results even before optimization
 
 A TTL of 0 means the document never expires (default).
 
@@ -4792,9 +4814,8 @@ graph TB
 ```
 
 The classifier uses a pre-trained ML model that maps app package names to
-a fixed taxonomy of approximately 450 topics (446 labels in the shipped
-`labels_topics.txt`). The model is downloaded and
-updated through the AdServices module.
+a fixed taxonomy of about 450 topics. The shipped `labels_topics.txt` has 446
+labels. The model is downloaded and updated through the AdServices module.
 
 Privacy mechanisms:
 
@@ -5068,7 +5089,7 @@ sequenceDiagram
 **TopicsWorker Thread Safety:**
 
 `TopicsWorker` uses a `ReentrantReadWriteLock` to allow concurrent reads
-while serialising writes:
+while serializing writes:
 
 | Operation | Lock |
 |---|---|
@@ -5464,9 +5485,9 @@ gantt
 
 The trend is clear: Android is evolving from passive intelligence (capturing
 and classifying) toward active agent capabilities (executing functions,
-controlling apps). Android 17 deepens the agent layer in particular: AppFunctions
-gains runtime registration, observation, and an access-management framework, and
-a dedicated NPU access surface (NpuManager, Chapter 53) begins to take shape
+controlling apps). Android 17 deepens the agent layer in particular. AppFunctions
+gains runtime registration, observation, and an access-management framework.
+A dedicated NPU access surface (NpuManager, Chapter 53) begins to take shape
 beside NNAPI.
 
 ### 51.11.2 The Agent Architecture Stack
@@ -5511,10 +5532,10 @@ graph TB
 the agent can invoke them directly with typed parameters and receive typed
 responses.
 
-**Computer Control** is the "universal fallback" -- when an app does not
-expose AppFunctions, the agent can fall back to UI automation, launching the
-app on a virtual display and controlling it through tap, swipe, and text
-injection guided by screenshot analysis.
+**Computer Control** is the "universal fallback". When an app does not
+expose AppFunctions, the agent can fall back to UI automation. It launches the
+app on a virtual display. It controls the app through tap, swipe, and text
+injection that screenshot analysis guides.
 
 ### 51.11.3 AppFunctions vs Computer Control: When to Use Each
 
@@ -5569,23 +5590,24 @@ registration.unregister();
 
 The registration's lifetime is bounded by the registering `Context`. The
 function is executable only while the registering process is unfrozen and the
-`Context` is alive; the system holds a strong reference to the `AppFunction` and
-logs a leak warning if the app forgets to `unregister()`. The
-`functionIdentifier` must still match an entry in the app's application-level
-`android.app.appfunctions` XML property, and the metadata's *scope* governs
-whether a function is global (`SCOPE_GLOBAL`) or tied to a specific activity
-(`SCOPE_ACTIVITY`). Activity-scoped functions can only be registered from an
-`Activity` context. Server-side, runtime registrations live in
-`MultiUserDynamicAppFunctionRegistry`, keyed per user; the system server invokes
-them through the `IAppFunctionExecutor` the app passed at registration rather
-than by binding a separate component.
+`Context` is alive. The system holds a strong reference to the `AppFunction` and
+logs a leak warning if the app forgets to `unregister()`.
+
+The `functionIdentifier` must still match an entry in the app's
+application-level `android.app.appfunctions` XML property. The metadata's
+*scope* governs whether a function is global (`SCOPE_GLOBAL`) or tied to a
+specific activity (`SCOPE_ACTIVITY`). Activity-scoped functions can only be
+registered from an `Activity` context. Server-side, runtime registrations live
+in `MultiUserDynamicAppFunctionRegistry`, keyed per user. The system server
+invokes them through the `IAppFunctionExecutor` that the app passed at
+registration. It does not bind a separate component.
 
 ### 51.12.2 Discovery, State, and Observation on AppFunctionManager
 
 Android 17 moves discovery and state queries directly onto
-`AppFunctionManager`, replacing ad-hoc AppSearch queries with typed APIs (all
-guarded by `FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS` and the discovery/execution
-permissions):
+`AppFunctionManager`. Typed APIs replace ad-hoc AppSearch queries. The flag
+`FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS` and the discovery/execution permissions
+guard all of them:
 
 | Method | Returns | Purpose |
 |--------|---------|---------|
@@ -5607,11 +5629,11 @@ public interface AppFunctionObserver {
 }
 ```
 
-The intended flow is: register an observer, then call `searchAppFunctions` /
-`getAppFunctionStates` to get the initial snapshot; thereafter, re-query only the
-packages or function names the observer reports as changed. Server-side this is
-driven by `AppFunctionMetadataObserver`, which fans AppSearch change
-notifications out to both internal caches and client callbacks.
+The intended flow is as follows. First, register an observer. Then call
+`searchAppFunctions` / `getAppFunctionStates` to get the initial snapshot. After
+that, re-query only the packages or function names that the observer reports as
+changed. Server-side, this is driven by `AppFunctionMetadataObserver`. It fans
+AppSearch change notifications out to both internal caches and client callbacks.
 
 ### 51.12.3 The Access-Management Framework
 
@@ -5652,7 +5674,7 @@ served by the platform `AllowlistManager` and read through
 Android 17 also factors interaction provenance out of AppFunctions into a shared
 App Interaction API (`FLAG_ENABLE_APP_INTERACTION_API`). The attribution type
 moved from the appfunctions package to `android.app.AppInteractionAttribution`
-(51.2.8), and `AppFunctionManagerService` optionally publishes an
+(51.2.8). `AppFunctionManagerService` optionally publishes an
 `AppInteractionService` local service when the flag is on. This positions
 attribution to be reused by interaction surfaces beyond AppFunctions while
 keeping the same interaction-type vocabulary (`USER_QUERY`, `USER_SCHEDULED`,
@@ -5679,27 +5701,27 @@ Two further 17 changes loosen and instrument the execution path described in 51.
 
 The access-management framework of 51.12.3 gained two supporting pieces, both new in 17:
 
-- **A standalone `AllowlistService`.** Rather than storing the agent allowlist in `DeviceConfig`
-  / `Settings.Secure` as 16 did, 17 adds a dedicated system service
-  (`frameworks/base/services/allowlist/.../AllowlistService.java`) published as
-  `Context.ALLOWLIST_SERVICE` and started by `SystemServer` only when `enableAppFunctionPermissionV2()`
+- **A standalone `AllowlistService`.** 16 stored the agent allowlist in `DeviceConfig`
+  / `Settings.Secure`. 17 adds a dedicated system service
+  (`frameworks/base/services/allowlist/.../AllowlistService.java`). The service is published as
+  `Context.ALLOWLIST_SERVICE`. `SystemServer` starts it only when `enableAppFunctionPermissionV2()`
   is set (`SystemServer.java:1692`). AppFunctions consumes it through an LRU-cached
   `SystemAppFunctionAllowlistReader`, and shell tooling can add/remove/clear allowlist entries.
 - **Interaction history as a queryable provider.** The App Interaction API (51.12.4) backs its
-  history in a per-user SQLite database surfaced through a read-only ContentProvider
-  (`AppInteractionHistoryProvider`, authority `com.android.appinteraction.history`) guarded by the
-  `READ_APP_INTERACTION` permission, with a 7-day default retention. This generalizes and replaces
-  16's appfunctions-local `AppFunctionAccessHistory*` classes. The user-facing side of this is a
+  history in a per-user SQLite database that is surfaced through a read-only ContentProvider
+  (`AppInteractionHistoryProvider`, authority `com.android.appinteraction.history`). The
+  `READ_APP_INTERACTION` permission guards the provider, and the default retention is 7 days. This generalizes and replaces
+  16's appfunctions-local `AppFunctionAccessHistory*` classes. The user-facing side is a
   new agent-activity timeline in the Permission Mainline module's PermissionController
   (`AgentActivityItem` under
-  `.../appinteraction/`, and `AgentUsageDetailsFragment` under `.../appfunctions/ui/handheld/`),
-  which surfaces which agents accessed data over 24-hour and
+  `.../appinteraction/`, and `AgentUsageDetailsFragment` under `.../appfunctions/ui/handheld/`).
+  The timeline shows which agents accessed data over 24-hour and
   7-day windows.
 
-Discovery itself also grew a typed metadata hierarchy in 17 -- `AbstractAppFunctionMetadata` with
+Discovery itself also grew a typed metadata hierarchy in 17. It has `AbstractAppFunctionMetadata` with
 `AppFunctionMetadata` / `AppFunctionPackageMetadata` / `AppFunctionSchemaMetadata`, plus the
-qualified-name type `AppFunctionName` -- joined from static (manifest-declared) and runtime
-(dynamically registered, 51.12.1) sources by `reader/AppFunctionMetadataReader`. In all, the 17
+qualified-name type `AppFunctionName`. `reader/AppFunctionMetadataReader` joins static
+(manifest-declared) and runtime (dynamically registered, 51.12.1) sources into this hierarchy. In all, the 17
 AppFunctions flag set adds `enable_dynamic_app_functions`, `enable_app_interaction_api`,
 `enable_app_function_permission_v2`, `enable_request_response_logging`, and
 `enable_multi_service` (+ `_bugfix`) on top of 16's lone `enable_app_function_manager`.
@@ -5708,20 +5730,23 @@ AppFunctions flag set adds `enable_dynamic_app_functions`, `enable_app_interacti
 
 ## 51.13 AiSeal: Sealed On-Device AI Compute
 
-The intelligence subsystems covered so far run on the host OS: the system server
-mediates them, but the model weights, the inference code, and the personal data
-they touch all live in ordinary Android processes that a sufficiently privileged
-host component could observe. Android 17 introduces **AiSeal**, a system service
-that closes that gap by hosting on-device AI payloads inside a *protected*
-virtual machine whose memory the host kernel cannot read. AiSeal is the platform
-plumbing that lets an app reach an AI agent, an inference engine, or a personal
-AppSearch database that the rest of the device is sealed out of.
+The intelligence subsystems covered so far run on the host OS, and the system
+server mediates them. But the model weights, the inference code, and the
+personal data they touch all live in ordinary Android processes. A sufficiently
+privileged host component could observe these processes.
 
-The protected-VM machinery itself -- the Android Virtualization Framework (AVF),
-microdroid, `VirtualizationService`, instance images, and protected-VM firmware
-verification -- is the subject of Chapter 56 (Virtualization); this section
-covers only the AiSeal host service that sits on top of it and the connect flow
-an app uses to talk into the VM.
+Android 17 introduces
+**AiSeal**, a system service that closes that gap. It hosts on-device AI
+payloads inside a *protected* virtual machine whose memory the host kernel
+cannot read. AiSeal is the platform plumbing that lets an app reach an AI agent,
+an inference engine, or a personal AppSearch database. The rest of the device is
+sealed out of these.
+
+Chapter 56 (Virtualization) covers the protected-VM machinery itself. This
+machinery includes the Android Virtualization Framework (AVF), microdroid,
+`VirtualizationService`, instance images, and protected-VM firmware
+verification. This section covers only the AiSeal host service on top
+of it and the connect flow an app uses to talk into the VM.
 
 **Source tree (Android 17):**
 
@@ -5749,28 +5774,30 @@ frameworks/native/services/aisealhostservice/
 
 AiSeal hosts a single protected virtual machine that runs several AI-related
 payloads behind a sealed boundary. `AiSealManager`'s own documentation describes
-the VM's tenants as an AppSearch database for personal data that should *not* be
-accessible from the host OS, an on-device AI inference service for processing
-that data with large models, and AI agents that resolve user requests using it
-(`frameworks/base/core/java/android/aiseal/AiSealManager.java`). In other words,
-AiSeal is confidential on-device compute: it is where Android 17 can run an
-assistant's reasoning over a user's private data with a hardware-enforced
-guarantee that the host platform cannot inspect the computation.
+three tenants of the VM. The first is an AppSearch database for personal data
+that should *not* be accessible from the host OS. The second is an on-device AI
+inference service that processes that data with large models. The third is a set
+of AI agents that resolve user requests using it
+(`frameworks/base/core/java/android/aiseal/AiSealManager.java`).
+
+In other words, AiSeal is confidential on-device compute. It is where Android 17
+can run an assistant's reasoning over a user's private data. The guarantee is
+hardware-enforced: the host platform cannot inspect the computation.
 
 Two terms recur. A **tenant** is a package whose code and configuration are
-loaded into the VM as a payload. An **exported service** is a vsock endpoint a
-tenant publishes inside the VM (via `AVmPayload_runVsockRpcServer`) and names in
-the AiSeal configuration file; the matching *host* application -- the package
-that owns the tenant -- reaches that service from outside the VM through
-`AiSealManager.connectService(name)`.
+loaded into the VM as a payload. An **exported service** is a vsock endpoint
+that a tenant publishes inside the VM (via `AVmPayload_runVsockRpcServer`). The
+tenant also names it in the AiSeal configuration file. The matching *host*
+application, which is the package that owns the tenant, reaches that service
+from outside the VM through `AiSealManager.connectService(name)`.
 
 AiSeal is gated three ways. It is a `@SystemApi` guarded by the flag
 `android.aiseal.aiseal_host_apis` (`aiseal.aconfig`); it requires the system
 feature `PackageManager.FEATURE_AISEAL` (`"android.software.aiseal"`); and the
 device property `service.aiseal.enable` must be set. `AiSealManager.isEnabled()`
 checks the feature and the property together before any connection is attempted.
-Because the VM does not model Android's profile separation, `AiSealManager` is
-documented as accessible only by the primary user; secondary-user requests must
+The VM does not model Android's profile separation. So `AiSealManager` is
+documented as accessible only by the primary user. Secondary-user requests must
 be routed through the primary user.
 
 ### 51.13.2 The Connect Flow
@@ -5778,10 +5805,10 @@ be routed through the primary user.
 A host application connects to a sealed service through one method,
 `AiSealManager.connectService(String name)`, which is annotated `@WorkerThread`
 (it may block) and requires `android.permission.MANAGE_AISEAL_VIRTUAL_MACHINE`.
-The request crosses two boundaries: from the app into the system-published
-`aiseal_host` binder served by the host-side native `aisealhostservice`,
-which then opens a vsock connection into the VM to the tenant's own vsock
-service.
+The request crosses two boundaries. The first is from the app into the
+system-published `aiseal_host` binder. The host-side native `aisealhostservice`
+serves this binder. The service then opens a vsock connection into the VM, to
+the tenant's own vsock service.
 
 The following diagram shows the connect path and the two binders the
 host-side native service registers.
@@ -5823,29 +5850,34 @@ Inside `connectService`, `AiSealManager` resolves the `aiseal_host` binder
 `IAiSealHostService.connectService(name)`, which returns a
 `ParcelFileDescriptor` wrapping the vsock connection. The manager wraps the call
 in `VirtualMachine.binderFromPreconnectedClient(...)` so the returned descriptor
-is adopted as an RPC-binder client to the in-VM service. On the receiving side,
-the host-side native service
-(`frameworks/native/services/aisealhostservice/src/main.rs`)
-implements `connectService` by: enforcing `MANAGE_AISEAL_VIRTUAL_MACHINE`;
-looking the requested name up in the service-to-owner map built from the AiSeal
-config; checking that the calling package *owns* that tenant (system\_server and
-root may call any service); and finally opening a vsock connection to the
-tenant's declared port with a derived SELinux context. The ownership check is
-the key isolation property: a host app can connect only to services exported by
-the tenant it owns, never to another tenant's.
+is adopted as an RPC-binder client to the in-VM service.
 
-The native service is launched by init only when sealing is on -- the
+On the receiving side, the host-side native service
+(`frameworks/native/services/aisealhostservice/src/main.rs`)
+implements `connectService` in four steps. First, it enforces
+`MANAGE_AISEAL_VIRTUAL_MACHINE`. Second, it looks the requested name up in the
+service-to-owner map that is built from the AiSeal config. Third, it checks that
+the calling package *owns* that tenant (system\_server and root may call any
+service). Finally, it opens a vsock connection to the tenant's declared port
+with a derived SELinux context.
+
+The ownership check is the key isolation
+property. A host app can connect only to services exported by the tenant it
+owns, never to another tenant's.
+
+Init launches the native service only when sealing is on. The
 `aisealhostservice.rc` file declares the service `disabled` and enables it on
-`property:sys.boot_completed=1 && property:service.aiseal.enable=1`, stopping it
-again if `service.aiseal.enable` goes to `0`. At startup `main.rs` reads
-`service.aiseal.enable`, waits for boot completion, connects to
-`VirtualizationService`, loads the tenant payload, starts the VM, and only then
-registers the `aiseal_host` and `aiseal_internal` binders with `add_service`.
+`property:sys.boot_completed=1 && property:service.aiseal.enable=1`. It stops the
+service again if `service.aiseal.enable` goes to `0`. At startup `main.rs` reads
+`service.aiseal.enable`. It waits for boot completion, connects to
+`VirtualizationService`, loads the tenant payload, and starts the VM. Only then
+does it register the `aiseal_host` and `aiseal_internal` binders with
+`add_service`.
 
 ### 51.13.3 Per-User CE-Key (kekFile) Handling
 
-AiSeal stores per-user personal data in an encrypted database inside the VM, and
-that storage must be locked and unlocked in lockstep with Android's
+AiSeal stores per-user personal data in an encrypted database inside the VM.
+That storage must be locked and unlocked in lockstep with Android's
 credential-encrypted (CE) storage on the host. The bridge is
 `AiSealSystemService`
 (`frameworks/base/services/aiseal/java/com/android/server/aiseal/AiSealSystemService.java`),
@@ -5863,20 +5895,23 @@ binder and forwards three user-lifecycle events over
 
 The unlocking path is where the key-encryption key (KEK) crosses the boundary.
 On `onUserUnlocking`, `AiSealSystemService` computes a per-user file path under
-the host's CE system directory -- `Environment.buildPath(getDataSystemCeDirectory(userId), "AiSeal", "kek")` -- creates the directory, runs `SELinux.restorecon`
-on it, and passes the *path* (not the key bytes) to the VM via
-`IAiSealInternalService.onUserUnlocking(userId, kekFilePath)`. The host-side
-`aisealhostservice`'s internal service wraps that path in an `ICEStoreKEK`
-binder and hands it to the in-VM guest agent's
+the host's CE system directory with `Environment.buildPath(getDataSystemCeDirectory(userId), "AiSeal", "kek")`.
+Then it creates the directory and runs `SELinux.restorecon` on it. Last, it
+passes the *path* (not the key bytes) to the VM via
+`IAiSealInternalService.onUserUnlocking(userId, kekFilePath)`.
+
+The host-side `aisealhostservice`'s internal service wraps that path in an
+`ICEStoreKEK` binder. It hands the binder to the in-VM guest agent's
 `userUnlocked(userId, kek)`. The guest agent calls back through
-`ICEStoreKEK.getKEK()` to read the key from the (host-side, CE-protected) file,
-or `onKEKCreated(key)` to write a freshly generated key back. Because the KEK
-file lives under the user's CE directory, it is only readable while that user is
-unlocked on the host -- so the VM's per-user encrypted storage is cryptographically
-tied to the same lock state as the rest of the user's data. If the connection to
-`aiseal_internal` is not yet established when a user unlocks, the service records
-the user in an `mUnlockedUsers` set and replays the unlock once the VM service
-connects.
+`ICEStoreKEK.getKEK()` to read the key from the (host-side, CE-protected) file.
+To write a freshly generated key back, it calls `onKEKCreated(key)`.
+
+The KEK file lives under the user's CE directory. So it is only readable while
+that user is unlocked on the host. The VM's per-user encrypted storage is
+therefore cryptographically tied to the same lock state as the rest of the
+user's data. If the connection to `aiseal_internal` is not yet established when
+a user unlocks, the service records the user in an `mUnlockedUsers` set. It
+replays the unlock once the VM service connects.
 
 ### 51.13.4 Protected VM vs Nonprotected Fallback
 
@@ -5890,21 +5925,23 @@ memory-confidentiality guarantee. The flag is plumbed straight through to AVF as
 the `protectedVm` field of `VirtualMachineAppConfig` when `main.rs` starts the
 VM. The nonprotected mode exists chiefly for development and for devices whose
 hardware lacks protected-VM support; production sealing relies on the protected
-default. The deeper question of how a protected VM actually keeps its memory
-private from the host -- pKVM, stage-2 page protection, and protected-VM firmware
-attestation -- is covered in Chapter 56.
+default.
+
+Chapter 56 covers the deeper question of how a protected VM actually keeps its
+memory private from the host. This includes pKVM, stage-2 page protection, and
+protected-VM firmware attestation.
 
 ## 51.14 PersonalContext: On-Device Personal Context in the PCC
 
 Where AiSeal seals AI compute inside a VM, **PersonalContext** seals a different
-asset -- a structured, on-device store of the user's personal context -- inside
-Android's *Private Compute Core* (PCC) sandbox. PersonalContext
+asset inside Android's *Private Compute Core* (PCC) sandbox. The asset is a
+structured, on-device store of the user's personal context. PersonalContext
 (`packages/apps/PersonalContext/`, package `com.android.personalcontext`) is a
-privileged, platform-signed app introduced in Android 17 that builds an
-on-device personal-context surface: it observes signals the user already sees
-(conversations, notifications, contacts), distills them into searchable
-"memories," and serves context back to assistant and intelligence features --
-all while keeping the raw data inside the PCC boundary.
+privileged, platform-signed app introduced in Android 17. It builds an
+on-device personal-context surface. It observes signals the user already sees
+(conversations, notifications, contacts) and distills them into searchable
+"memories." It serves context back to assistant and intelligence features, and
+the raw data stays inside the PCC boundary.
 
 ### 51.14.1 What PersonalContext Is
 
@@ -5926,25 +5963,28 @@ declares the action `android.service.personalcontext.UnderstanderService`, and i
 protected by `BIND_CONTEXT_COMPONENT_SERVICE` so only the platform may bind it.
 An understander overrides `onInitializeFilter()` to declare which hint types it
 needs (for example, `ChatUnderstanderService` requires
-`ContentCaptureConversationHint`) and `onUnderstand(hints)` to turn those hints
-into `ContextInsight` objects -- displayable recalls or actionable suggestions.
+`ContentCaptureConversationHint`). It overrides `onUnderstand(hints)` to turn
+those hints into `ContextInsight` objects. These objects are displayable recalls
+or actionable suggestions.
 
 The whole feature is gated by the product-container flag `enable_osi`
-("on-device system intelligence"), the master flag in
-`packages/apps/PersonalContext/aconfig/personal_context.aconfig`, alongside the
-platform feature flag `enable_personal_context_service` that guards the
+("on-device system intelligence"). This is the master flag in
+`packages/apps/PersonalContext/aconfig/personal_context.aconfig`. Next to it is
+the platform feature flag `enable_personal_context_service`, which guards the
 framework permissions.
 
 ### 51.14.2 Where It Sits in the PCC / On-Device-Intelligence Model
 
-PersonalContext is a Private Compute Core app. Every one of its components --
-the understander services, the WorkManager plumbing, the initialization
-receiver -- carries `android:privateComputeCore="@bool/enable_personal_context_pcc"`
-in its manifest, and the platform default product overlay sets that boolean to
-`true`. The `privateComputeCore` manifest attribute
+PersonalContext is a Private Compute Core app. Every one of its components
+carries `android:privateComputeCore="@bool/enable_personal_context_pcc"` in its
+manifest. These components are the understander services, the WorkManager
+plumbing, and the initialization receiver. The platform default product overlay
+sets that boolean to `true`.
+
+The `privateComputeCore` manifest attribute
 (`frameworks/base/core/res/res/values/attrs_manifest.xml`) marks a component as
-running inside the PCC sandbox, where it is denied general network egress; data
-leaves only through the narrow, audited PCC egress APIs.
+running inside the PCC sandbox. In the sandbox, the component is denied general
+network egress. Data leaves only through the narrow, audited PCC egress APIs.
 
 The permissions PersonalContext holds are all signature-level
 (`signature|privileged`, with `PERSONAL_CONTEXT_READ_SETTINGS` additionally
@@ -5958,21 +5998,24 @@ The permissions PersonalContext holds are all signature-level
 | `PERSONAL_CONTEXT_READ_SETTINGS` | Read personal-context settings |
 | `USE_ON_DEVICE_INTELLIGENCE` | Drive the on-device inference path (see 51.4) |
 
-That last permission is the link back to the rest of this chapter:
+That last permission is the link back to the rest of this chapter.
 PersonalContext is a *consumer* of OnDeviceIntelligence (51.4). It uses the
 sandboxed inference path to run the language models that summarize a
-conversation or rank a recall, and it indexes the results -- not the raw source
-data -- for retrieval. The hint inputs themselves originate from the same
-passive-intelligence layer described in 51.7: a `ContentCaptureConversationHint`,
-for instance, is built from Content Capture of a messaging surface. PersonalContext
-thus stitches together three subsystems this chapter already covered -- Content
-Capture as the source, OnDeviceIntelligence as the reasoning engine, and
-AppSearch as the store -- into one personal-context pipeline.
+conversation or rank a recall. It indexes the results, not the raw source
+data, for retrieval.
+
+The hint inputs themselves originate from the same
+passive-intelligence layer described in 51.7. For instance, a
+`ContentCaptureConversationHint` is built from Content Capture of a messaging
+surface. PersonalContext thus stitches together three subsystems that this
+chapter already covered. Content Capture is the source, OnDeviceIntelligence is
+the reasoning engine, and AppSearch is the store. Together they form one
+personal-context pipeline.
 
 The store is AppSearch-backed. PersonalContext converts understood data into
 AppSearch `GenericDocument`s and indexes them through its `MemoryIndexManager`
-(`packages/apps/PersonalContext/src/com/android/personalcontext/storage/appsearch/MemoryIndexManager.kt`),
-then retrieves them at query time through a `MemorySearchAgent`
+(`packages/apps/PersonalContext/src/com/android/personalcontext/storage/appsearch/MemoryIndexManager.kt`).
+It then retrieves them at query time through a `MemorySearchAgent`
 (`.../search/MemorySearchAgentImpl.kt`) that combines keyword and embedding-based
 semantic search. The following diagram shows data flowing into and out of the
 context store.
@@ -6009,27 +6052,30 @@ graph LR
 PersonalContext's privacy model is the PCC model, applied to a deliberately
 sensitive data set. Three properties hold it together. First, **sandbox
 confinement**: because its components are `privateComputeCore`, the app cannot
-reach the network with the raw context it has gathered; the only sanctioned way
-out is the PCC egress path, and the only thing it publishes are
-derived `ContextInsight`s, not source content. Second, **on-device reasoning**:
-all summarization and ranking run through OnDeviceIntelligence's sandboxed
-inference (51.4), so the personal data is processed locally rather than shipped
-to a server. Third, **access gating**: every hint, insight, and settings
-permission is `signature|privileged` and additionally flagged
-`allowedInPrivateComputeCore`, so only platform-signed components participate,
-and the whole surface can be disabled by clearing `enable_osi`. The data store
-is the user's own AppSearch database, subject to the same per-user visibility
-and access controls described in 51.8. The net effect mirrors AiSeal's goal from
-the other direction: AiSeal seals *compute* in a VM, while PersonalContext seals
-*data and its processing* in the PCC sandbox, and the two represent Android 17's
-two complementary answers to running intelligence over private data without
-leaking it.
+reach the network with the raw context it has gathered. The only sanctioned way
+out is the PCC egress path. The only things it publishes are
+derived `ContextInsight`s, not source content.
+
+Second, **on-device reasoning**: all summarization and ranking run through
+OnDeviceIntelligence's sandboxed inference (51.4). So the personal data is
+processed locally rather than shipped to a server. Third, **access gating**:
+every hint, insight, and settings permission is `signature|privileged` and
+additionally flagged `allowedInPrivateComputeCore`. So only platform-signed
+components participate. The whole surface can be disabled when `enable_osi` is
+cleared.
+
+The data store is the user's own AppSearch database, subject to the same
+per-user visibility and access controls described in 51.8. The net effect
+mirrors AiSeal's goal from the other direction. AiSeal seals *compute* in a VM,
+while PersonalContext seals *data and its processing* in the PCC sandbox. The
+two represent Android 17's two complementary answers to one question. The
+question is how to run intelligence over private data without leaking it.
 
 ## 51.15 ContentSafety: On-Device Content-Safety Inference
 
-Android 17 adds **ContentSafety**, a new platform service that lets a privileged caller ask
-an OEM-provided, on-device model whether a piece of content is sensitive or unsafe, without
-the content ever leaving the device. It is the safety-layer sibling of OnDeviceIntelligence
+Android 17 adds **ContentSafety**, a new platform service. A privileged caller uses it to ask
+an OEM-provided, on-device model whether a piece of content is sensitive or unsafe. The
+content never leaves the device. It is the safety-layer sibling of OnDeviceIntelligence
 (51.4): same "broker + sandboxed inference" shape, but purpose-built for content classification
 rather than general generative inference. The whole feature is gated by the `enable_contentsafety`
 flag (`frameworks/base/core/java/android/app/contentsafety/flags/contentsafety.aconfig`,
@@ -6040,11 +6086,11 @@ namespace `ondevicesafety`) and only starts when an OEM ships an implementation.
 `ContentSafetyManager`
 (`frameworks/base/core/java/android/app/contentsafety/ContentSafetyManager.java`) is the
 `@SystemService(Context.CONTENT_SAFETY_SERVICE)` entry point, annotated
-`@FlaggedApi(FLAG_ENABLE_CONTENTSAFETY)`. A caller holding the `CHECK_CONTENT_SAFETY`
-permission submits a `requestCheckContent(...)` (the `@RequiresPermission` annotation is on every
-public method, e.g. lines 83/100/116/258), and gets back one of two success codes --
-`CONTENT_SAFETY_SUCCESS_NONE` (nothing sensitive) or `CONTENT_SAFETY_SUCCESS_SENSITIVE` (lines
-149/153) -- or an error. A companion `requestIsFeatureEnabled(...)` lets a caller probe whether a
+`@FlaggedApi(FLAG_ENABLE_CONTENTSAFETY)`. A caller that holds the `CHECK_CONTENT_SAFETY`
+permission submits a `requestCheckContent(...)`. The `@RequiresPermission` annotation is on every
+public method (e.g. lines 83/100/116/258). The caller gets back one of two success codes, or an
+error. The codes are `CONTENT_SAFETY_SUCCESS_NONE` (nothing sensitive) and
+`CONTENT_SAFETY_SUCCESS_SENSITIVE` (lines 149/153). A companion `requestIsFeatureEnabled(...)` lets a caller probe whether a
 given safety feature/model is available before using it.
 
 ### 51.15.2 The Broker and the Sandbox
@@ -6054,26 +6100,28 @@ isolation of 51.4.4:
 
 - **`ContentSafetyService`** (`frameworks/base/core/java/android/service/contentsafety/ContentSafetyService.java`)
   is the *privileged* broker, bound by the system with `BIND_CONTENT_SAFETY_SERVICE`. It does no
-  inference itself; it manages the lifecycle of the sandboxed and settings services
+  inference itself. It manages the lifecycle of the sandboxed and settings services
   (`onNotifySandboxedServiceConnected/Disconnected`, `onNotifySettingsServiceConnected/Disconnected`,
   lines 230-244) and supplies feature/model data on demand (`onGetFeatureRequest`, line 218).
 - **`ContentSafetySandboxedService`** (`.../service/contentsafety/ContentSafetySandboxedService.java`)
   is the *isolated* inference process, bound with `BIND_SANDBOXED_CONTENT_SAFETY_SERVICE`. Its two
   abstract hooks are where the model actually runs: `onLoadFeatureRequest(...)` (line 241) loads a
-  model/feature, and `onCheckContentRequest(...)` (line 224) classifies the content. Running it in
-  an isolated sandbox keeps the (untrusted-input-handling) model away from the privileged broker's
-  process, the same containment principle as the ODI sandboxed inference service.
+  model/feature, and `onCheckContentRequest(...)` (line 224) classifies the content. An isolated
+  sandbox keeps the (untrusted-input-handling) model away from the privileged broker's
+  process. This is the same containment principle as the ODI sandboxed inference service.
 
 A third `ContentSafetySettingsService` carries configuration. On the framework side,
 `ContentSafetyManagerService`
 (`frameworks/base/services/core/java/com/android/server/contentsafety/ContentSafetyManagerService.java`)
-is the `SystemService` that publishes the manager and *orchestrates* each check: in
-`checkContentInternal` it fetches feature/model data from the broker (`requestGetFeature`) and then
-calls the sandboxed service (`requestCheckContent`) itself, so the privileged broker never invokes
-the sandbox directly. `SystemServer` starts it only when an OEM has
-defined the implementation and the flag is on (`startContentSafetyManagerService`,
-`SystemServer.java:2126`/`3672`, which logs "ContentSafetyManagerService not defined by OEM or
-disabled by flag" otherwise). The caller permission `CHECK_CONTENT_SAFETY` and the two bind
+is the `SystemService` that publishes the manager and *orchestrates* each check.
+In `checkContentInternal` it fetches feature/model data from the broker (`requestGetFeature`).
+Then it calls the sandboxed service (`requestCheckContent`) itself. So the privileged broker never
+invokes the sandbox directly.
+
+`SystemServer` starts this service only when an OEM has
+defined the implementation and the flag is on. The start method is `startContentSafetyManagerService`
+(`SystemServer.java:2126`/`3672`). Otherwise, this method logs "ContentSafetyManagerService not
+defined by OEM or disabled by flag". The caller permission `CHECK_CONTENT_SAFETY` and the two bind
 permissions `BIND_CONTENT_SAFETY_SERVICE` / `BIND_SANDBOXED_CONTENT_SAFETY_SERVICE` are declared
 in `core/res/AndroidManifest.xml` (lines 9784, 9795, 9805).
 
@@ -6089,18 +6137,18 @@ graph TD
     style RES fill:#4CAF50,color:#fff
 ```
 
-In the agentic landscape this is the on-device guardrail an assistant or AppFunctions agent can
-consult before surfacing or acting on generated/processed content, with the classification model
-sandboxed and the content never leaving the device.
+In the agentic landscape this is the on-device guardrail. An assistant or AppFunctions agent can
+consult it before it surfaces or acts on generated/processed content. The classification model
+is sandboxed, and the content never leaves the device.
 
 ## 51.16 Try It
 
 ### Exercise 51-1: Inspect AppFunction Metadata in AppSearch
 
-AppSearch registers no shell command (`cmd appsearch` does not exist — the
-service is published as `app_search` and `AppSearchManagerService` implements
-no `onShellCommand`), so inspect the indexed metadata through the
-AppFunctions service instead:
+AppSearch registers no shell command (`cmd appsearch` does not exist). The
+service is published as `app_search`, and `AppSearchManagerService` implements
+no `onShellCommand`. Inspect the indexed metadata through the AppFunctions
+service instead:
 
 ```bash
 # Dump the AppFunctions service state (includes metadata sync status)
@@ -6111,8 +6159,8 @@ adb shell cmd app_function list-app-functions --user 0
 ```
 
 To query the raw AppSearch documents, use the platform AppSearch APIs from a
-test app with a `GlobalSearchSession`; the static AppFunction metadata lives
-in the `apps-db` database and the runtime metadata in `appfunctions-db`
+test app with a `GlobalSearchSession`. The static AppFunction metadata lives
+in the `apps-db` database. The runtime metadata lives in `appfunctions-db`
 (51.2.11).
 
 ### Exercise 51-2: AppFunctionManagerService Shell Commands
@@ -6666,8 +6714,8 @@ adb shell cmd app_function clear-additional-allowlisted-agents
 ```
 
 There is no longer a `Settings.Secure` allowlist string or an access-history
-content provider; agent eligibility comes from the platform `AllowlistManager`
-(51.2.16) and interactions are recorded to statsd (51.2.8).
+content provider. Agent eligibility comes from the platform `AllowlistManager`
+(51.2.16). Interactions are recorded to statsd (51.2.8).
 
 ### Exercise 51-17: Implement AppFunction with Attribution
 
@@ -6784,7 +6832,7 @@ session.close();
 
 The Android 17 `InteractiveMirror` exposes `setInteractive`, `resize`,
 `updateInsets`, and `close`; there is no `sendTouchEvent` on the mirror. User
-touches flow through the mirror surface when it is interactive; agent actions
+touches flow through the mirror surface when it is interactive. Agent actions
 still go through `tap`/`swipe`/`insertText` on the session.
 
 ### Exercise 51-20: Debugging Common AppFunction Issues
@@ -6879,18 +6927,18 @@ This chapter traced Android's AI infrastructure from high-level SDK APIs
 through system services to hardware accelerators and isolated processes.
 
 **AppFunctions** introduced a standardized mechanism for AI agents to invoke
-app functionality, and matured substantially in Android 17 with runtime
+app functionality. It matured substantially in Android 17 with runtime
 function registration, discovery/state/observation APIs, and an
 access-management framework. The framework uses `GenericDocument` (from
-AppSearch) as its wire format, enforces access through a layered
-permission/allowlist model (now served by the platform `AllowlistManager`), and
-logs each agent-to-app interaction to statsd. The architecture follows the
+AppSearch) as its wire format. It enforces access through a layered
+permission/allowlist model (now served by the platform `AllowlistManager`).
+It logs each agent-to-app interaction to statsd. The architecture follows the
 classic Android pattern: client manager, AIDL interface, system\_server
 implementation, and remote service binding.
 
 **Computer Control** enables AI agents to interact with arbitrary apps through
-a virtual display -- launching activities, injecting touch/key events, capturing
-screenshots, and reading accessibility trees. It builds on VirtualDeviceManager
+a virtual display. Agents can launch activities, inject touch/key events,
+capture screenshots, and read accessibility trees. It builds on VirtualDeviceManager
 infrastructure and adds stability detection so agents know when to act.
 
 **OnDeviceIntelligence** provides a dual-service architecture where an OEM
@@ -6908,8 +6956,8 @@ privacy-preserving aggregate models through differential privacy and secure
 aggregation.
 
 **Content Capture, TextClassifier, and AppPrediction** form the passive
-intelligence layer -- capturing UI state, classifying text entities, and
-predicting app usage to power smart features across the system.
+intelligence layer. They capture UI state, classify text entities, and
+predict app usage to power smart features across the system.
 
 **AppSearch** provides the on-device indexing engine that underpins function
 discovery, content search, and metadata management.
@@ -6918,17 +6966,17 @@ discovery, content search, and metadata management.
 classifiers, sandboxed SDK runtimes, and auction logic that keeps user data
 local while still enabling advertising functionality.
 
-**AiSeal** (new in Android 17) hosts on-device AI payloads -- an inference
-service, AI agents, and a personal AppSearch database -- inside a protected
-virtual machine the host cannot inspect, exposing a host-side
-`AiSealManager.connectService()` over vsock and tying the VM's per-user
+**AiSeal** (new in Android 17) hosts on-device AI payloads inside a protected
+virtual machine the host cannot inspect. The payloads are an inference
+service, AI agents, and a personal AppSearch database. It exposes a host-side
+`AiSealManager.connectService()` over vsock. It ties the VM's per-user
 encrypted storage to host CE-key lock state (the protected-VM machinery lives in
 Chapter 56).
 
 **PersonalContext** (new in Android 17) is a Private Compute Core app that turns
 captured conversations, notifications, and selections into searchable on-device
-"memories" via `ContextUnderstanderService`s, reasoning with OnDeviceIntelligence
-and storing results in AppSearch while the PCC sandbox keeps the raw data from
+"memories" via `ContextUnderstanderService`s. It reasons with OnDeviceIntelligence
+and stores results in AppSearch. The PCC sandbox keeps the raw data from
 leaving the device.
 
 The common thread across all these subsystems is Android's commitment to
@@ -7027,17 +7075,17 @@ gates, and with the system server mediating all cross-boundary communication.
 # Chapter 52: CompanionDeviceManager and Virtual Devices
 
 Android's CompanionDeviceManager (CDM) and VirtualDeviceManager (VDM) form a
-layered infrastructure that enables phones to pair with external hardware --
+layered infrastructure. It lets phones pair with external hardware --
 smartwatches, tablets, automotive head-units, PCs, even AR glasses -- and present
 them as first-class computing surfaces. CDM manages the lifecycle of device
 associations, presence detection, secure transport channels, and cross-device
-data synchronization. VDM, built on top of CDM associations, lets a remote
+data synchronization. VDM is built on top of CDM associations. It lets a remote
 companion device host virtual displays, virtual input devices, virtual sensors,
-virtual cameras, and virtual audio pipelines -- effectively projecting an entire
+virtual cameras, and virtual audio pipelines. In effect, it projects an entire
 Android experience onto external hardware.
 
-This chapter walks through the full server-side implementation of both systems,
-from the initial BLE/Bluetooth discovery handshake through to a running
+This chapter walks through the full server-side implementation of both systems.
+It starts at the initial BLE/Bluetooth discovery handshake. It ends at a running
 virtual display with injected touch events and re-routed audio streams.
 
 All source paths are relative to the AOSP source tree root.
@@ -7056,8 +7104,8 @@ frameworks/base/services/companion/java/com/android/server/companion/
 ```
 
 This file serves as the orchestrator. It does not
-implement all functionality itself; instead it delegates to a set of specialized
-processors and managers, each living in its own sub-package:
+implement all functionality itself. Instead it delegates to a set of specialized
+processors and managers. Each one lives in its own sub-package:
 
 | Sub-package        | Key Class                          | Responsibility                                |
 |--------------------|------------------------------------|-----------------------------------------------|
@@ -7077,9 +7125,9 @@ processors and managers, each living in its own sub-package:
 | `virtual/`         | `VirtualDeviceManagerService`      | Virtual device creation & management          |
 
 The `devicetrust/` and `powerexemption/` packages are new in
-Android 17 and are covered in section 52.7; the `actionrequest/` package
-already shipped in Android 16 and gained additional result constants in 17. `CompanionDeviceManagerService` also
-holds a top-level `BackupRestoreProcessor` that backs up and restores
+Android 17 and are covered in section 52.7. The `actionrequest/` package
+already shipped in Android 16 and gained more result constants in 17.
+`CompanionDeviceManagerService` also holds a top-level `BackupRestoreProcessor` that backs up and restores
 associations across device migration.
 
 The class diagram below shows how `CompanionDeviceManagerService` coordinates
@@ -7142,9 +7190,9 @@ classDiagram
 
 The processor fields are declared together in `CompanionDeviceManagerService`
 (see `frameworks/base/services/companion/java/com/android/server/companion/CompanionDeviceManagerService.java`,
-lines 154-170) and wired up in the constructor (lines 200-236), where each
-processor receives the shared `AssociationStore` and `CompanionTransportManager`
-so that all of them observe the same association set and the same transport
+lines 154-170). They are wired up in the constructor (lines 200-236). There each
+processor receives the shared `AssociationStore` and `CompanionTransportManager`.
+So all of them observe the same association set and the same transport
 channels.
 
 ### 52.1.2 Permission Model
@@ -7213,7 +7261,7 @@ service constructor. During `onStart()`, the service:
    `InactiveAssociationsRemovalService`, and calls
    `CrossDeviceSyncController.onBootCompleted()` for call metadata sync.
 
-The association data is stored in Device Encrypted (DE) storage, so it is
+The association data is stored in Device Encrypted (DE) storage. So it is
 available before the user unlocks the device. This is explicit in the
 `AssociationStore.refreshCache()` implementation:
 
@@ -7304,11 +7352,11 @@ final AssociationInfo association =
 Source:
 `frameworks/base/services/companion/java/com/android/server/companion/association/AssociationRequestsProcessor.java`, lines 335-355.
 
-The last two setters are new in Android 17: `setExtraPermissions()` carries an
-optional set of permissions tied to the association, and
-`setRemoteAiAgentSupported()` records whether the companion can host a remote AI
-agent (used by the Computer Control flow in section 52.8). The value flows in
-from `AssociationRequest.isRemoteAiAgentSupported()`.
+The last two setters are new in Android 17. `setExtraPermissions()` carries an
+optional set of permissions tied to the association. `setRemoteAiAgentSupported()`
+records whether the companion can host a remote AI agent (used by the Computer
+Control flow in section 52.8). The value flows in from
+`AssociationRequest.isRemoteAiAgentSupported()`.
 
 Key fields:
 
@@ -7360,11 +7408,12 @@ The full set of device profiles includes:
 - **DEVICE_PROFILE_MEDICAL** -- medical device companion (flag
   `FLAG_ENABLE_MEDICAL_PROFILE`)
 
-The last two are flag-gated profiles present in both Android 16 and 17; they
-stay behind their aconfig flags rather than being a 17 addition. Both are declared in
-`frameworks/base/core/java/android/companion/AssociationRequest.java`,
-each guarded by a `@FlaggedApi` annotation pointing at an aconfig flag in
-`frameworks/base/core/java/android/companion/flags.aconfig`:
+The last two are flag-gated profiles present in both Android 16 and 17. They
+stay behind their aconfig flags. They are not a 17 addition. Both are declared in
+`frameworks/base/core/java/android/companion/AssociationRequest.java`.
+Each is guarded by a `@FlaggedApi` annotation that points at an aconfig flag in
+`frameworks/base/core/java/android/companion/flags.aconfig`.
+
 `DEVICE_PROFILE_FITNESS_TRACKER` maps to the role string
 `android.app.role.COMPANION_DEVICE_FITNESS_TRACKER`, and `DEVICE_PROFILE_MEDICAL`
 maps to `android.app.role.COMPANION_DEVICE_MEDICAL`.
@@ -7396,14 +7445,15 @@ Source:
 The role-to-permission mapping for each profile lives in
 `frameworks/base/services/companion/java/com/android/server/companion/utils/RolesUtils.java`.
 The two Android 17 profiles are handled differently there.
-`DEVICE_PROFILE_FITNESS_TRACKER` is a *role alias*: a `ROLE_ALIASES` map points
-it at `DEVICE_PROFILE_WATCH`, so a fitness tracker reuses the watch role and its
+`DEVICE_PROFILE_FITNESS_TRACKER` is a *role alias*. A `ROLE_ALIASES` map points
+it at `DEVICE_PROFILE_WATCH`. So a fitness tracker reuses the watch role and its
 permission set (notifications, phone, call logs, SMS, contacts, calendar, nearby
-devices, media output) rather than defining a separate role.
+devices, media output). It does not define a separate role.
+
 `DEVICE_PROFILE_MEDICAL` is its own role with a narrower set in
 `PROFILE_PERMISSION_SETS`: post-notifications, nearby devices, schedule-exact-alarm,
-and bypass-Do-Not-Disturb, reflecting that a medical companion needs to deliver
-time-critical alerts but not the broad messaging access a watch gets.
+and bypass-Do-Not-Disturb. This reflects that a medical companion needs to deliver
+time-critical alerts. It does not need the broad messaging access a watch gets.
 
 ### 52.2.3 The Association Flow
 
@@ -7464,10 +7514,10 @@ public void processNewAssociationRequest(@NonNull AssociationRequest request,
 ```
 
 Source:
-`AssociationRequestsProcessor.java`, lines 171-249 (the permission helpers
+`AssociationRequestsProcessor.java`, lines 171-249. The permission helpers
 `enforcePermissionForCreatingAssociation` and `enforceUsesCompanionDeviceFeature`
 are static imports from `com.android.server.companion.utils.PermissionsUtils`
-and `PackageUtils`, a refactor introduced in Android 17).
+and `PackageUtils`. This refactor was introduced in Android 17.
 
 ### 52.2.4 Rate Limiting
 
@@ -7595,9 +7645,9 @@ A critical design aspect: if the companion app process is in the foreground
 when disassociation is triggered, the actual removal is deferred. The
 association is marked as "revoked" and an `OnUidImportanceListener` is
 registered. When the process moves to the background, the cleanup completes.
-Deferral applies both when the association holds a device profile whose role is
-not in use by other associations and when a profile-less association carries
-extra permissions:
+Deferral applies in two cases. In the first, the association holds a device
+profile whose role no other association uses. In the second, a profile-less
+association carries extra permissions:
 
 ```java
 if (packageProcessImportance <= IMPORTANCE_FOREGROUND
@@ -8259,10 +8309,10 @@ In `onStart()` the service publishes a binder service under
 
 Task continuity messages flow through the CDM transport using
 `MESSAGE_ONEWAY_TASK_CONTINUITY`. The concrete message types live under
-`messages/` and include `HandoffRequestMessage` / `HandoffRequestResultMessage`
-(request/response for a task transfer), `HandoffActivityDataMessage` (the activity
-payload to resume), `TaskStackBroadcastMessage` (remote task-stack
-synchronization), and `RemoteTaskInfo` (a single remote task descriptor). The
+`messages/`. They include `HandoffRequestMessage` / `HandoffRequestResultMessage`
+(request/response for a task transfer) and `HandoffActivityDataMessage` (the activity
+payload to resume). They also include `TaskStackBroadcastMessage` (remote task-stack
+synchronization) and `RemoteTaskInfo` (a single remote task descriptor). The
 per-association request flow is driven by `InboundHandoffRequestHandler` and
 `OutboundHandoffRequestHandler` in `handoff/`.
 
@@ -8291,18 +8341,18 @@ public HandoffActivityData onHandoffActivityDataRequested(      // line 10240
 
 The whole API is gated by the `task_continuity` aconfig flag
 (`frameworks/base/core/java/android/companion/flags.aconfig:69`, namespace `companion`,
-exported as `android.companion.Flags.FLAG_TASK_CONTINUITY`) and by the matching
+exported as `android.companion.Flags.FLAG_TASK_CONTINUITY`). A second gate is the matching
 `CompanionDeviceManager.FLAG_TASK_CONTINUITY = 1 << 1`
-(`CompanionDeviceManager.java:233`) data-sync capability that authorizes the transport
-to carry handoff payloads between two associated devices. There is no handoff without a
+(`CompanionDeviceManager.java:233`) data-sync capability. This capability authorizes the
+transport to carry handoff payloads between two associated devices. There is no handoff without a
 CDM association first: the feature rides the same secure CDM channel described in
 Sections 52.3.1-52.3.4.
 
 Both endpoints are *real, user-owned devices* -- a phone and a tablet, or a phone and a
 Chromebook -- that were paired through CompanionDeviceManager (Section 52.2). This is
 unrelated to the virtual displays of Sections 52.4-52.6, where a single device drives a
-projected surface: in a handoff each device runs its own copy of the app, and only a
-compact descriptor crosses the link to tell the receiver how to recreate the activity
+projected surface. In a handoff, each device runs its own copy of the app. Only a
+compact descriptor crosses the link. It tells the receiver how to recreate the activity
 (Section 52.3.11).
 
 `HandoffActivityDataRequestInfo.isActiveRequest()` tells the activity *why* it is being
@@ -8352,40 +8402,40 @@ sequenceDiagram
 On the **sender**, `ActivityThread` calls back into the activity from two places:
 
 - In `callActivityOnSaveInstanceState()` (invoked from `performStopActivityInner()`
-  on the stop path), guarded by
-  `android.companion.Flags.taskContinuity() && r.activity.isHandoffEnabled()`, it
-  pre-caches a snapshot:
+  on the stop path), it pre-caches a snapshot. This step is guarded by
+  `android.companion.Flags.taskContinuity() && r.activity.isHandoffEnabled()`.
+  The snapshot is
   `r.handoffActivityData = r.activity.onHandoffActivityDataRequested(requestInfo)` with
-  `isActiveRequest=false` (`ActivityThread.java:6982`-6990); the cached data is
+  `isActiveRequest=false` (`ActivityThread.java:6982`-6990). The cached data is
   attached to the `StopInfo` via `setHandoffActivityData()` at
   `ActivityThread.java:6437`.
-- When a live handoff is requested it handles the `REQUEST_HANDOFF_ACTIVITY_DATA`
-  message (H-message id 173, `ActivityThread.java:2683`), calls
+- When a live handoff is requested, it handles the `REQUEST_HANDOFF_ACTIVITY_DATA`
+  message (H-message id 173, `ActivityThread.java:2683`). It calls
   `onHandoffActivityDataRequested(...)` with `isActiveRequest=true`
-  (`ActivityThread.java:4846`), and returns the result through
+  (`ActivityThread.java:4846`). It returns the result through
   `ActivityTaskManager.reportHandoffActivityData(requestToken, data)`
   (`ActivityThread.java:4859`).
 
-The request originates in WindowManager:
+The request originates in WindowManager.
 `ActivityTaskManagerService.requestHandoffTaskData(int taskId, IHandoffTaskDataReceiver receiver)`
-(`ActivityTaskManagerService.java:3973`) fans the request to the task's top activity and
-waits -- with a timeout, see the constant at line 489 -- for the activity to report back
-through the `IHandoffTaskDataReceiver` oneway callback. The per-activity enablement bit
+(`ActivityTaskManagerService.java:3973`) fans the request to the task's top activity.
+It then waits for the activity to report back through the `IHandoffTaskDataReceiver`
+oneway callback. The wait has a timeout (see the constant at line 489). The per-activity enablement bit
 itself is set through `ActivityClientController.setHandoffEnabled()`
 (`ActivityClientController.java:366`) and stored on the `ActivityRecord`.
 
 From there the `TaskContinuityManagerService` serializes the `HandoffActivityData` into a
 `HandoffActivityDataMessage` and ships it over the CDM transport as
 `MESSAGE_ONEWAY_TASK_CONTINUITY` (`0x43678884`, `CompanionDeviceManager.java:361`). On the
-**receiver**, the service rebuilds the remote task and notifies registered listeners; the
+**receiver**, the service rebuilds the remote task and notifies registered listeners. The
 device's launcher/taskbar surfaces it as a task available from a nearby device. When the
-user taps it, the receiver calls `requestHandoff(...)`, the sender returns its latest
-`HandoffActivityData`, and the receiver either deep-links into the same app or opens the
+user taps it, the receiver calls `requestHandoff(...)`. The sender returns its latest
+`HandoffActivityData`. The receiver then either deep-links into the same app or opens the
 web fallback (Section 52.3.11).
 
 AOSP ships the framework and the system service, but not the launcher tile that lists
-nearby-device tasks; that surface is part of the system launcher/shell, which consumes
-remote tasks through `TaskContinuityManager`'s listener API.
+nearby-device tasks. That surface is part of the system launcher/shell. The launcher/shell
+consumes remote tasks through the listener API of `TaskContinuityManager`.
 
 ### 52.3.11 App-to-App, App-to-Web, and the Public Manager API
 
@@ -8401,26 +8451,32 @@ carries everything the receiver needs and supports two delivery modes:
 
 Whether a missing app blocks the handoff is controlled by
 `HandoffActivityParams.isAllowHandoffWithoutPackageInstalled()`
-(`HandoffActivityParams.java:98`): set it and the handoff proceeds to the web fallback even
-when the target app is absent on the other device.
+(`HandoffActivityParams.java:98`). When it is set, the handoff proceeds to the web fallback
+even when the target app is absent on the other device.
 
 **What data a handoff can carry.** `HandoffActivityData` is a small, fully serializable
 descriptor, not a bulk state transfer. Its entire payload is three fields
-(`HandoffActivityData.java:50`-52): an optional `ComponentName` (the activity to relaunch),
-an optional fallback `Uri`, and a `PersistableBundle` of extras (`getExtras()`, defaulting
-to empty). The extras are deliberately a `PersistableBundle` rather than a full `Bundle`,
-so only the types a `PersistableBundle` can serialize travel across the link: `boolean`,
-`int`, `long`, `double`, `String`, their arrays, and nested `PersistableBundle`s.
-Parcelables, `Binder` handles, bitmaps, and file descriptors cannot be placed in it. The
-framework also requires the extras to be device-portable -- the Builder's `setExtras()`
-javadoc (`HandoffActivityData.java:214`) warns they "must be safe to pass to another device,
-and thus should not reference any device-specific information such as file paths." Anything
-heavier than primitive state -- a half-edited document, a decoded media buffer, an
-authenticated session -- is not shipped inside the handoff; the receiving activity is
-expected to reconstruct it from the component plus extras, for example by re-fetching from
-the user's account or cloud. On the wire the descriptor is wrapped in a
-`HandoffActivityDataMessage`, which also carries the sending app's `packageSignatureDigests`
-so the receiver can confirm it is launching the same app rather than a look-alike.
+(`HandoffActivityData.java:50`-52). They are an optional `ComponentName` (the activity to
+relaunch), an optional fallback `Uri`, and a `PersistableBundle` of extras (`getExtras()`,
+empty by default).
+
+The extras are deliberately a `PersistableBundle` rather than a full
+`Bundle`. So only the types a `PersistableBundle` can serialize travel across the link:
+`boolean`, `int`, `long`, `double`, `String`, their arrays, and nested `PersistableBundle`s.
+Parcelables, `Binder` handles, bitmaps, and file descriptors cannot be placed in it.
+
+The framework also requires the extras to be device-portable. The Builder's `setExtras()`
+javadoc (`HandoffActivityData.java:214`) warns about this. It says the extras "must be safe to
+pass to another device, and thus should not reference any device-specific information such as
+file paths."
+
+Anything heavier than primitive state -- a half-edited document, a decoded media buffer, an
+authenticated session -- is not shipped inside the handoff. The receiving activity is
+expected to reconstruct it from the component plus extras. For example, it can re-fetch it
+from the user's account or cloud. On the wire the descriptor is wrapped in a
+`HandoffActivityDataMessage`. This message also carries the `packageSignatureDigests` of
+the sending app, so the receiver can confirm it is launching the same app rather than a
+look-alike.
 
 Apps and launchers that want to *observe and trigger* handoffs use the
 `TaskContinuityManager` system service (`@SystemService(Context.TASK_CONTINUITY_SERVICE)`,
@@ -8432,14 +8488,15 @@ Apps and launchers that want to *observe and trigger* handoffs use the
   `isHandoffEnabled()`.
 - `requestHandoff(...)` to pull a task onto this device.
 
-These are guarded by dedicated permissions enforced on the AIDL stub
-(`ITaskContinuityManager.aidl`): `READ_REMOTE_TASKS` (list remote tasks, line 29),
+Dedicated permissions guard these calls. They are enforced on the AIDL stub
+(`ITaskContinuityManager.aidl`). The permissions are `READ_REMOTE_TASKS` (list remote tasks, line 29),
 `REQUEST_TASK_HANDOFF` (pull a task, line 35), `MODIFY_HANDOFF_SETTINGS`
-(`setHandoffForDeviceEnabled`, line 39), and `READ_HANDOFF_SETTINGS` (line 42). Results and
-availability come back through the `HANDOFF_REQUEST_RESULT_*` and
+(`setHandoffForDeviceEnabled`, line 39), and `READ_HANDOFF_SETTINGS` (line 42).
+
+Results and availability come back through the `HANDOFF_REQUEST_RESULT_*` and
 `HANDOFF_AVAILABILITY_STATUS_*` constants on `TaskContinuityManager`
-(`TaskContinuityManager.java:59`-103) -- for example
-`HANDOFF_AVAILABILITY_STATUS_UNSUPPORTED_HARDWARE` when the device lacks the radios, or
+(`TaskContinuityManager.java:59`-103). For example, the result is
+`HANDOFF_AVAILABILITY_STATUS_UNSUPPORTED_HARDWARE` when the device lacks the radios. It is
 `HANDOFF_REQUEST_RESULT_FAILURE_TIMEOUT` when the sender never reported its data.
 
 ---
@@ -8449,8 +8506,8 @@ availability come back through the `HANDOFF_REQUEST_RESULT_*` and
 ### 52.4.1 Service Architecture
 
 The `VirtualDeviceManagerService` is the system service that manages virtual
-devices. It lives alongside CDM but serves a different purpose: while CDM
-manages the _association_ with companion hardware, VDM manages the _virtual
+devices. It lives alongside CDM but serves a different purpose. CDM
+manages the _association_ with companion hardware. VDM manages the _virtual
 representation_ of that hardware within the Android framework.
 
 ```
@@ -8576,8 +8633,8 @@ VirtualDeviceImpl(
 
 Source:
 `VirtualDeviceImpl.java`, lines 489-502. In Android 17 `associationInfo` is now
-`@Nullable` (a virtual device can be created without a CDM association under the
-right permissions) and a `@DeviceProfile int deviceProfile` parameter was added.
+`@Nullable`. A virtual device can be created without a CDM association under the
+right permissions. A `@DeviceProfile int deviceProfile` parameter was also added in Android 17.
 
 Key initialization details:
 
@@ -8683,9 +8740,9 @@ intents launched on virtual displays:
 private final Map<IBinder, IntentFilter> mIntentInterceptors = new ArrayMap<>();
 ```
 
-When an activity launch matches a registered filter, the launch is aborted
-and the `IVirtualDeviceIntentInterceptor` callback fires with a sanitized
-intent (containing only action and data, for privacy):
+When an activity launch matches a registered filter, the launch is aborted.
+Then the `IVirtualDeviceIntentInterceptor` callback fires with a sanitized
+intent. For privacy, the intent contains only the action and data:
 
 ```java
 IVirtualDeviceIntentInterceptor.Stub.asInterface(interceptor.getKey())
@@ -8800,10 +8857,10 @@ try {
 Source:
 `VirtualDeviceImpl.java`, lines 615-619.
 
-When the death callback fires, the device performs a comprehensive cleanup:
-closing all virtual displays, releasing all input devices, stopping the audio
-controller, removing sensors, closing camera injection sessions, and
-unregistering from the service's device map.
+When the death callback fires, the device performs a comprehensive cleanup.
+It closes all virtual displays and releases all input devices. It stops the audio
+controller and removes sensors. It also closes camera injection sessions and
+unregisters from the device map of the service.
 
 ---
 
@@ -8896,16 +8953,17 @@ void setDisplayImePolicy(int displayId, @WindowManager.DisplayImePolicy int poli
 Android 17 ships a concrete consumer of this virtual-input machinery as a
 platform app. `packages/apps/VirtualGamepad/` is a platform-signed Jetpack
 Compose app that draws an on-screen gamepad and synthesizes gamepad input for a
-game running on the same display. Rather than going through a `VirtualDevice`,
-it talks to the input stack directly via the hidden
-`InputManager.createVirtualGamepad(VirtualGamepadConfig)` entry point -- an
-`@hide` platform API guarded by `INJECT_EVENTS`, available only to
-platform-signed apps (declared
-in `frameworks/base/core/java/android/hardware/input/InputManager.java`), which
-backs onto the same `createVirtual*` device family this section describes. Its
-`LocalGamepadBackend` builds the `VirtualGamepadConfig` with the activity's
-`displayId` as `associatedDisplayId`, then pushes `VirtualGamepadMotionEvent`
-and `VirtualKeyEvent` objects through the returned `VirtualGamepad` handle (see
+game running on the same display. The app does not go through a `VirtualDevice`.
+It talks to the input stack directly through the hidden
+`InputManager.createVirtualGamepad(VirtualGamepadConfig)` entry point. This is an
+`@hide` platform API guarded by `INJECT_EVENTS`, and only platform-signed apps can
+use it (declared in `frameworks/base/core/java/android/hardware/input/InputManager.java`).
+It backs onto the same `createVirtual*` device family that this section describes.
+
+The `LocalGamepadBackend` of the app builds the `VirtualGamepadConfig` with the
+`displayId` of the activity as `associatedDisplayId`. It then pushes
+`VirtualGamepadMotionEvent` and `VirtualKeyEvent` objects through the returned
+`VirtualGamepad` handle (see
 `packages/apps/VirtualGamepad/java/com/android/virtualgamepad/backend/LocalGamepadBackend.kt`).
 The app holds `INJECT_EVENTS` and `ASSOCIATE_INPUT_DEVICE_TO_DISPLAY`, and
 finishes itself when a physical gamepad is connected. It is a thin client of the
@@ -9399,8 +9457,9 @@ public boolean canContainActivity(@NonNull ActivityInfo activityInfo,
 Source:
 `GenericWindowPolicyController.java`, lines 316-356. In Android 17 the
 `FLAG_CAN_DISPLAY_ON_REMOTE_DEVICES` gate is skipped for displays created with the
-new `mLocalDeviceOnly` flag (local virtual displays that never leave the host),
-and the standalone mirror-display short-circuit was dropped from this method.
+new `mLocalDeviceOnly` flag (local virtual displays that never leave the host).
+In Android 17, the standalone mirror-display short-circuit was also dropped from this
+method.
 
 The policy logic is an XOR pattern:
 
@@ -9457,13 +9516,13 @@ public boolean keepActivityOnWindowFlagsChanged(ActivityInfo activityInfo, int w
 Source:
 `GenericWindowPolicyController.java`, lines 365-399. Android 17 refactored the
 secure-window bookkeeping into a per-component `mWindowFlagsTracker` and a
-`detectSecureWindowStatusChange()` helper, which is what now fires the
-`onSecureWindowShown`/`onSecureWindowHidden` activity-listener callbacks; the
+`detectSecureWindowStatusChange()` helper. This helper now fires the
+`onSecureWindowShown`/`onSecureWindowHidden` activity-listener callbacks. The
 `ALLOW_SECURE_ACTIVITY_DISPLAY_ON_REMOTE_DEVICE` compatibility change is declared
 at line 126.
 
 The `ALLOW_SECURE_ACTIVITY_DISPLAY_ON_REMOTE_DEVICE` compatibility change
-(ID `201712607`) is `@EnabledSince` Tiramisu: for apps targeting Tiramisu or
+(ID `201712607`) is `@EnabledSince` Tiramisu. For apps that target Tiramisu or
 later it is on by default, so their `FLAG_SECURE` windows are *allowed* on
 virtual displays. Apps targeting below T have the change disabled and hit the
 blocking branch above, which rejects their secure windows.
@@ -9646,12 +9705,12 @@ sequenceDiagram
 This section walks three sibling packages under
 `frameworks/base/services/companion/java/com/android/server/companion/`, all wired
 into `CompanionDeviceManagerService` next to the existing processors. The
-`devicetrust/` and `powerexemption/` packages are new in Android 17; the
+`devicetrust/` and `powerexemption/` packages are new in Android 17. The
 `actionrequest/` package already shipped in Android 16 and is grouped here for
-context (it picked up extra result constants in 17). All three share the same
-`AssociationStore`, so they observe the same association set, but only
-`devicetrust/` also hooks into `CompanionTransportManager`; `actionrequest/`
-works through `CompanionAppBinder` and `DevicePresenceProcessor`, and
+context (it got more result constants in 17). All three share the same
+`AssociationStore`, so they see the same association set. Only
+`devicetrust/` also hooks into `CompanionTransportManager`. The `actionrequest/`
+package works through `CompanionAppBinder` and `DevicePresenceProcessor`, and
 `powerexemption/` through `PowerExemptionManager` and
 `ActivityTaskManagerInternal`.
 
@@ -9686,7 +9745,7 @@ Source:
 `requestAction()` validates the action against `STATEFUL_ACTIONS`, then dispatches
 to each named association (skipping any that no longer exist). The companion app
 later reports `RESULT_ACTIVATED`, `RESULT_DEACTIVATED`, or
-`RESULT_FAILED_TO_ACTIVATE` through `processActionResult()`, which updates the
+`RESULT_FAILED_TO_ACTIVATE` through `processActionResult()`. This call updates the
 processor's per-association state and fans the result out to registered
 `IOnActionResultListener` callbacks:
 
@@ -9715,9 +9774,9 @@ interface (see `CompanionDeviceManagerService.java`, lines 799 and 807).
 
 ### 52.7.2 Trusted Devices
 
-The `devicetrust/` package establishes and stores per-association session keys so
-two paired devices can recognize each other as trusted without re-running the
-full UKEY2 attestation handshake every time. `TrustedDeviceProcessor` registers
+The `devicetrust/` package establishes and stores per-association session keys.
+With these keys, two paired devices can recognize each other as trusted. They do
+not need to re-run the full UKEY2 attestation handshake every time. `TrustedDeviceProcessor` registers
 for `MESSAGE_REQUEST_TRUSTED_DEVICE` on the transport manager and runs a
 key-exchange when a transport connects:
 
@@ -9758,10 +9817,10 @@ mTrustedDeviceProcessor.removePskProvider(RandomKeyProvider.NAME);
 
 Source:
 `CompanionDeviceManagerService.java`, lines 718-720. The `PskProvider` interface
-exposes three members: `String getProviderName()` -- the identity that
-`removePskProvider()` matches on -- `byte[] getKey(int userId, int associationId)`,
-and a default `void load(int userId)` hook
-(`PskProvider.java`, lines 27-50), and `loadKeysForUser()` snapshots the available
+exposes three members. `String getProviderName()` is the identity that
+`removePskProvider()` matches on. `byte[] getKey(int userId, int associationId)`
+returns a key. The third member is a default `void load(int userId)` hook
+(`PskProvider.java`, lines 27-50). `loadKeysForUser()` snapshots the available
 keys when a user is unlocked (`TrustedDeviceProcessor.java`, line 111).
 
 ### 52.7.3 Power Exemptions
@@ -9799,8 +9858,8 @@ companion app exempt from permission auto-revoke
 
 A top-level `BackupRestoreProcessor` lets associations survive a device migration
 or a backup-and-restore cycle. It serializes the association disk store and the
-system-data-transfer request store into a versioned payload, and reconstitutes
-them on restore, holding "pending" associations until the owning app is
+system-data-transfer request store into a versioned payload. It reconstitutes
+them on restore. It holds "pending" associations until the owning app is
 reinstalled:
 
 ```java
@@ -9824,24 +9883,24 @@ binding any associations that were waiting for that app
 
 Android 17 also adds new Health Connect record types such as
 `MenstrualCyclePhaseRecord`. These are not part of CompanionDeviceManager or
-VirtualDeviceManager: they live entirely in the Health Connect (HealthFitness)
+VirtualDeviceManager. They live entirely in the Health Connect (HealthFitness)
 mainline module under
 `packages/modules/HealthFitness/framework/java/android/health/connect/datatypes/MenstrualCyclePhaseRecord.java`,
 with the server-side helper at
 `packages/modules/HealthFitness/service/java/com/android/server/healthconnect/fitness/recordhelpers/MenstrualCyclePhaseRecordHelper.java`.
 A companion app (for example a wearable) reaches that data through the normal
-Health Connect permission and API surface, not through a CDM transport, so it is
-covered by the Health Connect material rather than this chapter.
+Health Connect permission and API surface, not through a CDM transport. For that reason, the
+Health Connect material covers it, not this chapter.
 
 ---
 
 ## 52.8 Computer Control Sessions
 
 The `virtual/computercontrol/` package is the largest new addition to VDM in
-Android 17. It implements **Computer Control**: a controlled, on-device automation
-surface where an approved agent (such as a remote AI agent advertised via the
-association's `remoteAiAgentSupported` flag from section 52.2.1) drives a virtual
-display, injects input, and reads back UI state, under explicit user consent and a
+Android 17. It implements **Computer Control**. This is a controlled, on-device automation
+surface. An approved agent drives a virtual display, injects input, and reads back
+UI state. The agent can be a remote AI agent advertised via the association's
+`remoteAiAgentSupported` flag from section 52.2.1. This access is under explicit user consent and a
 per-agent allowlist.
 
 ```
@@ -9927,8 +9986,8 @@ public String[] getAutomatableAppListForAgent(int agentUid, String agentPackageN
 
 Source:
 `ComputerControlSessionProcessor.java`, lines 346-392. Before a target can be
-automated, the controller checks both that the agent is approved
-(`isPackageApprovedToRunAutomation()`, line 399) and that the target is
+automated, the controller checks two things. The agent must be approved
+(`isPackageApprovedToRunAutomation()`, line 399). The target must be
 automatable (`isPackageTargetableForAutomation()`, line 407). The
 `ACCESS_COMPUTER_CONTROL` permission itself is enforced inside
 `ComputerControlAllowlistController` (see
@@ -9937,8 +9996,8 @@ automatable (`isPackageTargetableForAutomation()`, line 407). The
 ### 52.8.4 Session Lifecycle
 
 A Computer Control session runs on a virtual display. `createSession()` builds a
-`VirtualDeviceImpl` through the injected factory, attaches the agent's input and
-audio paths, and tracks the session so the VDM service can answer
+`VirtualDeviceImpl` through the injected factory and attaches the agent's input and
+audio paths. It also tracks the session so the VDM service can answer
 `isComputerControlSession(deviceId)` and `isComputerControlDisplay(displayId)`.
 Sessions can be closed by user intent (`closeSessionByUserIntent()`, line 473) and
 support a handover where one mirror display takes over from another. The companion
@@ -9954,10 +10013,10 @@ Source:
 
 ## 52.9 The CrossDeviceSync Service
 
-Everything covered so far lives inside `system_server`: the
+Everything covered so far lives inside `system_server`. The
 `CrossDeviceSyncController` in section 52.3.7 is a framework component that
 brokers *call* metadata over the CDM transport. Android 17 also ships a
-*separate*, much larger app-layer service that is the primary production
+*separate*, much larger app-layer service. It is the primary production
 consumer of the CDM association/transport machinery for general data sync. It
 lives outside the framework, as its own platform app:
 
@@ -9966,10 +10025,10 @@ packages/services/CrossDeviceSync/
 ```
 
 Despite the similar name, this is not the framework-side controller. It is a
-privileged, platform-signed application (`com.android.crossdevicesync`) whose
-job is to keep arbitrary feature state -- airplane mode, contextual "modes", and
-similar device settings -- in sync between a phone and its wearable, riding
-entirely on the CDM secure transport that sections 52.2 and 52.3 build. None of
+privileged, platform-signed application (`com.android.crossdevicesync`). Its job
+is to keep arbitrary feature state in sync between a phone and its wearable.
+Examples are airplane mode, contextual "modes", and similar device settings. It
+rides entirely on the CDM secure transport that sections 52.2 and 52.3 build. None of
 its code runs in `system_server`; it talks to CDM through the public
 `CompanionDeviceManager` SDK like any other companion app, just with elevated
 permissions.
@@ -9996,8 +10055,8 @@ trendy_team_wear_wear_frameworks`, marking it a new-in-Android-17 wearable
 component).
 
 Its manifest declares the app `persistent`, `directBootAware`, and gated behind
-a feature flag, and -- crucially -- it requests the same companion permissions
-this chapter has been describing from the framework side:
+a feature flag. Crucially, it requests the same companion permissions that this
+chapter describes from the framework side:
 
 ```xml
 <uses-permission android:name="android.permission.MANAGE_COMPANION_DEVICES" />
@@ -10008,15 +10067,15 @@ this chapter has been describing from the framework side:
 
 Source:
 `packages/services/CrossDeviceSync/AndroidManifest.xml`. `USE_COMPANION_TRANSPORTS`
-is exactly the permission section 52.1.2 lists as the gate for attaching a
-system data transport, and `MANAGE_COMPANION_DEVICES` is the administrative
+is exactly the permission that section 52.1.2 lists as the gate for attaching a
+system data transport. `MANAGE_COMPANION_DEVICES` is the administrative
 permission for querying associations across users. The manifest also registers
 two components: the `SyncService` and a `BootReceiver`.
 
-`BootReceiver` listens for `LOCKED_BOOT_COMPLETED` (so it can start before the
-user unlocks, since association data lives in Device Encrypted storage as
-section 52.1.3 explains) and starts the service only for the system user,
-disabling itself on every other user:
+`BootReceiver` listens for `LOCKED_BOOT_COMPLETED`, so it can start before the
+user unlocks. This is possible because association data lives in Device Encrypted storage, as
+section 52.1.3 explains. The receiver starts the service only for the system user.
+It disables itself on every other user:
 
 ```java
 if (context.getUser().equals(UserHandle.SYSTEM)) {
@@ -10074,7 +10133,7 @@ lines 110-204.
 The service never opens its own socket. Every collaborator that touches a remote
 device goes through a single `CompanionDeviceManagerProxy`, a thin testable
 wrapper around the public `android.companion.CompanionDeviceManager`. Its method
-list reads like an index of the CDM surface this chapter has walked through:
+list reads like an index of the CDM surface in this chapter:
 `getAllAssociations`, `addOnAssociationsChangedListener`,
 `addOnTransportsChangedListener`, `setOnDevicePresenceEventListener`,
 `sendMessage` / `addOnMessageReceivedListener`, `requestAction` /
@@ -10084,9 +10143,9 @@ Source:
 `packages/services/CrossDeviceSync/src/com/android/crossdevicesync/common/CompanionDeviceManagerProxy.java`,
 lines 33-110.
 
-`NetworkManager.init()` is where it latches onto the framework: it seeds itself
-with the current associations, then subscribes to association changes, transport
-changes, and registers the messenger's message listener:
+`NetworkManager.init()` is where it latches onto the framework. It seeds itself
+with the current associations. Then it subscribes to association changes and
+transport changes, and it registers the messenger's message listener:
 
 ```java
 processAssociationsAndMessagesLocked(
@@ -10121,23 +10180,23 @@ mCompanionDeviceManager.sendMessage(
 
 Source:
 `packages/services/CrossDeviceSync/src/com/android/crossdevicesync/network/messenger/MessengerImpl.java`,
-lines 109-112 and 658-661. That constant is defined in the framework as
+lines 109-112 and 658-661. The framework defines that constant as
 `MESSAGE_ONEWAY_CROSS_DEVICE_SYNC = 0x43676883` (the `+CDS` tag) in
 `frameworks/base/core/java/android/companion/CompanionDeviceManager.java`,
 line 405. Its top byte `0x43` makes it a *oneway* message under the
-classification in section 52.3.2, so CDM fires it across the
-secure transport without expecting a response.
+classification in section 52.3.2. So CDM fires it across the
+secure transport and does not expect a response.
 
-Because the underlying CDM message is fire-and-forget, the messenger layers its
-own reliability on top: it batches outbound messages and ACKs into a single
-`BatchedMessage`, retries on a timer, and uses a remote instance id to drop
+The underlying CDM message is fire-and-forget, so the messenger adds its
+own reliability on top. It batches outbound messages and ACKs into a single
+`BatchedMessage`. It retries on a timer. It uses a remote instance id to drop
 duplicates after a reconnect. The relevant timeouts (`RETRY_DELAY_MS`,
 `WAITING_FOR_TRANSPORT_TIMEOUT`, `WAITING_FOR_ACK_TIMEOUT`) are declared at
 `MessengerImpl.java`, lines 59-61.
 
 Before any transport exists, the service must coax the companion side into
 existence. `CompanionActionController` uses the Android 17 action-request
-mechanism from section 52.7.1 -- it issues `REQUEST_TRANSPORT`,
+mechanism from section 52.7.1. It issues `REQUEST_TRANSPORT`,
 `REQUEST_NEARBY_SCANNING`, and `REQUEST_NEARBY_ADVERTISING` action requests to
 its associations and watches the results:
 
@@ -10153,8 +10212,8 @@ mCompanionDeviceManager.requestAction(
 Source:
 `packages/services/CrossDeviceSync/src/com/android/crossdevicesync/network/companion/CompanionActionControllerImpl.java`,
 lines 112-130. So the service is also the canonical client of the new
-`actionrequest/` processor: section 52.7.1 describes the framework half
-(`ActionRequestProcessor` validating `STATEFUL_ACTIONS`), and this is the app
+`actionrequest/` processor. Section 52.7.1 describes the framework half
+(`ActionRequestProcessor` validates `STATEFUL_ACTIONS`). This is the app
 half that drives it.
 
 The end-to-end data flow, from a local feature change down to the CDM transport
@@ -10204,28 +10263,32 @@ ships two, registered by name in the injector:
   "modes" (a per-user setting state).
 
 Source:
-`SyncServiceInjectorImpl.java`, lines 183-204. Each feature creates a named
+`SyncServiceInjectorImpl.java`, lines 183-204.
+
+Each feature creates a named
 `Network` on the `NetworkManager` (for example the airplane-mode feature uses
-`NETWORK_ID = "apm_sync_network"`) and stores its state in a `SharedDataStore`,
-described as "a data store that is in sync with remote devices ... eventually
-synced across other authorized devices" (`SharedDataStore.java`, lines 30-37).
+`NETWORK_ID = "apm_sync_network"`). It stores its state in a `SharedDataStore`.
+This store is described as "a data store that is in sync with remote
+devices ... eventually synced across other authorized devices"
+(`SharedDataStore.java`, lines 30-37).
 The concrete implementation, `SubmergeSharedDataStore`, layers Google's
-*Submerge* eventually-consistent sync library over a per-feature SQLite database;
-the global database is `cross_device_sync_global_db`
+*Submerge* eventually-consistent sync library over a per-feature SQLite database.
+The global database is `cross_device_sync_global_db`
 (`SyncServiceInjectorImpl.java`, line 77).
 
 The airplane-mode feature also ties back to the per-association
-`systemDataSyncFlags` from section 52.2.1: it keys off
+`systemDataSyncFlags` from section 52.2.1. It keys off
 `CompanionDeviceManager.FEATURE_CROSS_DEVICE_SYNC` and
-`CompanionDeviceManager.FLAG_AIRPLANE_MODE` to decide whether sync is enabled for
-a given association (`AirplaneModeSyncManager.java`, imports at lines 19-23).
+`CompanionDeviceManager.FLAG_AIRPLANE_MODE`. It uses them to decide if sync is
+enabled for a given association (`AirplaneModeSyncManager.java`, imports at
+lines 19-23).
 That is the same flag bitmask that the framework-side `DataSyncProcessor`
 (section 52.3.6) and `CHANGE_TYPE_UPDATED_DATA_SYNC_TYPES` (section 52.2.5)
-manage -- the app and the framework agree on which features are active through it.
+manage. Through it, the app and the framework agree on which features are active.
 
 Finally, `MetadataPublisher` writes per-user CDM metadata
-(`putBooleanMetaData` / `putIntMetaData` / `putStringMetaData`) so the remote
-device can discover what this device supports. That metadata travels on the
+(`putBooleanMetaData` / `putIntMetaData` / `putStringMetaData`). The remote
+device can use it to discover what this device supports. That metadata travels on the
 DataSync path from section 52.3.6, via the proxy's `setLocalMetadata` /
 `getLocalMetadata` (`MetadataPublisher.java`, lines 20-37).
 
@@ -10247,10 +10310,10 @@ On non-debuggable builds the same `dump()` falls through to printing the
 lines 33-67.
 
 In short, `CrossDeviceSync` is the productized, app-layer counterpart to the
-in-process controllers of sections 52.3.6 and 52.3.7: a privileged wearable
-companion app that turns the raw CDM association, transport, presence, action,
-and metadata primitives into an eventually-consistent, multi-feature sync fabric,
-without adding anything to `system_server` itself.
+in-process controllers of sections 52.3.6 and 52.3.7. It is a privileged wearable
+companion app. It turns the raw CDM association, transport, presence, action,
+and metadata primitives into an eventually-consistent, multi-feature sync fabric.
+It adds nothing to `system_server` itself.
 
 ---
 
@@ -10312,8 +10375,8 @@ There is no display-name option; the shell command hardcodes the display name
 ### 52.10.3 Inspect Virtual Devices
 
 CDM and VDM are two separate dumpable services. For CDM state, use the
-`companiondevice` service (the name `CompanionDeviceManagerService` publishes
-via `Context.COMPANION_DEVICE_SERVICE`):
+`companiondevice` service. This is the name that `CompanionDeviceManagerService`
+publishes via `Context.COMPANION_DEVICE_SERVICE`:
 
 ```bash
 adb shell dumpsys companiondevice
@@ -10341,8 +10404,8 @@ To create a virtual device programmatically, an app needs:
 
 1. A CDM association with an appropriate device profile.
 2. The `CREATE_VIRTUAL_DEVICE` permission -- declared with
-   `protectionLevel="internal|role"` in the core manifest, so it is granted
-   only to holders of the relevant role, not requestable by ordinary apps.
+   `protectionLevel="internal|role"` in the core manifest. It is granted
+   only to holders of the relevant role. Ordinary apps cannot request it.
 3. For certain features, additional permissions:
    - `ADD_TRUSTED_DISPLAY` for clipboard policy customization.
    - `ADD_ALWAYS_UNLOCKED_DISPLAY` for always-unlocked displays.
@@ -10394,8 +10457,8 @@ adb shell dumpsys companiondevice
 
 There is no shell command to override the transport type. For tests, the
 `@TestApi` method `CompanionDeviceManager.overrideTransportType(int)`
-(`CompanionDeviceManager.java`, line 2310) forces the type for subsequently
-attached transports: `0` for default, `1` for raw (unencrypted), `2` for
+(`CompanionDeviceManager.java`, line 2310) forces the type for transports
+that attach later. Use `0` for default, `1` for raw (unencrypted), and `2` for
 secure. It requires the `MANAGE_COMPANION_DEVICES` permission.
 
 ### 52.10.6 Inspecting Window Policy
@@ -10540,32 +10603,32 @@ comprehensive framework for multi-device Android experiences:
   Its modular processor architecture keeps each concern isolated while the
   `AssociationStore` provides a unified data layer with change notification.
 
-- **VDM** handles the virtual representation: creating virtual displays with
-  fine-grained activity policies, injecting input from remote hardware, routing
-  audio to/from companion devices, providing virtual sensors, and controlling
-  camera access. The `GenericWindowPolicyController` enforces security at the
-  WindowManager level, ensuring that only authorized activities can appear on
+- **VDM** handles the virtual representation. It creates virtual displays with
+  fine-grained activity policies. It injects input from remote hardware and
+  routes audio to/from companion devices. It also provides virtual sensors and
+  controls camera access. The `GenericWindowPolicyController` enforces security at the
+  WindowManager level. It makes sure that only authorized activities can appear on
   virtual surfaces.
 
-- The **transport layer** ties them together: UKEY2-encrypted channels with
+- The **transport layer** ties them together. UKEY2-encrypted channels with
   attestation verification carry permission sync data, call metadata, task
   handoff messages, and custom application data between paired devices.
 
-- The **security model** is layered: CDM permissions gate association creation,
-  device profiles control role grants, transport encryption protects data
-  in transit, camera injection blocks unauthorized hardware access, and window
+- The **security model** is layered. CDM permissions gate association creation,
+  and device profiles control role grants. Transport encryption protects data
+  in transit. Camera injection blocks unauthorized hardware access. Window
   policies prevent sensitive activities from leaking to remote displays.
 
-- **Android 17 additions** broaden the framework: CDM gains persisted
+- **Android 17 additions** broaden the framework. CDM gains persisted
   trusted-device keys (`devicetrust/`) and consolidated
-  power exemptions (`powerexemption/`), extends the existing action-request
+  power exemptions (`powerexemption/`). It extends the existing action-request
   path (`actionrequest/`, carried over from Android 16) with new result
-  constants, and keeps association backup/restore, while VDM
-  gains Computer Control sessions (`virtual/computercontrol/`) that let an approved
+  constants, and it keeps association backup/restore. VDM
+  gains Computer Control sessions (`virtual/computercontrol/`). These sessions let an approved
   agent automate apps on a virtual display under explicit per-agent consent.
 
-This architecture enables use cases ranging from smartwatch pairing to full
-desktop-class app streaming, all built on the same foundational infrastructure.
+This architecture enables use cases from smartwatch pairing to full
+desktop-class app streaming. All of them use the same foundational infrastructure.
 
 <!-- chapter:53-npu-manager -->
 # Chapter 53: NPU Manager

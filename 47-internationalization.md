@@ -4,17 +4,20 @@ Android runs on more than three billion devices across nearly every country on
 Earth. Users read text in Arabic, Chinese, Devanagari, Thai, Korean, and
 hundreds of other scripts. They expect dates, numbers, currencies, and sort
 orders to follow their local conventions. They switch between multiple languages
-within a single session. Supporting all of this -- correctly, efficiently, and
-without requiring application developers to become Unicode experts -- is one of
-the most technically demanding aspects of the platform.
+within a single session. Supporting all of this correctly and efficiently is
+one of the most technically demanding aspects of the platform. The aim is to do
+this without requiring application developers to become Unicode experts.
 
 This chapter dives deep into the internationalization (i18n) infrastructure that
-makes it all possible. We will trace the path from the ICU libraries that
-provide Unicode algorithms, through the locale management system that tracks
-user preferences, the resource qualifier mechanism that selects locale-specific
-assets, the right-to-left (RTL) layout system, the text rendering pipeline that
-shapes and rasterizes glyphs for every script on the planet, and the font system
-that supplies the actual glyph outlines.
+makes it all possible. We trace the path through these parts:
+
+- The ICU libraries that provide Unicode algorithms.
+- The locale management system that tracks user preferences.
+- The resource qualifier mechanism that selects locale-specific assets.
+- The right-to-left (RTL) layout system.
+- The text rendering pipeline that shapes and rasterizes glyphs for every script
+  on the planet.
+- The font system that supplies the actual glyph outlines.
 
 ---
 
@@ -49,9 +52,9 @@ and the Unicode version is pinned in
 ```
 
 This is a significant uprev over the prior release (which carried ICU 77).
-Section 47.7 details what the bump brings: new Unicode 17.0 code points and
+Section 47.7 details the bump: new Unicode 17.0 code points and
 emoji, refreshed CLDR collation and formatting data, and updated time-zone
-rules. Because ICU rides in the i18n APEX (see 47.1.3), the new data can reach
+rules. ICU rides in the i18n APEX (see 47.1.3). So the new data can reach
 devices through a Mainline update rather than a full platform OTA.
 
 ### 47.1.1 Source Layout
@@ -99,9 +102,9 @@ Android ships *both* the C/C++ (ICU4C) and Java (ICU4J) implementations:
 | `libandroidicu.so` | C (stable) | `external/icu/libandroidicu/` | NDK apps |
 
 The native libraries are critical-path dependencies. Every text layout
-operation -- from measuring a `TextView` to breaking a paragraph into lines --
-goes through HarfBuzz, which in turn calls ICU4C for Unicode character
-properties and bidirectional analysis.
+operation goes through HarfBuzz. This includes everything from measuring a
+`TextView` to breaking a paragraph into lines. HarfBuzz in turn calls ICU4C for
+Unicode character properties and bidirectional analysis.
 
 ### 47.1.3 ICU Data
 
@@ -114,13 +117,13 @@ external/icu/icu4c/source/data/
 ```
 
 At build time, the data is compiled into a `.dat` file and installed on device
-at `/apex/com.android.i18n/etc/icu/icudt<major>l.dat` — on Android 17 that is
-`icudt78l.dat`, matching ICU major version 78. The exact path is asserted by
+at `/apex/com.android.i18n/etc/icu/icudt<major>l.dat`. On Android 17 that is
+`icudt78l.dat`, which matches ICU major version 78. The exact path is asserted by
 `external/icu/android_icu4j/testing/src/android/icu/extratest/platform/AndroidDataFilesTest.java`,
 which builds it as `"/apex/com.android.i18n/etc/icu/icudt" +
 VersionInfo.ICU_VERSION.getMajor() + "l.dat"`. Since Android 10, ICU is
-delivered as part of the **i18n APEX module** (`com.android.i18n`), which allows
-ICU data and code to be updated independently of full platform OTA updates.
+delivered as part of the **i18n APEX module** (`com.android.i18n`). This lets
+ICU data and code be updated independently of full platform OTA updates.
 
 ```mermaid
 graph TD
@@ -153,10 +156,12 @@ graph TD
 ### 47.1.4 Unicode Character Properties
 
 The most fundamental ICU service is character property lookup. Given a Unicode
-code point, ICU can tell you its general category (letter, digit, punctuation),
-its bidirectional class (left-to-right, right-to-left, Arabic number), its
-script (Latin, Han, Devanagari), whether it is an emoji, and dozens of other
-properties.
+code point, ICU can tell you these properties, and dozens of others:
+
+- Its general category (letter, digit, punctuation).
+- Its bidirectional class (left-to-right, right-to-left, Arabic number).
+- Its script (Latin, Han, Devanagari).
+- Whether it is an emoji.
 
 The C API is defined in `external/icu/icu4c/source/common/unicode/uchar.h`.
 Key functions include:
@@ -219,7 +224,8 @@ UBool isNormalized = unorm2_isNormalized(nfc, src, srcLen, &status);
 
 Minikin's `FontCollection` uses normalization when performing font fallback.
 When a character is not found in the preferred font, Minikin may decompose it
-(using NFD) and try to find the base character and combining marks separately.
+(using NFD). Then it tries to find the base character and the combining marks
+separately.
 This is visible in the include for the FontCollection implementation:
 
 ```cpp
@@ -247,8 +253,8 @@ int result = collator.compare("Muller", "Mueller"); // locale-aware comparison
 
 Break iteration identifies boundaries in text: where characters, words,
 sentences, and lines begin and end. This is trivial for space-separated
-languages like English but essential for scripts that do not use spaces between
-words, such as Thai, Lao, Khmer, Chinese, and Japanese.
+languages like English. It is essential for scripts that do not use spaces
+between words, such as Thai, Lao, Khmer, Chinese, and Japanese.
 
 ICU provides five types of break iterators:
 
@@ -424,8 +430,8 @@ LocaleList appLocales = localeManager.getApplicationLocales();
 `setSystemLocales()`) and lets an app supply a runtime override for its declared
 supported locales via `setOverrideLocaleConfig(LocaleConfig)`. The override
 LocaleConfig is what lets an app expand or shrink the language list that Settings
-offers for that app without shipping a new build; it is declared statically in
-`frameworks/base/core/java/android/app/LocaleConfig.java`.
+offers for that app without shipping a new build. The class is
+declared statically in `frameworks/base/core/java/android/app/LocaleConfig.java`.
 
 The server-side implementation lives at:
 
@@ -723,7 +729,7 @@ String keyword2 = rules.select(100); // "other"
 
 ### 47.3.5 Translation Workflow
 
-AOSP uses the XLIFF (XML Localisation Interchange File Format) standard for
+AOSP uses the XLIFF (XML Localization Interchange File Format) standard for
 translations. The workflow:
 
 ```mermaid
@@ -834,7 +840,7 @@ flowchart TD
 The `TextUtils.getLayoutDirectionFromLocale()` method asks ICU whether the
 locale is inherently RTL. In Android 17 it delegates to
 `ULocale.forLocale(locale).isRightToLeft()` rather than poking at the script's
-first code point directly, and it also honours the developer "force RTL" toggle:
+first code point directly. It also honors the developer "force RTL" toggle:
 
 ```java
 // frameworks/base/core/java/android/text/TextUtils.java
@@ -848,9 +854,9 @@ public static int getLayoutDirectionFromLocale(Locale locale) {
 }
 ```
 
-`ULocale.isRightToLeft()` consults ICU's locale data, so a locale like
+`ULocale.isRightToLeft()` consults ICU's locale data. So a locale like
 `ar` (Arabic) or `he` (Hebrew) resolves to RTL even when no script subtag is
-present, while Serbian (`sr`, whether written in Latin or Cyrillic) resolves to
+present. Serbian (`sr`, whether written in Latin or Cyrillic) resolves to
 LTR because neither script is right-to-left. The `DisplayProperties.debug_force_rtl()`
 branch is what the "Force RTL layout direction" developer option flips.
 
@@ -1078,9 +1084,9 @@ public:
 };
 ```
 
-The `FakedFont` struct contains the selected `Font` object plus fakery flags
-that indicate whether the font engine should synthesize bold or italic if the
-exact style was not found.
+The `FakedFont` struct contains the selected `Font` object plus fakery flags.
+The flags indicate whether the font engine should synthesize bold or italic if
+the exact style was not found.
 
 ### 47.5.5 Step 4: Text Shaping (HarfBuzz)
 
@@ -1265,9 +1271,10 @@ enum class LineBreakWordStyle : uint8_t {
 
 These map to the Unicode `lb` and `lw` locale keywords (UTS #35). `Strict`,
 `Normal`, and `Loose` control how aggressively CJK text may break around small
-kana and certain punctuation, while `LineBreakWordStyle::Phrase` enables
-phrase-based breaking that keeps short Japanese and Korean phrases intact rather
-than breaking mid-phrase. `Auto` lets Minikin choose per locale and line count.
+kana and certain punctuation. `LineBreakWordStyle::Phrase` enables
+phrase-based breaking. This keeps short Japanese and Korean phrases intact
+rather than breaking mid-phrase. `Auto` lets Minikin choose per locale and line
+count.
 
 ```mermaid
 flowchart TD
@@ -1375,8 +1382,8 @@ ensures they are routed to the emoji font:
 
 ## 47.6 Font System
 
-Android's font system manages the fonts installed on the device, matches
-typeface requests to physical font files, and supports variable fonts that
+Android's font system manages the fonts installed on the device and matches
+typeface requests to physical font files. It also supports variable fonts that
 can interpolate between different weights, widths, and other axes.
 
 ### 47.6.1 System Fonts Configuration
@@ -1419,10 +1426,10 @@ evolution clear:
 > the `platform/frameworks/base/data/font_fallback.xml`.
 
 Note that the `font_fallback.xml` the comment points vendors toward is not
-checked in as a source file: the build generates it from `alias.json` and
+checked in as a source file. The build generates it from `alias.json` and
 `fallback_order.json` (the `generate_font_fallback` genrule in
-`frameworks/base/data/fonts/Android.bp`) and installs the result as a
-`prebuilt_etc` module listed in `fonts.mk`. The hand-edited configuration is
+`frameworks/base/data/fonts/Android.bp`). The build then installs the result as
+a `prebuilt_etc` module listed in `fonts.mk`. The hand-edited configuration is
 the trio of JSON files that sit alongside the legacy `fonts.xml`:
 
 ```
@@ -1770,14 +1777,14 @@ ICU 78 brings two newer API surfaces into `android_icu4j`:
   dates, and text). It is a redesign of the classic `MessageFormat` that handles
   grammatical agreement, gendered selection, and nested formatters in a single
   declarative message string. On Android it is still marked a *technology
-  preview* (every public entry point in `MessageFormatter.java` is annotated
-  `@Deprecated` with "This API is for technology preview only"), so it is exposed
-  for experimentation rather than as a stable app API.
+  preview*. Every public entry point in `MessageFormatter.java` is annotated
+  `@Deprecated` with "This API is for technology preview only". So it is
+  exposed for experimentation rather than as a stable app API.
 - A **modern segmentation API** lives in
   `external/icu/android_icu4j/src/main/java/android/icu/segmenter/` (`Segmenter`,
   `Segments`, `LocalizedSegmenter`, `RuleBasedSegmenter`). It is a Streams-style
   alternative to `BreakIterator`, but on Android it is `@hide` ("draft /
-  provisional / internal are hidden on Android"), so apps continue to use
+  provisional / internal are hidden on Android"). So apps continue to use
   `BreakIterator` (47.1.7) for word, line, and sentence boundaries.
 
 The takeaway: prefer the established `BreakIterator`, `NumberFormatter`, and
@@ -1825,15 +1832,15 @@ system value is the fallback when an app has not set its own.
 
 ### 47.7.5 CJK Line-Break Word Style
 
-The phrase-based line-break controls described in 47.5.8
-(`LineBreakStyle` / `LineBreakWordStyle` in
+The phrase-based line-break controls described in 47.5.8 remain the recommended
+way to get natural Japanese and Korean wrapping. They are `LineBreakStyle` and
+`LineBreakWordStyle` in
 `frameworks/minikin/include/minikin/LineBreakStyle.h`, surfaced to apps through
-`android.graphics.text.LineBreakConfig`) remain the recommended way to get
-natural Japanese and Korean wrapping. `LINE_BREAK_WORD_STYLE_PHRASE` keeps short
-phrases together; `LINE_BREAK_STYLE_STRICT`/`NORMAL`/`LOOSE` tune CJK break
-permissiveness. With the CLDR 48.2 refresh these styles draw on updated
-segmentation data, so existing code does not change but the resulting line
-breaks track current CLDR conventions.
+`android.graphics.text.LineBreakConfig`. `LINE_BREAK_WORD_STYLE_PHRASE` keeps
+short phrases together; `LINE_BREAK_STYLE_STRICT`/`NORMAL`/`LOOSE` tune CJK
+break permissiveness. With the CLDR 48.2 refresh these styles draw on updated
+segmentation data. Existing code does not change, but the resulting line breaks
+track current CLDR conventions.
 
 ---
 
@@ -2183,24 +2190,24 @@ Key takeaways from this chapter:
 3. **Resource qualifiers are powerful but have rules**: The elimination algorithm
    for resource selection follows strict precedence, and locale is near the top.
 
-4. **RTL is not just text direction**: It requires mirroring the entire UI,
-   using `start`/`end` instead of `left`/`right`, and handling bidirectional
-   text through the Unicode Bidirectional Algorithm.
+4. **RTL is not just text direction**: It requires mirroring the entire UI. It
+   also requires `start`/`end` instead of `left`/`right`. Bidirectional text is
+   handled through the Unicode Bidirectional Algorithm.
 
-5. **Text rendering is a deep pipeline**: From Unicode code points to pixels on
-   screen, text passes through bidi analysis, script itemization, font
+5. **Text rendering is a deep pipeline**: Text goes from Unicode code points to
+   pixels on screen. It passes through bidi analysis, script itemization, font
    selection (Minikin), shaping (HarfBuzz), and rasterization
-   (FreeType/Skia) -- each step essential for correct rendering of the world's
-   scripts.
+   (FreeType/Skia). Each step is essential for correct rendering of the
+   world's scripts.
 
 6. **The font system is locale-aware**: CJK Han unification, variable font axes,
-   fallback chains, and downloadable fonts all contribute to correct and
-   efficient text display across languages.
+   fallback chains, and downloadable fonts all help text display correctly and
+   efficiently across languages.
 
 7. **Android 17 advances the data layer, not the architecture**: the stack moves
-   to ICU 78.3 (Unicode 17.0, CLDR 48.2) and IANA 2025c time-zone data, both
-   APEX-delivered; MessageFormat 2.0 and the modern segmentation API arrive as
-   previews; and grammatical inflection gains a system-wide "terms of address"
+   to ICU 78.3 (Unicode 17.0, CLDR 48.2) and IANA 2025c time-zone data.
+   Both are APEX-delivered. MessageFormat 2.0 and the modern segmentation API arrive as
+   previews. Grammatical inflection gains a system-wide "terms of address"
    path. Existing i18n code keeps working while formatting, collation, and
    segmentation track current CLDR conventions.
 

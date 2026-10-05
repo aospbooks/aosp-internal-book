@@ -1,12 +1,14 @@
 # Chapter 45: WebView
 
 WebView is Android's embeddable browser component, allowing applications to display web
-content directly within their UI. Under the surface, it is a remarkably complex subsystem:
-a thin Android framework facade that delegates every operation to an updatable, Chromium-based
-provider package running in its own set of processes. This chapter traces the entire stack --
-from the XML `<WebView>` tag an application developer writes, through the factory and provider
-abstraction, into the multi-process Chromium engine, its security sandbox, and the update
-mechanism that keeps it current without a full OS upgrade.
+content directly within their UI. Under the surface, it is a remarkably complex subsystem.
+It is a thin Android framework facade that delegates every operation to an updatable,
+Chromium-based provider package. The provider package runs in its own set of processes.
+
+This chapter traces the entire stack. It starts at the XML `<WebView>` tag that an application
+developer writes. It then goes through the factory and provider abstraction into the
+multi-process Chromium engine. It ends with the security sandbox and the update mechanism that
+keeps WebView current without a full OS upgrade.
 
 ---
 
@@ -31,13 +33,15 @@ Android's WebView has undergone three major architectural eras:
    (typically `com.google.android.webview` or `com.android.webview`).
 
 4. **APEX-shelled provider selection (Android 17)**: Android 17 introduces a launched APEX
-   shell, `com.android.webview.bootstrap`, reserved for the WebView provider-selection logic
-   so that it can eventually ship and update as a Mainline module instead of as part of the
-   platform image. The APEX currently ships as an empty shell -- the `WebViewUpdateService`
-   machinery and its client wrappers still live in the platform (`frameworks/base`), but the
-   code has been refactored around a `SystemInterface` boundary in preparation for the move.
-   The provider APK itself remains a separate updatable package. Section 45.9 walks through
-   this change and the other 17-specific WebView updates in detail.
+   shell, `com.android.webview.bootstrap`. It is reserved for the WebView provider-selection
+   logic. This lets the logic eventually ship and update as a Mainline module instead of as
+   part of the platform image. The APEX currently ships as an empty shell. The
+   `WebViewUpdateService` machinery and its client wrappers still live in the platform
+   (`frameworks/base`). The code has been refactored around a `SystemInterface` boundary in
+   preparation for the move.
+
+    The provider APK itself remains a separate updatable package. Section 45.9 walks through
+    this change and the other 17-specific WebView updates in detail.
 
 ### 45.1.2 High-Level Component Map
 
@@ -260,7 +264,7 @@ WebView behavior is influenced by several flag mechanisms:
 
    The service side declares one flag in
    `frameworks/base/services/core/java/com/android/server/webkit/flags.aconfig`,
-   `update_service_v2`, which selected `WebViewUpdateServiceImpl2`; in Android 17 it is fully
+   `update_service_v2`, which selected `WebViewUpdateServiceImpl2`. In Android 17 the flag is fully
    rolled out and the legacy implementation is gone (see 45.4.1).
 
 2. **`@ChangeId` annotations**: Compatibility changes gated by `targetSdkVersion`:
@@ -473,8 +477,8 @@ Source: frameworks/base/core/java/android/webkit/WebViewLibraryLoader.java
    - 64-bit: `/data/misc/shared_relro/libwebviewchromium64.relro`
 
 3. **RELRO file consumption**: When an app loads WebView, it maps the pre-computed RELRO
-   file instead of reprocessing relocations, saving both time and memory (the RELRO pages
-   are shared read-only across all processes using WebView).
+   file instead of reprocessing relocations. This saves both time and memory. The RELRO pages
+   are shared read-only across all processes that use WebView.
 
 ```mermaid
 graph LR
@@ -687,7 +691,7 @@ The service implementation (`WebViewUpdateServiceImpl2`) tracks:
 - Package installation/removal events that affect provider selection
 
 `WebViewUpdateServiceImpl2` is the only implementation in Android 17. It used to be selected
-behind the `android.webkit.update_service_v2` aconfig flag, which has since been cleaned up;
+behind the `android.webkit.update_service_v2` aconfig flag, which has since been cleaned up.
 `WebViewUpdateService` now constructs `new WebViewUpdateServiceImpl2(new SystemImpl(context))`
 unconditionally, so there is no longer an older `WebViewUpdateServiceImpl` fallback.
 
@@ -696,8 +700,8 @@ Source: frameworks/base/services/core/java/com/android/server/webkit/WebViewUpda
 ```
 
 The service delegates all platform queries through a `SystemInterface` (implemented by
-`SystemImpl`), which is what makes the update logic testable and lets it be packaged into the
-Mainline shell described in Section 45.9.1:
+`SystemImpl`). This is what makes the update logic testable. It also lets the logic be packaged
+into the Mainline shell described in Section 45.9.1:
 
 ```
 Source: frameworks/base/services/core/java/com/android/server/webkit/SystemInterface.java
@@ -822,7 +826,7 @@ Mainline-specific delivery:
 - No reboot is required; apps pick up the new version on next WebView creation
 
 Android 17 prepares a second piece of modularity on top of this. The *provider* APK stays an
-APK as before, but a new launched APEX, `com.android.webview.bootstrap`, is reserved for the
+APK as before. A new launched APEX, `com.android.webview.bootstrap`, is reserved for the
 *provider-selection machinery* (`WebViewUpdateService`, its `WebViewUpdateServiceImpl2` logic,
 and the `WebViewUpdateManager` client wrapper). The APEX is currently an empty shell and that
 code still ships in the platform. Section 45.9 covers this shell and why the framework code
@@ -836,7 +840,7 @@ The update service includes a repair mechanism. If the current provider becomes 
 1. If the current provider is the default and it becomes missing, trigger a repair
 2. The repair mechanism re-installs and re-enables the *default* provider
    (`mDefaultProvider`) for all users via
-   `installExistingPackageForAllUsers()` and `enablePackageForAllUsers()`; there is
+   `installExistingPackageForAllUsers()` and `enablePackageForAllUsers()`. There is
    no separate fallback-provider repair path in `WebViewUpdateServiceImpl2`
 3. The `mAttemptedToRepairBefore` flag prevents infinite repair loops
 4. All processes depending on the old provider are killed so they restart with the new one
@@ -904,9 +908,9 @@ WebView provides multiple ways to load content:
 | `loadDataWithBaseURL(...)` | Load inline HTML with a custom base URL |
 | `postUrl(String, byte[])` | HTTP POST to a URL |
 
-The `loadDataWithBaseURL` method is particularly important for security: it sets the
-**origin** for the loaded content, which governs the same-origin policy for any
-JavaScript executing in the page.
+The `loadDataWithBaseURL` method is particularly important for security. It sets the
+**origin** for the loaded content. The origin governs the same-origin policy for any
+JavaScript that runs in the page.
 
 #### JavaScript Execution
 
@@ -1013,7 +1017,7 @@ public static final long ENABLE_USER_AGENT_REDUCTION = 371034303L;
 ```
 
 For apps targeting post-Baklava, the default User-Agent is reduced to `Linux; Android 10; K`
-with version `0.0.0` to reduce fingerprinting surface, following the broader User-Agent
+with version `0.0.0` to reduce fingerprinting surface. This follows the broader User-Agent
 Reduction initiative across Chromium.
 
 ### 45.5.3 WebViewClient
@@ -1107,9 +1111,9 @@ public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail)
 
 When a renderer process crashes or is killed by the system, this callback notifies the
 application. Multiple `WebView` instances may share a renderer, so the callback fires for
-each affected WebView. Returning `false` (the default) causes the application to crash;
-returning `true` indicates the app has handled the situation (e.g., by cleaning up the
-WebView and recreating it).
+each affected WebView. Returning `false` (the default) causes the application to crash.
+Returning `true` indicates that the app has handled the situation (e.g., by cleaning up
+the WebView and recreating it).
 
 #### Safe Browsing
 
@@ -1181,8 +1185,9 @@ public void onShowCustomView(View view, CustomViewCallback callback) {}
 public void onHideCustomView() {}
 ```
 
-When a video element enters fullscreen (e.g., the user taps a fullscreen button), WebView
-creates a separate `View` containing the video and passes it to `onShowCustomView()`. The
+When a video element enters fullscreen (e.g., the user taps a fullscreen button),
+WebView creates a separate `View` that contains the video. WebView passes this
+view to `onShowCustomView()`. The
 application should add this view to a fullscreen window. When fullscreen exits,
 `onHideCustomView()` is called.
 
@@ -1264,8 +1269,8 @@ public @interface JavascriptInterface {
 
 This annotation is runtime-retained, meaning the WebView implementation can discover
 annotated methods via reflection. Starting from API 17, only methods with this annotation
-are accessible from JavaScript -- a critical security fix that prevents JavaScript from
-calling arbitrary Java methods via reflection.
+are accessible from JavaScript. This is a critical security fix. It prevents JavaScript
+from calling arbitrary Java methods via reflection.
 
 Usage pattern:
 
@@ -1587,8 +1592,9 @@ The renderer process runs in a restricted sandbox with multiple layers of isolat
 5. **Namespace isolation**: Like all zygote-forked processes, the renderer gets an
    unshared mount namespace via `unshare(CLONE_NEWNS)`
    (`frameworks/base/core/jni/com_android_internal_os_Zygote.cpp`). Android does not
-   give it separate PID or network namespaces; network isolation comes from the
-   isolated UID lacking network group membership, not from a network namespace.
+   give it separate PID or network namespaces. Network isolation comes from the
+   isolated UID, which lacks network group membership. It does not come from a network
+   namespace.
 
 ```mermaid
 graph TB
@@ -1623,8 +1629,8 @@ WebView uses Chromium's own network stack rather than Android's. This provides:
 - Cookie storage in Chromium's cookie database
 
 The network stack runs in the browser (application) process, not the renderer. This means
-network requests from web content cross the Mojo IPC boundary from renderer to browser,
-are executed in the browser process, and responses are sent back.
+network requests from web content cross the Mojo IPC boundary from renderer to browser.
+The requests are executed in the browser process, and responses are sent back.
 
 ### 45.6.5 Mojo IPC
 
@@ -1661,12 +1667,12 @@ renderer process and provides:
   compiled Wasm modules with near-native performance.
 
 - **Isolate-per-frame**: Each frame (main frame and iframes) gets its own V8 isolate
-  when site isolation is active, ensuring that JavaScript from different origins cannot
-  share memory.
+  when site isolation is active. This makes sure that JavaScript from different origins
+  cannot share memory.
 
 The JavaScript-to-Java bridge (via `addJavascriptInterface()`) crosses the process boundary
-twice: first from V8 in the renderer to the browser process via Mojo IPC, then from the
-Chromium browser-side code to the Java bridge object via JNI.
+twice. First it goes from V8 in the renderer to the browser process via Mojo IPC. Then it
+goes from the Chromium browser-side code to the Java bridge object via JNI.
 
 ```mermaid
 sequenceDiagram
@@ -1973,9 +1979,9 @@ specified CDN. CSP violations are reported through the `onConsoleMessage()` call
 in `WebChromeClient`.
 
 When embedding untrusted web content, applications should verify that the loaded pages
-have appropriate CSP headers. However, CSP is enforced by the renderer and controlled
-by the web content -- the embedding application cannot inject CSP headers for
-third-party content loaded via `loadUrl()`.
+have appropriate CSP headers. However, the renderer enforces CSP and the web content
+controls it. The embedding application cannot inject CSP headers for third-party content
+loaded via `loadUrl()`.
 
 ### 45.7.8 Network Security Configuration
 
@@ -2058,7 +2064,7 @@ Priority levels:
 | Waived | `RENDERER_PRIORITY_WAIVED` | Renderer has low priority, easily killed |
 
 When `waivedWhenNotVisible` is `true`, the priority drops to `WAIVED` whenever the WebView
-is not attached to the window or is not visible, allowing the system to reclaim memory
+is not attached to the window or is not visible. This lets the system reclaim memory
 more aggressively for background WebViews.
 
 ### 45.7.11 WebView Disabling
@@ -2078,8 +2084,8 @@ static void disableWebView() {
 ```
 
 When disabled, any subsequent attempt to create a WebView throws `IllegalStateException`.
-This is used by system components that should never load web content (for security isolation
-purposes) to ensure that WebView cannot be triggered by accident.
+System components that should never load web content use this for security isolation.
+It makes sure that nothing can trigger WebView by accident.
 
 ### 45.7.12 Feature Detection
 
@@ -2105,7 +2111,7 @@ WebView on such devices throws `UnsupportedOperationException`.
 
 ### 45.8.1 Enabling Remote Debugging
 
-WebView supports Chrome DevTools remote debugging. This is enabled programmatically:
+WebView supports Chrome DevTools remote debugging. It is enabled programmatically:
 
 ```java
 WebView.setWebContentsDebuggingEnabled(true);
@@ -2264,20 +2270,20 @@ renderer crash.
 
 ## 45.9 WebView in Android 17
 
-Android 17 does not rewrite the WebView architecture described in the preceding sections, but
-it makes four focused changes worth understanding: a launched APEX shell for the update
-service, the full rollout of the second-generation update-service implementation, the removal
-of the thread-checking compatibility escape hatch, and a new OEM hook for the text-selection
-menu. This section covers each, anchored to the 17 source.
+Android 17 does not rewrite the WebView architecture described in the preceding sections. It
+makes four focused changes that deserve attention. The first two are a launched APEX shell for
+the update service and the full rollout of the second-generation update-service
+implementation. The other two are the removal of the thread-checking compatibility escape
+hatch and a new OEM hook for the text-selection menu. This section covers each, anchored to the 17 source.
 
 ### 45.9.1 The WebViewBootstrap APEX Shell
 
 The headline structural change is `com.android.webview.bootstrap`, a new launched APEX defined
-under `packages/modules/WebViewBootstrap/`. It is a Mainline-style shell whose purpose is to
+under `packages/modules/WebViewBootstrap/`. It is a Mainline-style shell. Its purpose is to
 let the WebView **provider-selection** logic ship and update independently of the platform
-image, the same way Tethering, ART, and other Mainline modules do. As of the current source
-it is an empty shell: the `apex` rule declares only a manifest, key, and certificate, with
-no Java libraries or apps in its payload, and the update-service code still lives in
+image, as Tethering, ART, and other Mainline modules do. As of the current source
+it is an empty shell. The `apex` rule declares only a manifest, key, and certificate,
+with no Java libraries or apps in its payload. The update-service code still lives in
 `frameworks/base`.
 
 ```
@@ -2289,13 +2295,13 @@ It is important to keep two things separate:
 
 - The **WebView provider** (the Chromium-backed implementation APK, e.g.
   `com.google.android.webview`) was already independently updatable. That does not change.
-- The **provider-selection machinery** — `WebViewUpdateService`, its
-  `WebViewUpdateServiceImpl2` selection logic, the `WebViewUpdateManager` client wrapper, and
-  the `IWebViewUpdateService` Binder interface — is what the bootstrap APEX is being prepared
-  to carry. Moving this code into a module lets the selection policy and its client APIs evolve
+- The **provider-selection machinery** is what the bootstrap APEX is meant to carry. It
+  includes `WebViewUpdateService`, its `WebViewUpdateServiceImpl2` selection logic, the
+  `WebViewUpdateManager` client wrapper, and the `IWebViewUpdateService` Binder interface.
+  Moving this code into a module lets the selection policy and its client APIs evolve
   without a full OS update.
 
-The APEX is built with the shared `v-launched-apex-module` default, marking it as a module
+The APEX is built with the shared `v-launched-apex-module` default. This default marks it as a module
 that launched (became loadable) in the V (Android 15 / VanillaIceCream) cycle and is carried forward:
 
 ```
@@ -2312,11 +2318,11 @@ Source: build/make/target/product/base_system.mk (RELEASE_USE_WEBVIEW_BOOTSTRAP_
 Source: build/release/flag_declarations/RELEASE_USE_WEBVIEW_BOOTSTRAP_MODULE.textproto
 ```
 
-So on a default Android 17 build the update service still runs from the platform, but the
-APEX, the signing keys, and the build plumbing are all present and ready to be switched on.
+So on a default Android 17 build the update service still runs from the platform. The
+APEX, the signing keys, and the build plumbing are all present. They are ready to be switched on.
 
-The following diagram shows what the bootstrap APEX is being prepared to carry versus what
-stays as a separately updatable provider APK -- today all of the APEX box's contents still
+The following diagram shows what the bootstrap APEX is meant to carry and what
+stays as a separately updatable provider APK. Today all of the APEX box's contents still
 ship in the platform:
 
 ```mermaid
@@ -2346,7 +2352,7 @@ graph TB
 
 The framework code was deliberately restructured to support this packaging. The update service
 talks to the rest of the platform only through a `SystemInterface` abstraction implemented by
-`SystemImpl`, so the selection logic has a clean, mockable boundary that can live inside a
+`SystemImpl`. So the selection logic has a clean, mockable boundary that can live inside a
 module:
 
 ```
@@ -2355,8 +2361,8 @@ Source: frameworks/base/services/core/java/com/android/server/webkit/SystemImpl.
 ```
 
 The client-facing APIs the module needs are declared behind the `mainline_apis` aconfig flag in
-`android.webkit`, and `WebViewBootstrapFrameworkInitializer` registers the
-`WebViewUpdateManager` system service so apps reach it via `Context.getSystemService()`:
+`android.webkit`. `WebViewBootstrapFrameworkInitializer` registers the
+`WebViewUpdateManager` system service. This lets apps reach it via `Context.getSystemService()`:
 
 ```
 Source: frameworks/base/core/java/android/webkit/WebViewBootstrapFrameworkInitializer.java
@@ -2367,7 +2373,7 @@ Source: frameworks/base/core/java/android/webkit/flags.aconfig (flag "mainline_a
 
 The second-generation update service, `WebViewUpdateServiceImpl2`, used to be selected behind
 the `android.webkit.update_service_v2` aconfig flag. In Android 17 that flag is fully rolled
-out and the old implementation has been removed, so `WebViewUpdateService` constructs the new
+out. The old implementation is removed, so `WebViewUpdateService` constructs the new
 implementation unconditionally:
 
 ```
@@ -2383,8 +2389,8 @@ described in Section 45.4 all live in this implementation:
 Source: frameworks/base/services/core/java/com/android/server/webkit/WebViewUpdateServiceImpl2.java (validityResult(), lines 589-606; findPreferredWebViewPackage(), lines 476-512)
 ```
 
-Note one subtlety in the signature check: on debuggable builds signatures are skipped (for
-development), and system apps are accepted as providers regardless of signature, before the
+Note one subtlety in the signature check. On debuggable builds signatures are skipped (for
+development). System apps are accepted as providers regardless of signature, before the
 configured-signature comparison runs:
 
 ```
@@ -2406,18 +2412,18 @@ Source: frameworks/base/core/java/android/webkit/WebView.java (checkThread(), li
 
 ### 45.9.4 SelectionActionMenuClient: OEM Selection-Menu Customization
 
-Android 17 adds `SelectionActionMenuClient`, a `@SystemApi` class an OEM implements to
-customize the text-selection menu (the floating/dropdown menu shown when the user selects text
-in a WebView). It is gated by the `selection_action_menu_client` aconfig flag:
+Android 17 adds `SelectionActionMenuClient`, a `@SystemApi` class. An OEM implements it to
+customize the text-selection menu. This is the floating/dropdown menu shown when the user
+selects text in a WebView. It is gated by the `selection_action_menu_client` aconfig flag:
 
 ```
 Source: frameworks/base/core/java/android/webkit/SelectionActionMenuClient.java
 Source: frameworks/base/core/java/android/webkit/flags.aconfig (flag "selection_action_menu_client")
 ```
 
-The client is a process-global object: WebView requests it once through the
+The client is a process-global object. WebView requests it once through the
 `WebViewDelegate.getSelectionActionMenuClient()` bridge, which instantiates the class named by
-the `config_webViewSelectionActionMenuClientPackage` framework resource, and the same instance
+the `config_webViewSelectionActionMenuClientPackage` framework resource. The same instance
 is reused across all WebView instances in the process:
 
 ```
@@ -2433,8 +2439,8 @@ Its surface lets an OEM:
 | `filterTextProcessingActivities(List<ResolveInfo>)` | Filter which `PROCESS_TEXT` activities appear |
 | `handleMenuItemClick(Context, MenuItem)` | Handle clicks on the custom items it added |
 
-The two menu types are `MENU_TYPE_FLOATING` (the floating toolbar) and `MENU_TYPE_DROPDOWN`,
-and the default items are enumerated by the `DEFAULT_ITEM_*` constants
+The two menu types are `MENU_TYPE_FLOATING` (the floating toolbar) and `MENU_TYPE_DROPDOWN`.
+The default items are enumerated by the `DEFAULT_ITEM_*` constants
 (`DEFAULT_ITEM_CUT`, `DEFAULT_ITEM_COPY`, `DEFAULT_ITEM_PASTE`,
 `DEFAULT_ITEM_PASTE_AS_PLAIN_TEXT`, `DEFAULT_ITEM_SHARE`, `DEFAULT_ITEM_SELECT_ALL`,
 `DEFAULT_ITEM_WEB_SEARCH`). Because this is a `@SystemApi` keyed off a framework config
@@ -2690,9 +2696,9 @@ adb shell cat /proc/<PID>/maps | grep shared_relro
 adb shell dumpsys meminfo <your.package.name>
 ```
 
-Look for the `libwebviewchromium.so` mapping and verify that the RELRO section is mapped
-from the shared file (it should appear as a file-backed mapping to
-`/data/misc/shared_relro/libwebviewchromium64.relro`).
+Look for the `libwebviewchromium.so` mapping. Verify that the RELRO section is mapped
+from the shared file. It should appear as a file-backed mapping to
+`/data/misc/shared_relro/libwebviewchromium64.relro`.
 
 ### Exercise 45.10: Inspect WebView Provider Package
 
@@ -2888,8 +2894,8 @@ boolean thirdParty = cm.acceptThirdPartyCookies(webView);
 Log.d("Cookies", "Third-party cookies accepted: " + thirdParty);
 ```
 
-The httpbin.org `/cookies` endpoint will show which cookies the browser sent, allowing
-you to verify that cookies set via `CookieManager` are properly sent with requests.
+The httpbin.org `/cookies` endpoint shows which cookies the browser sent.
+Use it to verify that cookies set via `CookieManager` are properly sent with requests.
 
 ### Exercise 45.17: Safe Browsing Testing
 
@@ -2930,8 +2936,8 @@ webView.loadUrl("https://testsafebrowsing.appspot.com/");
 
 ### Exercise 45.18: Inspect the WebViewBootstrap APEX and Provider Selection
 
-On an Android 17 build, check whether the bootstrap APEX is present and observe the update
-service that it is being prepared to carry:
+On an Android 17 build, check whether the bootstrap APEX is present. Then observe the update
+service that the APEX is meant to carry:
 
 ```bash
 # Is the WebViewBootstrap APEX installed? (only on builds with the release flag on)
@@ -2945,17 +2951,17 @@ adb shell cmd apexservice getActivePackages | grep webview
 adb shell dumpsys webviewupdate
 ```
 
-On a default AOSP 17 image the APEX is absent because `RELEASE_USE_WEBVIEW_BOOTSTRAP_MODULE`
-defaults to `false`; the `dumpsys webviewupdate` output is identical
-whether the selection logic runs from the platform or from the module, which is the point of
+On a default AOSP 17 image the APEX is absent, because `RELEASE_USE_WEBVIEW_BOOTSTRAP_MODULE`
+defaults to `false`. The `dumpsys webviewupdate` output is identical
+whether the selection logic runs from the platform or from the module. This is the point of
 the `SystemInterface` boundary.
 
 ---
 
 ## Summary
 
-Android's WebView is a study in architectural layering: a thin framework proxy delegates
-to an updatable Chromium-based provider that runs web content in sandboxed renderer
+Android's WebView is a study in architectural layering. A thin framework proxy delegates
+to an updatable Chromium-based provider. The provider runs web content in sandboxed renderer
 processes. The key components are:
 
 - **WebViewFactory**: The coordinator that loads the provider, verifies signatures,
@@ -2985,16 +2991,16 @@ processes. The key components are:
   enforcement protect both the device and the user.
 
 - **Android 17 changes**: A launched APEX shell, `com.android.webview.bootstrap`, is reserved
-  for the provider-selection machinery so it can eventually ship as a Mainline module (currently
-  an empty shell, off by default behind `RELEASE_USE_WEBVIEW_BOOTSTRAP_MODULE`, with the
-  update-service code still in the platform); the second-generation `WebViewUpdateServiceImpl2` is
-  fully rolled out and the older implementation removed; `WebView.checkThread()` now throws
-  unconditionally regardless of target SDK; and `SelectionActionMenuClient` gives OEMs a hook to
+  for the provider-selection machinery so it can eventually ship as a Mainline module. It is currently
+  an empty shell, off by default behind `RELEASE_USE_WEBVIEW_BOOTSTRAP_MODULE`, and the
+  update-service code is still in the platform. The second-generation `WebViewUpdateServiceImpl2` is
+  fully rolled out and the older implementation is removed. `WebView.checkThread()` now throws
+  unconditionally regardless of target SDK. `SelectionActionMenuClient` gives OEMs a hook to
   customize the text-selection menu (`packages/modules/WebViewBootstrap/apex/`,
   `frameworks/base/core/java/android/webkit/SelectionActionMenuClient.java`).
 
 The updatable nature of WebView -- independent of the platform OS version -- is one of
-Android's most significant architectural decisions for security and web compatibility,
-ensuring that web rendering stays current even on devices that no longer receive full
+Android's most significant architectural decisions for security and web compatibility.
+It makes sure that web rendering stays current even on devices that no longer receive full
 OS updates. Android 17 extends that philosophy by moving the provider-selection logic itself
 toward a Mainline module.

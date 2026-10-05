@@ -1,13 +1,15 @@
 # Chapter 37: Bluetooth
 
-Bluetooth is one of the most feature-rich subsystems in AOSP, encompassing
-classic Bluetooth (BR/EDR), Bluetooth Low Energy (BLE), dozens of profiles, a
-full native HCI stack, and deep integration with the audio and telephony
-frameworks. Android's Bluetooth implementation lives primarily in
+Bluetooth is one of the most feature-rich subsystems in AOSP. It includes
+classic Bluetooth (BR/EDR) and Bluetooth Low Energy (BLE). It also has dozens of
+profiles, a full native HCI stack, and deep integration with the audio and
+telephony frameworks. Android's Bluetooth implementation lives primarily in
 `packages/modules/Bluetooth/`, shipped as an updatable APEX module
-(`com.android.bt`). This chapter traces every layer from the Java framework API
-down through the native Gabeldorsche/Fluoride stack to the AIDL HAL that talks
-to the controller firmware.
+(`com.android.bt`).
+
+This chapter traces every layer. It starts at the Java
+framework API and goes down through the native Gabeldorsche/Fluoride stack.
+It ends at the AIDL HAL that talks to the controller firmware.
 
 ---
 
@@ -16,9 +18,9 @@ to the controller firmware.
 ### 37.1.1 High-Level Overview
 
 Android's Bluetooth stack is organized as a vertical set of layers. An
-application at the top uses public SDK classes; those delegate through AIDL
-binder calls to a privileged system service; the service drives a native C++/
-Rust stack that speaks HCI to the hardware through a vendor HAL.
+application at the top uses public SDK classes. Those classes delegate through
+AIDL binder calls to a privileged system service. The service drives a native
+C++/ Rust stack. This stack speaks HCI to the hardware through a vendor HAL.
 
 ```mermaid
 graph TB
@@ -72,8 +74,8 @@ graph TB
 ### 37.1.2 BluetoothManager
 
 `BluetoothManager` is the system service entry point for applications. It is
-annotated as `@SystemService(Context.BLUETOOTH_SERVICE)` and is obtained via
-`Context.getSystemService()`.
+annotated as `@SystemService(Context.BLUETOOTH_SERVICE)`. It is obtained
+through `Context.getSystemService()`.
 
 Source: `packages/modules/Bluetooth/framework/java/android/bluetooth/BluetoothManager.java`
 
@@ -127,8 +129,8 @@ public static final int STATE_BLE_ON = 15;            // @SystemApi
 public static final int STATE_BLE_TURNING_OFF = 16;   // @hide
 ```
 
-The adapter state machine has two levels of "on": `STATE_BLE_ON` enables only
-the BLE subsystem (advertising, scanning), while `STATE_ON` additionally
+The adapter state machine has two levels of "on". `STATE_BLE_ON` enables only
+the BLE subsystem (advertising, scanning). `STATE_ON` additionally
 activates the classic BR/EDR transport and all profiles.
 
 ```mermaid
@@ -197,9 +199,10 @@ holds the resolved Bluetooth app package/component name and validates the device
 configuration; user-restriction handling lives in the separate
 `BluetoothRestriction` class, initialized alongside it.
 
-`BluetoothManagerService` is the Java class that handles the heavy lifting:
-binding to the `AdapterService`, managing enable/disable state transitions,
-crash recovery (up to 6 retries), airplane mode integration, and user switching.
+`BluetoothManagerService` is the Java class that handles the heavy lifting.
+It binds to the `AdapterService`. It also manages enable/disable state
+transitions, crash recovery (up to 6 retries), airplane mode integration, and
+user switching.
 
 Source: `packages/modules/Bluetooth/service/src/com/android/server/bluetooth/BluetoothManagerService.java`
 
@@ -348,7 +351,7 @@ graph LR
     F_BTIF --> F_BTA
 ```
 
-The shim layer in `main/shim/` provides the bridge, allowing Fluoride code to
+The shim layer in `main/shim/` provides the bridge. Through it, Fluoride code can
 call into GD modules for functionality that has been migrated.
 
 ### 37.2.2 Source Tree Layout
@@ -571,7 +574,7 @@ rust/
 
 The Rust GATT server shares the ATT bearer with the existing C++ GATT client.
 In Android 17 it moved from `system/rust/src/` into its own crate at
-`system/rust/private_gatt/`, and its global state was removed so it no longer
+`system/rust/private_gatt/`. Its global state was removed, so it no longer
 relies on static singletons.
 
 Source: `packages/modules/Bluetooth/system/rust/private_gatt/src/gatt.rs`
@@ -593,10 +596,10 @@ mod server;
 ```
 
 The `arbiter` decides per connection which side (C++ or Rust) handles incoming
-ATT traffic: the `IsolationManager` maps the advertising set (and hence the
-transport) a connection arrived on to a Rust server, and on those connections
+ATT traffic. The `IsolationManager` maps the advertising set (and hence the
+transport) a connection arrived on to a Rust server. On those connections,
 only server-side ATT opcodes (commands, requests, and confirmations, excluding
-Exchange MTU Request) are intercepted -- everything else is forwarded to the
+Exchange MTU Request) are intercepted. Everything else is forwarded to the
 C++ stack. The `mtu` module implements ATT MTU exchange,
 and `ffi` provides the C++ interop bindings (`stack/arbiter/acl_arbiter.h` on
 the C++ side).
@@ -616,24 +619,26 @@ pub mod types;
 ```
 
 `le_audio` contains two isochronous-transport managers that the LE Audio
-profiles build on, each split into a `traits.rs` (interface), a `manager.rs`
-(implementation), and an `ffi.rs` (`#[cxx::bridge]` to a C++ shim):
+profiles build on. Each has three files: a `traits.rs` (interface), a
+`manager.rs` (implementation), and an `ffi.rs` (`#[cxx::bridge]` to a C++ shim):
 
 | Module | Source | Purpose |
 |--------|--------|---------|
 | ISO Manager | `system/rust/src/le_audio/iso_manager/` | Manage CIG/CIS (connected) and BIG/BIS (broadcast) isochronous groups and streams |
 | Periodic Advertising Sync | `system/rust/src/le_audio/periodic_advertising_sync/` | Synchronize to periodic advertising trains (PAST/PA sync) and deliver BIGInfo reports |
 
-Both managers are built on Tokio async primitives: `oneshot`/`mpsc`/`broadcast`
-channels coordinate command completions and event streams, and `Drop`
+Both managers are built on Tokio async primitives. `oneshot`/`mpsc`/`broadcast`
+channels coordinate command completions and event streams. `Drop`
 implementations on the Arc-wrapped resources trigger asynchronous teardown
-(RAII). Handle types (`CigId`, `CisId`, `BigHandle`, `SyncHandle`,
+(RAII).
+
+Handle types (`CigId`, `CisId`, `BigHandle`, `SyncHandle`,
 `IsoConnectionHandle`) are newtype wrappers that mask the controller's reserved
-bits, and time values such as the periodic-advertising interval are modeled as
+bits. Time values such as the periodic-advertising interval are modeled as
 `std::time::Duration` rather than raw HCI 1.25 ms units. This dual-language
-approach exemplifies Android's incremental memory-safety strategy: new
+approach is an example of Android's incremental memory-safety strategy. New
 transport managers are written in Rust and bridged to the C++ stack through
-`cxx` shims rather than rewriting the whole stack at once.
+`cxx` shims. The whole stack is not rewritten at once.
 
 ### 37.2.5 BTIF: The JNI Bridge
 
@@ -725,8 +730,9 @@ Source: `packages/modules/Bluetooth/system/btif/src/stack_manager.cc`
 
 The shim layer (`main/shim/`) is a critical architectural component that allows
 the legacy Fluoride code to gradually adopt GD modules. Instead of a big-bang
-rewrite, each GD module provides a shim that presents the same interface the
-Fluoride code expects, while internally delegating to the new implementation.
+rewrite, each GD module provides a shim. The shim presents the same interface
+that the Fluoride code expects. Internally, it delegates to the new
+implementation.
 
 Source: `packages/modules/Bluetooth/system/main/shim/`
 
@@ -1275,8 +1281,8 @@ Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/opp/`
 LE Audio is a profile family introduced in Bluetooth 5.2. Historically AOSP
 implemented only the *Unicast Client* (central/initiator) side, where the phone
 drives earbuds and hearing aids. Android 17 added the *Peripheral* (acceptor)
-side as well, letting the phone itself act as an LE Audio sink and source for a
-peer host; that role is covered in Section 37.3.14.
+side as well. In this role the phone itself acts as an LE Audio sink and source
+for a peer host. Section 37.3.14 covers that role.
 
 Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/le_audio/LeAudioService.java`
 
@@ -1322,12 +1328,12 @@ graph TB
 
 ### 37.3.14 LE Audio Peripheral (BAP Acceptor) Role
 
-Through Android 16, AOSP's LE Audio implementation was a *Unicast Client*: the
-phone acts as the BAP *Initiator* and *Audio Source/Sink Client*, driving
+Through Android 16, AOSP's LE Audio implementation was a *Unicast Client*. The
+phone acts as the BAP *Initiator* and *Audio Source/Sink Client* and drives
 earbuds and hearing aids. Android 17 adds the complementary *Peripheral* role,
 where the phone is the BAP *Acceptor* (server). A peer host (for example a PC,
-a car head unit, or a smart display) connects to the phone, discovers its
-Published Audio Capabilities, and streams audio to or from it. The phone
+a car head unit, or a smart display) connects to the phone. The host discovers
+the phone's Published Audio Capabilities and streams audio to or from it. The phone
 becomes an LE Audio speaker, microphone, or both.
 
 The peripheral stack is a separate, self-contained implementation under
@@ -1460,8 +1466,8 @@ sequenceDiagram
 ```
 
 The isochronous transport for these streams runs through the native ISO
-manager (and, where the Rust path is used, the Rust ISO/periodic-sync managers
-described in Section 37.2.4). Call control and media control for the peripheral
+manager. Where the Rust path is used, it runs through the Rust ISO/periodic-sync
+managers that Section 37.2.4 describes. Call control and media control for the peripheral
 are handled by dedicated CCP and MCP clients under `system/bta/ccp/` and
 `system/bta/mcp/`.
 
@@ -1472,7 +1478,7 @@ are handled by dedicated CCP and MCP clients under `system/bta/ccp/` and
 ### 37.4.1 BLE Architecture in AOSP
 
 Bluetooth Low Energy operates on its own set of channels (37, 38, 39 for
-advertising; 0-36 for data) and has a fundamentally different connection model
+advertising; 0-36 for data). It has a fundamentally different connection model
 from classic Bluetooth. In AOSP, BLE functionality spans three major areas:
 advertising, scanning, and GATT client/server operations.
 
@@ -1526,9 +1532,10 @@ graph TB
 ### 37.4.2 BLE Advertising
 
 BLE advertising makes a device discoverable to nearby scanners. AOSP supports
-both legacy advertising (31-byte PDU) and extended advertising (fragments of up
-to 251 bytes -- `kLeMaximumFragmentLength` -- toward a maximum GAP data length
-of 255 bytes, `kLeMaximumGapDataLength`, across multiple advertising sets).
+both legacy advertising (31-byte PDU) and extended advertising. Extended
+advertising uses fragments of up to 251 bytes (`kLeMaximumFragmentLength`).
+These fragments count toward a maximum GAP data length of 255 bytes
+(`kLeMaximumGapDataLength`), across multiple advertising sets.
 
 Source: `packages/modules/Bluetooth/system/gd/hci/le_advertising_manager_impl.h`
 
@@ -1860,8 +1867,8 @@ for notifications.
 ### 37.4.10 Channel Sounding and Distance Measurement
 
 Bluetooth 6.0 introduced *Channel Sounding* (CS), a ranging technique that
-measures the distance between two LE devices using phase-based and round-trip
-timing measurements across many radio channels. AOSP exposes it through a
+measures the distance between two LE devices. It uses phase-based and
+round-trip timing measurements across many radio channels. AOSP exposes it through a
 *distance measurement* API that can fall back to RSSI-based estimation when the
 controller does not support CS. Android 17 built this feature out
 substantially: it tightened the security model, added power/RSSI reporting in
@@ -1921,30 +1928,37 @@ sequenceDiagram
     DMM-->>App: OnDistanceMeasurementResult(...)
 ```
 
-A result carries far more than a raw distance. The callback reports distance
-and error in centimetres, azimuth/altitude angles, delay spread, a confidence
-level, a Normalized Attack Detector Metric (NADM) attack level, relative
-velocity, and (new in Android 17) the remote TX power and reflector RSSI.
+A result carries far more than a raw distance. The callback reports these
+values:
+
+- Distance and error in centimeters
+- Azimuth/altitude angles
+- Delay spread
+- A confidence level
+- A Normalized Attack Detector Metric (NADM) attack level
+- Relative velocity
+- The remote TX power and reflector RSSI (new in Android 17)
 
 #### Security enforcement for ranging
 
-Channel Sounding can leak proximity information, so Android 17 added the
-`enforce_security_for_ranging` flag that requires an *encrypted, LE Secure
+Channel Sounding can leak proximity information. For this reason Android 17
+added the `enforce_security_for_ranging` flag that requires an *encrypted, LE Secure
 Connections* link before a session can start. The flag is defined alongside the
 power/RSSI result flag in the ranging aconfig:
 
 Source: `packages/modules/Bluetooth/flags/ranging.aconfig`
 
 When the flag is set, the service-side manager's `checkLinkRequirements()`
-rejects the session unless the device is bonded with the Secure Connections
-pairing algorithm and the LE link is currently encrypted with AES and a 16-byte
-key:
+rejects the session in two cases. It rejects the session unless the device is
+bonded with the Secure Connections pairing algorithm. It also rejects the
+session unless the LE link is currently encrypted with AES and a 16-byte key:
 
 Source: `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/gatt/DistanceMeasurementManager.java`
 
-In the native stack the same guarantee is enforced over the air: the state
-machine sends `LE CS Security Enable` and waits for its completion before
-issuing `LE CS Procedure Enable`, so ranging never runs on an unencrypted link.
+In the native stack the same guarantee is enforced over the air. The state
+machine sends `LE CS Security Enable` and waits for its completion. Only then
+does it issue `LE CS Procedure Enable`, so ranging never runs on an unencrypted
+link.
 
 #### Framework and service surface
 
@@ -2136,7 +2150,7 @@ The Bluetooth Audio HAL supports multiple session types:
 - HFP software encoding/decoding
 
 The audio data flows through a Fast Message Queue (FMQ) shared between the
-Bluetooth stack and the Audio HAL, avoiding the overhead of Binder IPC for
+Bluetooth stack and the Audio HAL. This avoids the overhead of Binder IPC for
 bulk audio data transfer.
 
 ### 37.5.7 Snoop Logger
@@ -2453,13 +2467,13 @@ GattClientSupportedFeatures = 03
 
 ### 37.6.8 Cross-Transport Key Derivation
 
-Bluetooth 4.2 introduced Cross-Transport Key Derivation (CTKD), which allows
-a device that bonds over one transport (LE or BR/EDR) to automatically derive
+Bluetooth 4.2 introduced Cross-Transport Key Derivation (CTKD). With CTKD, a
+device that bonds over one transport (LE or BR/EDR) can automatically derive
 keys for the other transport. This means a single pairing operation can secure
 both classic and BLE connections.
 
-The SMP state machine handles CTKD via the `SMP_SEC_KEY_TYPE_LK` key type,
-using the `smp_set_derive_link_key` action to generate a BR/EDR Link Key from
+The SMP state machine handles CTKD via the `SMP_SEC_KEY_TYPE_LK` key type.
+It uses the `smp_set_derive_link_key` action to generate a BR/EDR Link Key from
 the LE LTK.
 
 ### 37.6.9 Security Levels
@@ -2483,9 +2497,9 @@ Level 2.
 
 ### 37.7.1 Audio Architecture Overview
 
-Bluetooth audio in AOSP involves three major subsystems: the Bluetooth stack
-(codec negotiation, stream management), the Audio HAL (audio data path), and
-AudioFlinger (Android's audio server).
+Bluetooth audio in AOSP involves three major subsystems. These are the
+Bluetooth stack (codec negotiation, stream management), the Audio HAL (audio
+data path), and AudioFlinger (Android's audio server).
 
 ```mermaid
 graph TB
@@ -2658,11 +2672,11 @@ tA2DP_STATUS parse_a2dp_configuration(
 AOSP supports two audio data paths:
 
 **Software Encoding**: PCM audio flows from AudioFlinger through the Bluetooth
-Audio HAL's FMQ to the Bluetooth stack, which encodes it using a software codec
-(SBC, AAC, LDAC, etc.) and sends the encoded data over L2CAP.
+Audio HAL's FMQ to the Bluetooth stack. The stack encodes it with a software
+codec (SBC, AAC, LDAC, etc.) and sends the encoded data over L2CAP.
 
 **Hardware Offload**: PCM audio is routed directly from the audio DSP to the
-Bluetooth controller's hardware encoder, bypassing the host CPU. This reduces
+Bluetooth controller's hardware encoder. It bypasses the host CPU. This reduces
 power consumption and latency.
 
 Source: `packages/modules/Bluetooth/system/audio_hal_interface/a2dp_encoding.h`
@@ -2823,9 +2837,9 @@ LE Audio uses ISO (Isochronous) channels instead, which provide:
 
 In Android 17 the audio framework, not the Bluetooth stack, decides when the
 HFP SCO link comes up. The HFP profile (`HeadsetService` and `HeadsetStateMachine`)
-consults `HeadsetSystemInterface.isScoManagedByAudioEnabled()` and, when it is
-set, defers SCO audio start to the audio framework's communication-device routing
-rather than driving it from the profile. The framework side of that handoff -- the deprecated
+consults `HeadsetSystemInterface.isScoManagedByAudioEnabled()`. When it is
+set, the profile defers SCO audio start to the audio framework's
+communication-device routing. The profile does not drive the start itself. The framework side of that handoff -- the deprecated
 `startBluetoothSco()` path, `setCommunicationDevice()`, and the audio HAL
 `IBluetooth.setScoConfig()` call -- is covered in Chapter 15, Section 15.12.
 
@@ -2870,8 +2884,8 @@ AOSP supports hardware-defined codec extensions through the Audio HAL provider:
 Source: `packages/modules/Bluetooth/system/audio_hal_interface/aidl/provider_info.h`
 
 This allows SoC vendors to add proprietary codecs without modifying the
-Bluetooth stack. The provider reports its supported codecs, and the stack
-queries the provider during codec negotiation to determine if a hardware-
+Bluetooth stack. The provider reports its supported codecs. During codec
+negotiation, the stack queries the provider to find out if a hardware-
 accelerated codec is available for the connected device.
 
 ---
@@ -3296,11 +3310,11 @@ atest --host bluetooth_test_gd_unit
 
 ## Summary
 
-Android's Bluetooth subsystem is a multi-layered, multi-language stack that
+Android's Bluetooth subsystem is a multi-layered, multi-language stack. It
 spans from the framework SDK (`BluetoothManager`, `BluetoothAdapter`) through
 the system service (`BluetoothManagerService`, `AdapterService`), down through
-the native Gabeldorsche/Fluoride C++/Rust stack, to the AIDL HAL that
-interfaces with the Bluetooth controller firmware.
+the native Gabeldorsche/Fluoride C++/Rust stack. At the bottom is the AIDL HAL
+that interfaces with the Bluetooth controller firmware.
 
 Key architectural highlights:
 
@@ -3308,35 +3322,35 @@ Key architectural highlights:
   updatable via Google Play system updates independently of full OTA updates.
 - **Gabeldorsche migration**: The native stack is progressively modernizing from
   the legacy Fluoride (Broadcom-derived) architecture to the modular
-  Gabeldorsche design, starting with the lowest layers (HCI, ACL) and working
-  up.
+  Gabeldorsche design. The work starts with the lowest layers (HCI, ACL) and
+  moves up.
 - **Rust integration**: Memory-safe components coexist with C++ through `cxx`
   FFI bridges. The Rust GATT server (now in its own `private_gatt` crate) uses
-  an arbiter to share the ATT bearer with the C++ client, and Android 17 added a
-  Rust LE Audio crate housing the isochronous (CIG/CIS, BIG/BIS) and
+  an arbiter to share the ATT bearer with the C++ client. Android 17 added a
+  Rust LE Audio crate that houses the isochronous (CIG/CIS, BIG/BIS) and
   periodic-advertising-sync managers.
-- **AIDL HAL**: The Bluetooth HAL operates at the HCI level, providing a clean
+- **AIDL HAL**: The Bluetooth HAL operates at the HCI level. It provides a clean
   vendor abstraction with just six methods (`initialize`, `close`, plus four
   send methods for HCI command, ACL, SCO, and ISO packets).
 - **Rich profile support**: Over 25 Bluetooth profiles are implemented, from
   classic A2DP/HFP to modern LE Audio with BAP, CSIP, VCP, MCP, and TBS. Android
   17 added the LE Audio Peripheral (BAP acceptor) role, letting the phone itself
   act as an LE Audio speaker/microphone for a peer host.
-- **Ranging**: Channel Sounding distance measurement is built out in Android 17
-  with an enforced LE Secure Connections security model and richer results
+- **Ranging**: Channel Sounding distance measurement is built out in Android 17.
+  It has an enforced LE Secure Connections security model and richer results
   (NADM attack level, remote TX power, RSSI).
 - **Hardware offload**: Audio encoding can be offloaded to the SoC's DSP for
-  power efficiency, with the Audio HAL providing a separate data path via
+  power efficiency. The Audio HAL provides a separate data path via
   Fast Message Queues.
 - **Comprehensive security**: SMP implements all Bluetooth pairing models with
   a 17-state state machine, supporting Legacy and Secure Connections pairing,
   Cross-Transport Key Derivation, and RPA-based privacy.
 
-The Bluetooth codebase demonstrates many AOSP patterns: binder IPC between
-framework and service, JNI bridging to native code, state machines for protocol
-management (A2DP has 4 states; HFP has 7; SMP has 17), and HAL abstraction for
-hardware portability. Understanding this stack provides insight into how Android
-manages complex, real-time wireless protocols within its security and permission
+The Bluetooth codebase demonstrates many AOSP patterns. These include binder
+IPC between framework and service and JNI bridging to native code. They also
+include state machines for protocol management (A2DP has 4 states; HFP has 7;
+SMP has 17). The last pattern is HAL abstraction for hardware portability. Understanding this
+stack provides insight into how Android manages complex, real-time wireless protocols within its security and permission
 framework.
 
 ### Key Source Paths
@@ -3378,8 +3392,9 @@ at https://www.bluetooth.com/specifications/specs/. Key specification documents
 relevant to AOSP:
 
 - **Core Specification 6.0**: The foundational Bluetooth specification
-  defining the radio, baseband, L2CAP, SDP, GAP, and GATT protocols, and the
-  Channel Sounding feature that AOSP's distance-measurement API builds on.
+  defining the radio, baseband, L2CAP, SDP, GAP, and GATT protocols. It also
+  defines the Channel Sounding feature that AOSP's distance-measurement API
+  builds on.
 - **A2DP 1.4**: Advanced Audio Distribution Profile specification, defining
   audio streaming procedures and SBC codec requirements.
 - **HFP 1.9**: Hands-Free Profile specification with LC3 super wideband

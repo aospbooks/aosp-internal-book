@@ -9,8 +9,9 @@ Gingerbread) and the stack has evolved through several architectural generations
 NFC's defining characteristic is its extremely short range -- typically 0-4 cm.
 This makes physical proximity a natural authentication factor: you must
 deliberately tap to pay, share, or authenticate.  The radio link itself is
-passive in the sense that one device (the reader/initiator) generates the RF
-field while the other (the tag/card/target) modulates the field to communicate.
+passive in this sense: one device (the reader/initiator) generates the RF
+field. The other device (the tag/card/target) modulates the field to
+communicate.
 
 ---
 
@@ -571,9 +572,9 @@ sequenceDiagram
 
 ### 38.2.10 Routing Table Management
 
-The NFCC maintains a routing table that determines how incoming ISO-DEP,
-NFC-F, and other frames are routed -- to the host (application processor),
-to the eSE, or to the UICC.  NfcService orchestrates routing table updates
+The NFCC maintains a routing table. The table determines where the NFCC
+sends incoming ISO-DEP, NFC-F, and other frames: to the host (application
+processor), to the eSE, or to the UICC.  NfcService orchestrates routing table updates
 through a delayed scheduler to coalesce multiple rapid changes:
 
 ```java
@@ -1625,11 +1626,11 @@ with one activity, `TagViewer`, that displays the contents of a scanned NDEF
 tag when nothing more specific claims it.
 
 Its registration shows the catch-all pattern from 38.5.1 in practice. The
-activity sets `android:priority="-10"` so any other matching handler wins the
-chooser ordering, and it filters on `TECH_DISCOVERED` with a tech-list of a
-single technology, `android.nfc.tech.Ndef`
-(`packages/apps/Tag/res/xml/filter_nfc.xml`), plus a `VIEW` filter for the
-`vnd.android.cursor.item/ndef_msg` MIME type:
+activity sets `android:priority="-10"`, so any other matching handler wins the
+chooser ordering. It filters on `TECH_DISCOVERED` with a tech-list of a single
+technology, `android.nfc.tech.Ndef`
+(`packages/apps/Tag/res/xml/filter_nfc.xml`). It also has a `VIEW` filter for
+the `vnd.android.cursor.item/ndef_msg` MIME type:
 
 ```xml
 <!-- Source: packages/apps/Tag/AndroidManifest.xml -->
@@ -1645,12 +1646,14 @@ single technology, `android.nfc.tech.Ndef`
 ```
 
 `TagViewer.resolveIntent()` reads the `EXTRA_NDEF_MESSAGES` array that
-`NfcDispatcher` packed into the intent (38.5.6) and hands the first message to
-`NdefMessageParser` (`packages/apps/Tag/src/com/android/apps/tag/message/`),
-which classifies each record into a typed renderer: Smart Poster, URI, Text,
-image, vCard, generic MIME, or an unknown-record fallback. Each renderer
+`NfcDispatcher` packed into the intent (38.5.6). It hands the first message to
+`NdefMessageParser` (`packages/apps/Tag/src/com/android/apps/tag/message/`).
+The parser classifies each record into a typed renderer: Smart Poster, URI,
+Text, image, vCard, generic MIME, or an unknown-record fallback. Each renderer
 inflates its own view, so a scanned tag shows up as readable rows rather than
-raw bytes. The app parses only the first NDEF message on the tag and covers
+raw bytes.
+
+The app parses only the first NDEF message on the tag and covers
 these record types and nothing more. It is a viewer for inspecting tags by hand,
 and it carries no framework logic of its own. The dispatch that delivers tags
 to it is covered in 38.4 and the rest of 38.5.
@@ -2006,9 +2009,9 @@ The Wallet Role holder gets priority for:
 - Default contactless payment selection
 
 The Wallet Role coverage is widened in Android 17.  Section 38.10 describes the
-new **associated-package** plumbing that lets the role holder grant role-holder
-routing priority to a sibling package without that package owning the role
-itself.
+new **associated-package** plumbing.  With it, the role holder can grant
+role-holder routing priority to a sibling package.  That package does not need
+to own the role itself.
 
 ### 38.6.11 Observe Mode and Polling Loop Filters
 
@@ -2035,9 +2038,9 @@ public void onPollingLoopDetected(List<PollingFrame> frames) {
 }
 ```
 
-The callback does not forward frames inline: it batches them into
+The callback does not forward frames inline.  It batches them into
 `mPollingFramesToBeSent` and posts `mPollingLoopsDetectedRunnable` to
-`mHandler`, which later drains the list and calls
+`mHandler`.  Later, the handler drains the list and calls
 `mCardEmulationManager.onPollingLoopDetected()` on the handler thread.
 
 The firmware can autonomously enable or disable observe mode:
@@ -2078,10 +2081,10 @@ private boolean setObserveModeInternal(boolean enable, int callingUid,
 ```
 
 Android 17 adds `NfcAdapter.allowOneTransaction()` (guarded by the
-`nfcstack_26q2_updates` flag in `packages/modules/Nfc/flags/flags.aconfig`),
-which temporarily disables observe mode for a *single* HCE transaction and then
-re-enables it automatically once the transaction completes or the RF field is
-lost.  This is the building block a wallet uses to let one tap-to-pay through
+`nfcstack_26q2_updates` flag in `packages/modules/Nfc/flags/flags.aconfig`).
+It temporarily disables observe mode for a *single* HCE transaction.  Then it
+re-enables observe mode automatically once the transaction completes or the RF
+field is lost.  This is the building block a wallet uses to let one tap-to-pay through
 without permanently leaving observe mode off.  It reaches the service through
 `INfcAdapter.allowOneTransaction()`
 (`packages/modules/Nfc/framework/java/android/nfc/INfcAdapter.aidl`).
@@ -2136,8 +2139,8 @@ Applications declare off-host services with `OffHostApduService`:
    to HCE services, preventing rogue apps from intercepting APDUs.
 
 5. **AID conflict resolution** -- when multiple apps register the same AID,
-   the system presents a chooser for "other" category, or uses the default
-   payment service for "payment" category.
+   the system presents a chooser for the "other" category.  For the "payment"
+   category, it uses the default payment service.
 
 ---
 
@@ -2916,13 +2919,13 @@ classDiagram
 
 ## 38.10 Tap to X and the Gesture Exchange API
 
-Android 17 introduces a new system-API surface called **Tap to X** that turns a
-contactless tap into an app-defined "exchange" gesture rather than just an NDEF
-read or a payment.  The canonical use is **Tap to Share**: two phones, or a
-phone and an accessory, briefly hold their NFC antennas together and the
-platform hands the foreground app a `Tag` it can transceive with, without the
-usual NDEF dispatch, sounds, or vibration.  The whole surface is guarded by the
-`tap_to_x` aconfig flag.
+Android 17 introduces a new system-API surface called **Tap to X**.  It turns a
+contactless tap into an app-defined "exchange" gesture, not just an NDEF read or
+a payment.  The canonical use is **Tap to Share**.  Two phones, or a phone and
+an accessory, briefly hold their NFC antennas together.  The platform then
+hands the foreground app a `Tag` it can transceive with.  There is no usual
+NDEF dispatch, sound, or vibration, and the `tap_to_x` aconfig flag guards the
+whole surface.
 
 #### Mermaid: Tap to X gesture-exchange flow
 
@@ -2963,8 +2966,9 @@ public static void enforceGestureExchangePermissions(Context context) {
 ```
 
 Every gesture-exchange entry point in `NfcService` calls
-`enforceGestureExchangePermissions()` before touching state, so only the trusted
-holder (for example a system Tap-to-Share component) can intercept the gesture.
+`enforceGestureExchangePermissions()` before it touches state.  So only the
+trusted holder (for example a system Tap-to-Share component) can intercept the
+gesture.
 
 ### 38.10.2 NfcGestureExchangeCallbackListener
 
@@ -2994,9 +2998,9 @@ The application-facing methods are `registerGestureExchangeReaderCallback()` and
 `unregisterGestureExchangeReaderCallback()` on `NfcAdapter`, both
 `@FlaggedApi(FLAG_TAP_TO_X)` and both requiring `PERFORM_GESTURE_EXCHANGE`
 (`packages/modules/Nfc/framework/java/android/nfc/NfcAdapter.java`).  The
-listener also installs a `DeathRecipient`: if the NFC service process dies, it
-re-registers the callback once the service comes back, so a long-lived
-Tap-to-Share component does not silently stop receiving gestures.
+listener also installs a `DeathRecipient`.  If the NFC service process dies, the
+listener re-registers the callback once the service comes back.  So a
+long-lived Tap-to-Share component does not silently stop receiving gestures.
 
 Registering a gesture callback implicitly suppresses platform feedback.  The
 documentation notes it behaves like passing `FLAG_READER_NO_PLATFORM_SOUNDS`,
@@ -3017,12 +3021,12 @@ public static final String GESTURE_EXCHANGE_COMPONENT_SETTINGS_KEY =
         "nfc.gesture_exchange_component";
 ```
 
-When a gesture poll frame has been configured, `mGestureExchangeEnabled` is set
-and the discovery handler checks the endpoint for the gesture AID *before*
-falling through to ordinary NDEF reading.  On an ISO-DEP endpoint with no reader
+When a gesture poll frame has been configured, `mGestureExchangeEnabled` is set.
+The discovery handler then checks the endpoint for the gesture AID *before* it
+falls through to ordinary NDEF reading.  On an ISO-DEP endpoint with no reader
 mode active, `NfcService` transceives a `SELECT` for the (optional) secondary
-AID and then the primary `GESTURE_EXCHAGE_AID`; a `90 00` status word means the
-remote end is a gesture target:
+AID.  Then it does the same for the primary `GESTURE_EXCHAGE_AID`.  A
+`90 00` status word means the remote end is a gesture target:
 
 ```java
 // Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/NfcService.java
@@ -3041,13 +3045,14 @@ if (respData != null && respData.length >= 2
 }
 ```
 
-`buildGestureTag()` wraps the live ISO-DEP endpoint as a `Tag` that also carries
-a synthetic Android Application Record (the configured gesture component) and an
-`EXTRA_AID`, so the gesture target is dispatched to exactly the right component
-even on the legacy intent path.  The `mGestureExchangeEnabled` flag itself is
-driven by a `Settings.Secure` poll-frame value watched by a `ContentObserver`
-in `NfcService` (`updateGesturePollFrame()`), which also pushes the default poll
-frame down to the controller via `mDeviceHost.setDefaultFrame()`.
+`buildGestureTag()` wraps the live ISO-DEP endpoint as a `Tag`.  It also
+carries a synthetic Android Application Record (the configured gesture
+component) and an `EXTRA_AID`.  So the gesture target is dispatched to exactly
+the right component, even on the legacy intent path.  The
+`mGestureExchangeEnabled` flag itself is driven by a `Settings.Secure`
+poll-frame value.  A `ContentObserver` in `NfcService` watches this value
+(`updateGesturePollFrame()`).  The default poll frame is also pushed
+down to the controller via `mDeviceHost.setDefaultFrame()`.
 
 ### 38.10.4 Tap-to-X routing: gesture vs NDEF vs payment
 
@@ -3057,7 +3062,7 @@ chain (Section 38.5) rather than replacing it.  Within
 
 1. An explicit **reader-mode** request from a foreground app wins outright.
 2. Otherwise, if **gesture exchange** is enabled, the service selects the
-   secondary then primary gesture AID; a match short-circuits to the gesture
+   secondary then primary gesture AID.  A match short-circuits to the gesture
    callback (or a synthetic gesture dispatch) and starts presence checking.
 3. Otherwise the endpoint falls through to ordinary **NDEF read** and the
    three-tier tag-dispatch intents.
@@ -3084,8 +3089,8 @@ flowchart TD
     PRIMARY -->|"no"| NDEF
 ```
 
-This keeps Tap to X invisible to ordinary tags and ordinary payment taps: a
-plain NDEF poster or a contactless card never answers the gesture `SELECT`, so
+This keeps Tap to X invisible to ordinary tags and ordinary payment taps.  A
+plain NDEF poster or a contactless card never answers the gesture `SELECT`.  So
 it flows straight through to the NDEF/HCE paths described earlier in the
 chapter.
 
@@ -3094,7 +3099,7 @@ chapter.
 Android 17 loosens the one-package assumption baked into the Wallet Role
 (Section 38.6.10).  Previously only the single `ROLE_WALLET` holder package got
 role-holder routing priority.  In 17 the holder can **declare an associated
-package** that shares its priority, which matters when a wallet ships its
+package** that shares its priority.  This matters when a wallet ships its
 NFC/observe-mode logic in a sibling app or an app signed with a different
 certificate.
 
@@ -3109,11 +3114,12 @@ public static final String PROPERTY_ALLOW_SHARED_ROLE_PRIORITY =
 ```
 
 Per its documentation, the role holder can set the property's `android:value` to
-`true` (share priority with any package signed by the same certificate) or to a
-specific package name (share with exactly that package, even if signed
-differently).  `RegisteredAidCache` reads this property off the wallet holder
-(and, failing that, the preferred payment service) and records the associated
-package, even when that package owns no card-emulation service at all:
+`true` (share priority with any package signed by the same certificate).  It can
+also set the value to a specific package name (share with exactly that package,
+even if signed differently).  `RegisteredAidCache` reads this property off the
+wallet holder (and, if that fails, the preferred payment service).  It records
+the associated package, even when that package owns no card-emulation service at
+all:
 
 ```java
 // Source: packages/modules/Nfc/NfcNci/src/com/android/nfc/cardemulation/
@@ -3131,17 +3137,17 @@ if (prop.getString() != null) {
 Resolution then treats the holder and its associated packages uniformly.
 `isDefaultOrAssociatedWalletService()` and `isDefaultOrAssociatedWalletPackage()`
 return `true` for the holder *or* any associated service/package (gated by the
-`nfc_associated_role_services` flag), so the associated app can register AIDs at
+`nfc_associated_role_services` flag).  So the associated app can register AIDs at
 role-holder priority and toggle observe mode (Section 38.6.11) as if it were the
-wallet itself.  As noted in the source comment above, a frequent reason for the
-association is precisely to let a helper package call
+wallet itself.  The source comment above shows a frequent reason for the
+association.  It is precisely to let a helper package call
 `setObserveModeEnabled()` / `allowOneTransaction()` on the wallet's behalf
 without it owning any HCE service.
 
 ## 38.12 NFC Mainline Flags in Android 17
 
 Because NFC ships as the `com.android.nfcservices` Mainline APEX (Section
-38.1.8), almost every 17 behavior change is gated by an aconfig flag, so the
+38.1.8), an aconfig flag gates almost every 17 behavior change.  So the
 platform can ship the code and turn it on per release train.  Most live in the
 module flag set `packages/modules/Nfc/flags/flags.aconfig` (container
 `com.android.nfcservices`, accessor `com.android.nfc.module.flags.Flags`):
@@ -3157,8 +3163,8 @@ module flag set `packages/modules/Nfc/flags/flags.aconfig` (container
 
 A handful of framework-side flags live in the `android.nfc` namespace instead
 and gate public-API surface in the `framework/` tree.  The most relevant here is
-`android.nfc.nfc_associated_role_services`, which gates the wallet-role
-associated-package feature (Section 38.11): it guards both the
+`android.nfc.nfc_associated_role_services`.  It gates the wallet-role
+associated-package feature (Section 38.11).  It guards both the
 `PROPERTY_ALLOW_SHARED_ROLE_PRIORITY` field (see
 `packages/modules/Nfc/framework/api/current.txt`) and the
 `Flags.nfcAssociatedRoleServices()` branches in
@@ -3166,22 +3172,22 @@ associated-package feature (Section 38.11): it guards both the
 
 Module flags are read through the generated `com.android.nfc.module.flags.Flags`
 accessor (for example `@FlaggedApi(FLAG_TAP_TO_X)` on `NfcAdapter` methods).
-Reading the relevant flag is the most reliable way to tell, at runtime, whether
-a given Android 17 NFC behavior is actually active on a device, since Mainline
-trains enable them independently of the platform dessert.
+To tell whether an Android 17 NFC behavior is actually active on a device, read
+the relevant flag at runtime.  This is the most reliable way.  This is because Mainline trains
+enable them independently of the platform dessert.
 
 ---
 
 ## 38.13 The SecureElement Service and OMAPI Implementation
 
-Section 38.7.4 introduced OMAPI (the Open Mobile API) as the concept that lets a
-regular app talk to an applet running on a Secure Element.  This section walks
+Section 38.7.4 introduced OMAPI (the Open Mobile API).  With OMAPI, a
+regular app can talk to an applet running on a Secure Element.  This section walks
 the implementation behind that concept: the `SecureElement` system app at
 `packages/apps/SecureElement/`, which provides the `ISecureElementService`
 binder that backs the `android.se.omapi` client classes.  It is a standalone app
-running in its own `android.uid.se` process, not
-part of NfcService -- though, as 38.13.7 shows, it shares the same off-host SEs
-that NFC card emulation routes contactless transactions to.
+running in its own `android.uid.se` process, not part of NfcService.  But, as
+38.13.7 shows, it shares the same off-host SEs.  NFC card emulation routes
+contactless transactions to these SEs.
 
 ### 38.13.1 Who Implements OMAPI
 
@@ -3271,8 +3277,8 @@ ServiceManager.addService(Context.SECURE_ELEMENT_SERVICE, mSecureElementServiceB
 ```
 
 The VINTF-stable name (`/default`) is also what the client `SEService` looks
-up first via `ServiceManager.checkService()`; only when that lookup fails does
-it fall back to `bindService()`, which hands it the binder returned by
+up first via `ServiceManager.checkService()`.  Only when that lookup fails does
+it fall back to `bindService()`.  This call hands it the binder returned by
 `SecureElementService.onBind()`.  The
 `Context.SECURE_ELEMENT_SERVICE` (`"secure_element"`) registration is a
 separate, system-stability publication that the client never looks up.
@@ -3306,8 +3312,8 @@ byte[] transmit(in byte[] data);
 ```
 
 The HAL also calls back into the `Terminal` via `ISecureElementHalCallback`'s
-`onStateChange(boolean)`; on a connect transition the terminal re-runs access
-control initialization, and on disconnect it resets the enforcer.
+`onStateChange(boolean)`.  On a connect transition the terminal re-runs access
+control initialization.  On disconnect it resets the enforcer.
 
 ### 38.13.4 Sessions and Channels
 
@@ -3322,9 +3328,9 @@ by its AID:
   carries an independent applet selection.  This is the normal path for apps.
 
 `SecureElementSession` (an inner class of `SecureElementService`) implements
-both entry points.  Both validate the session is open, the listener is non-null,
-and `p2` is one of the allowed `SELECT` values, then resolve the caller's
-identity and delegate to the `Terminal`:
+both entry points.  Both validate that the session is open, the listener is
+non-null, and `p2` is one of the allowed `SELECT` values.  Then they resolve the
+caller's identity and delegate to the `Terminal`:
 
 ```java
 // Source: packages/apps/SecureElement/src/com/android/se/SecureElementService.java
@@ -3334,7 +3340,7 @@ channel = mReader.getTerminal().openLogicalChannel(this, aid, p2, listener,
 
 Caller identity comes from `getPackageNameFromCallingUid(Binder.getCallingUid())`.
 If the UID has no package (a native vendor process), the code falls back to a
-vendor-supplied UUID mapping, but **only for eSE terminals** -- UUID-based access
+vendor-supplied UUID mapping, but **only for eSE terminals**.  UUID-based access
 is rejected on UICC.  Inside `Terminal.openLogicalChannel()`, the terminal first
 computes a `ChannelAccess` verdict (38.13.5), then issues the HAL call for the
 detected HAL version:
@@ -3353,7 +3359,7 @@ The session tracks all its open channels and force-closes them on
 
 ### 38.13.5 Access Control Enforcement
 
-This is the security-critical part of OMAPI: an arbitrary app must not be able
+This is the security-critical part of OMAPI.  An arbitrary app must not be able
 to talk to a payment or telecom applet just because it knows the AID.  The
 SecureElement service enforces a Global Platform access-control model, checked
 in two places -- once when the channel is opened, and again on every APDU.
@@ -3364,8 +3370,8 @@ order:
 1. If the caller holds `android.permission.SECURE_ELEMENT_PRIVILEGED_OPERATION`,
    it gets `ChannelAccess.getPrivilegeAccess()` -- full access, no rule lookup.
 2. On a UICC terminal, if the caller has **carrier privileges** (signed by a key
-   the SIM authorizes) and the AID is not ISD-R, it gets carrier-privilege
-   access.  An ordinary app's `openBasicChannel` on UICC is otherwise refused.
+   the SIM authorizes), it gets carrier-privilege access.  This applies only if
+   the AID is not ISD-R.  An ordinary app's `openBasicChannel` on UICC is otherwise refused.
 3. Otherwise the `AccessControlEnforcer` is consulted for a per-AID rule:
 
 ```java
@@ -3382,9 +3388,9 @@ The `AccessControlEnforcer` obtains its rules from the SE itself, preferring ARA
 and falling back to ARF:
 
 - **ARA (Access Rule Application)** -- a dedicated applet (the ARA-M, AID
-  `A00000015141434C00`) that stores Global Platform `REF-AR-DO` rules mapping a
-  caller's certificate hash (and optional package name) to the AIDs it may use.
-  The `AraController` opens a logical channel to the ARA-M and reads the rules
+  `A00000015141434C00`).  It stores Global Platform `REF-AR-DO` rules.  The rules
+  map a caller's certificate hash (and optional package name) to the AIDs it may
+  use.  The `AraController` opens a logical channel to the ARA-M and reads the rules
   with `GET DATA`.
 - **ARF (Access Rule File)** -- a PKCS#15 file structure on the (typically UICC)
   SE, parsed by `ArfController` / `PKCS15Handler`, used when no ARA applet
@@ -3412,7 +3418,7 @@ if (!mUseArf && !mUseAra && !mFullAccess) {
 }
 ```
 
-The default posture is fail-closed: if the SE has neither an ARA applet nor an
+The default posture is fail-closed.  If the SE has neither an ARA applet nor an
 ARF file and full access has not been explicitly granted, every channel open is
 denied.  The matched rules are cached in an `AccessRuleCache` and re-validated
 against the SE's refresh tag so that newly provisioned rules take effect.
@@ -3430,14 +3436,15 @@ synchronized (mLock) {
 }
 ```
 
-`checkCommand()` consults `AccessControlEnforcer.checkCommand()`, which honors
-any APDU filter (`APDU-AR-DO`) the rule attached to the channel, so a rule can
+`checkCommand()` consults `AccessControlEnforcer.checkCommand()`.  It honors any
+APDU filter (`APDU-AR-DO`) the rule attached to the channel.  So a rule can
 permit an applet but restrict which command APDUs are allowed.
 
 ### 38.13.6 Channel Open Path End to End
 
-The diagram below traces a non-privileged app opening a logical channel to an
-applet, showing where access control is enforced before any APDU reaches the SE.
+The diagram below traces a non-privileged app that opens a logical channel to an
+applet.  It shows where access control is enforced before any APDU reaches the
+SE.
 
 ```mermaid
 sequenceDiagram
@@ -3472,14 +3479,15 @@ sequenceDiagram
 ### 38.13.7 How OMAPI Relates to NFC Card Emulation
 
 OMAPI (application-processor access to applets, over SPI/I2C/SWP) and NFC
-off-host card emulation (38.6, 38.7) both reach the same physical eSE / UICC,
-but through different paths: OMAPI goes app to `SecureElementService` to SE HAL,
-while contactless transactions go external reader to NFCC to SE over the
-RF/HCI link, with no application processor in the loop.
+off-host card emulation (38.6, 38.7) both reach the same physical eSE / UICC.
+They use different paths.  OMAPI goes app to `SecureElementService` to SE HAL.
+Contactless transactions go external reader to NFCC to SE over the RF/HCI link.
+No application processor is in the loop.
 
-The two meet at the `NFC_AR_DO` access rule.  When NfcService is about to
-broadcast an off-host transaction event (38.7.6), it asks the SecureElement
-service whether a given package is allowed to receive events for that AID:
+The two meet at the `NFC_AR_DO` access rule.  Before NfcService
+broadcasts an off-host transaction event (38.7.6), it asks the SecureElement
+service a question.  The question is whether a given package may receive events
+for that AID:
 
 ```java
 // Source: packages/apps/SecureElement/src/com/android/se/SecureElementService.java
@@ -3494,10 +3502,10 @@ public synchronized boolean[] isNfcEventAllowed(String reader, byte[] aid,
 
 `Terminal.isNfcEventAllowed()` runs the same ARA/ARF rule set through the
 enforcer, but evaluates the `NFC-AR-DO` (NFC event access) field rather than the
-APDU-access field.  So the access rules provisioned on the SE govern both who
-may open a channel to an applet over OMAPI and who may be notified when that
-applet handles a contactless transaction -- one rule store, two enforcement
-surfaces.
+APDU-access field.  So the access rules provisioned on the SE govern two things.
+They govern who may open a channel to an applet over OMAPI.  They also govern
+who may be notified when that applet handles a contactless transaction.  There
+is one rule store and two enforcement surfaces.
 
 ### 38.13.8 eUICC and the ISD-R AID
 
@@ -3517,9 +3525,9 @@ if (packageName != null && getName().startsWith(SecureElementService.UICC_TERMIN
 }
 ```
 
-The LPA (Local Profile Assistant) component that downloads and installs eSIM
-profiles uses OMAPI logical channels to the ISD-R; the carrier-privilege check
-is skipped for ISD-R precisely because eSIM management is gated by the
+The LPA (Local Profile Assistant) component downloads and installs eSIM
+profiles.  It uses OMAPI logical channels to the ISD-R.  The carrier-privilege
+check is skipped for ISD-R precisely because eSIM management is gated by the
 privileged permission instead.
 
 ---
@@ -4213,7 +4221,7 @@ public class DemoFeliCaService extends HostNfcFService {
 This chapter explored Android's NFC stack from the 13.56 MHz radio up through
 the application-facing APIs:
 
-**Architecture** -- the NFC stack is a layered system spanning the AIDL HAL
+**Architecture** -- the NFC stack is a layered system.  It includes the AIDL HAL
 (`INfc`), the libnfc-nci NCI protocol library, the JNI bridge
 (`NativeNfcManager`), the central `NfcService` daemon, and the public
 `NfcAdapter` API.  The entire stack ships as a Mainline APEX module
@@ -4251,12 +4259,13 @@ Off-host card emulation routes transactions directly to the SE.
 and host emulation via `HostNfcFService`.  NFC-V (ISO 15693) provides
 longer-range communication for inventory and industrial tags.
 
-**Android 17** -- the NFC Mainline module adds **Tap to X** (the
-`PERFORM_GESTURE_EXCHANGE`-gated `NfcGestureExchangeCallbackListener` /
-gesture-exchange API behind the `tap_to_x` flag), the
-`allowOneTransaction()` single-tap observe-mode escape hatch, and
-**wallet-role associated packages** (`PROPERTY_ALLOW_SHARED_ROLE_PRIORITY`) that
-let the `ROLE_WALLET` holder share routing priority with a sibling package.
+**Android 17** -- the NFC Mainline module adds three features.  The first is
+**Tap to X** (the `PERFORM_GESTURE_EXCHANGE`-gated
+`NfcGestureExchangeCallbackListener` / gesture-exchange API behind the
+`tap_to_x` flag).  The second is the `allowOneTransaction()` single-tap
+observe-mode escape hatch.  The third is **wallet-role associated packages**
+(`PROPERTY_ALLOW_SHARED_ROLE_PRIORITY`).  They let the `ROLE_WALLET` holder
+share routing priority with a sibling package.
 Almost every change is gated by an aconfig flag in
 `packages/modules/Nfc/flags/flags.aconfig`.
 

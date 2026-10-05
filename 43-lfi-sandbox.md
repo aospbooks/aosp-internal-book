@@ -2,32 +2,38 @@
 
 Android has always isolated untrusted native code with the heaviest tool it
 owns: a separate process. The software media codecs are the canonical example.
-Because a malformed audio or video frame can drive a buffer overflow in a C
-decoder, AOSP runs the software codecs in their own hardened APEX process
-(`com.android.media.swcodec`), reached over Binder, so that a memory-corruption
-bug in `libopus` or an AAC decoder cannot reach into the app or the media
-server. The isolation is real, but it is not free: every decoded frame crosses a
-process boundary, buffers are shared through ashmem and Binder, and a whole
+A malformed audio or video frame can drive a buffer overflow in a C decoder.
+So AOSP runs the software codecs in their own hardened APEX process
+(`com.android.media.swcodec`), reached over Binder. A memory-corruption
+bug in `libopus` or an AAC decoder then cannot reach into the app or the media
+server.
+
+The isolation is real, but it is not free. Every decoded frame crosses a
+process boundary. Buffers are shared through ashmem and Binder. A whole
 process must be spawned, scheduled, and kept warm.
 
 Android 17 adds a second, much lighter isolation primitive: **Lightweight Fault
 Isolation (LFI)**. LFI confines an untrusted native library's memory accesses and
-control flow to a reserved region of *its own host process's* address space,
-enforced by machine code that a verifier has proven cannot escape that region.
-The untrusted decoder runs in-process, but it provably cannot read or write
-outside its sandbox, cannot jump to code outside it, and cannot make raw
+control flow to a reserved region of *its own host process's* address space.
+Machine code enforces this, and a verifier has proven that this code cannot
+escape the region.
+
+The untrusted decoder runs in-process. It provably cannot read or write
+outside its sandbox, jump to code outside it, or make raw
 syscalls. There is no second process, no Binder hop, and no buffer copy across an
-address-space boundary, yet a memory-safety bug in the decoder stays inside the
+address-space boundary. Yet a memory-safety bug in the decoder stays inside the
 sandbox.
 
 The first production consumer is exactly the case that motivated swcodec in the
-first place: a software Opus decoder running inside the media APEX, sandboxed by
-LFI instead of (or alongside) the separate-process model. This chapter explains
-what LFI is and the threat model it serves, the verifier/runtime/binding split
-between the in-tree glue (`system/lfi`) and the external toolchain
-(`external/lfi`), how a sandboxed codec is compiled and loaded, the Soong LFI
-toolchain that builds it, and the security tradeoffs of pulling untrusted code
-back into the process it used to be isolated from.
+first place. It is a software Opus decoder that runs inside the media APEX.
+LFI sandboxes it instead of (or alongside) the separate-process model.
+
+This chapter explains what LFI is and the threat model it serves. It describes
+the verifier/runtime/binding split between the in-tree glue (`system/lfi`) and
+the external toolchain (`external/lfi`). It shows how a sandboxed codec is
+compiled and loaded, and the Soong LFI toolchain that builds it. It also covers
+the security tradeoffs when untrusted code moves back into the process that it
+used to be isolated from.
 
 ---
 
@@ -35,14 +41,16 @@ back into the process it used to be isolated from.
 
 ### 43.1.1 Software fault isolation, modernized
 
-LFI is a software-fault-isolation (SFI) scheme: the idea that you can run
-untrusted machine code safely in your own address space if every memory access
-and every control transfer it makes is constrained to a sandbox region by the
-*instructions themselves*. Classic SFI (Google Native Client and its
-predecessors) achieved this by masking the high bits of every address before a
-load, store, or jump, so a sandboxed pointer could never name memory outside a
+LFI is a software-fault-isolation (SFI) scheme. The idea is that you can run
+untrusted machine code safely in your own address space. This works if the
+*instructions themselves* constrain every memory access and every control
+transfer that the code makes to a sandbox region.
+
+Classic SFI (Google Native
+Client and its predecessors) masked the high bits of every address before a
+load, store, or jump. A sandboxed pointer could then never name memory outside a
 power-of-two-aligned region. LFI is the modern, research-grade descendant of that
-line of work; `system/lfi/README.md` points readers at the Stanford LFI paper and
+line of work. `system/lfi/README.md` points readers at the Stanford LFI paper and
 the LLVM LFI documentation as background.
 
 The key property is that safety does not depend on trusting the untrusted code.
@@ -52,7 +60,7 @@ It depends on two things the platform *does* trust:
    addresses, restricted control flow, a reserved register holding the sandbox
    base), and
 2. A **verifier** that re-checks the finished binary instruction by instruction
-   and refuses to load anything that could escape — so even a malicious or
+   and refuses to load anything that could escape. So even a malicious or
    miscompiled library cannot get past the gate.
 
 Because the guarantee is re-established by the verifier at load time, the threat
@@ -66,20 +74,22 @@ media swcodec process and, by extension, the buffers and credentials it holds.
 The adversary is a malformed media bitstream that triggers undefined behavior
 (out-of-bounds read/write, use-after-free, type confusion) inside an untrusted C
 decoder. Without LFI the platform's only structural answer is to put that decoder
-in a different process so the blast radius of a corruption bug is one sacrificial
-process. LFI offers a different containment boundary: the decoder runs in-process,
-but the verified machine code guarantees it can only touch its sandbox region,
-can only transfer control to verified targets inside the sandbox, and cannot
-issue arbitrary syscalls — every "syscall" becomes a call back into a trusted
-runtime that decides what to allow.
+in a different process. Then the blast radius of a corruption bug is one
+sacrificial process.
+
+LFI offers a different containment boundary. The decoder runs in-process,
+but the verified machine code guarantees three things. It can only touch its
+sandbox region. It can only transfer control to verified targets inside the
+sandbox. It cannot issue arbitrary syscalls, because every "syscall" becomes a
+call back into a trusted runtime that decides what to allow.
 
 What LFI is *not* is a confidentiality boundary against side channels or a
 defense against logic bugs in the decoder's allowed behavior. It is a
 **memory-safety** boundary: it turns "this codec has a heap overflow" from a
-process-compromise primitive into a contained fault. The honest framing in the
-source reflects this — `MediaCodecInfo::getSecurityModel()` reports the LFI path
+process-compromise primitive into a contained fault. The source reflects
+this honestly. `MediaCodecInfo::getSecurityModel()` reports the LFI path
 as `SECURITY_MODEL_MEMORY_SAFE`, distinct from the `SECURITY_MODEL_SANDBOXED`
-(separate-process) model, rather than claiming the two are equivalent
+(separate-process) model. It does not claim that the two are equivalent
 (`frameworks/av/media/libmedia/MediaCodecInfo.cpp:199`).
 
 The diagram contrasts the two containment strategies for the same untrusted
@@ -135,18 +145,20 @@ lfiv_verify_riscv64(char *code, size_t size, uintptr_t addr, struct LFIVOptions 
 The `LFIVOptions` struct (`lfiv.h:12-26`) selects the sandbox model. There are two
 box types (`lfiv.h:7-10`): `LFI_BOX_FULL`, which constrains both loads and stores
 (and control flow), and `LFI_BOX_STORES`, a weaker stores-only mode. It can also
-reserve a **context register** (`ctxreg`, `lfiv.h:19-22`) — `x25` on arm64,
-`r15` on x64 — that the sandbox is forbidden to modify and may only use for
-64-bit loads/stores from the address it holds. The sandbox base lives in a
+reserve a **context register** (`ctxreg`, `lfiv.h:19-22`). This is `x25` on arm64
+and `r15` on x64. The sandbox is forbidden to modify it and may only use it for
+64-bit loads/stores from the address it holds.
+
+The sandbox base lives in a
 separate reserved register — `x27` on arm64 (`REG_BASE`,
 `external/lfi/lfi-verifier/src/arm64/verify.c:67`). The verifier links against
 the instruction decoders below to understand the bytes it is checking.
 
 **`lfi-runtime` (builds `liblfi`).** The runtime owns the sandbox at execution
-time. Per `external/lfi/lfi-runtime/README.md`, it splits into a `core` layer that
-reserves virtual address space, maps sandbox memory, and transfers control into
-and out of the sandbox, and a `linux` layer that provides a Linux emulation layer
-(host-call handling) on top of core. The core object model is three structs
+time. Per `external/lfi/lfi-runtime/README.md`, it splits into two layers. A
+`core` layer reserves virtual address space, maps sandbox memory, and transfers
+control into and out of the sandbox. A `linux` layer provides a Linux emulation
+layer (host-call handling) on top of core. The core object model is three structs
 documented in `external/lfi/lfi-runtime/core/include/lfi_core.h:16-28`:
 
 - `LFIEngine` — "tracks a large pool of virtual memory and manages the allocation
@@ -158,29 +170,35 @@ documented in `external/lfi/lfi-runtime/core/include/lfi_core.h:16-28`:
   context per sandbox thread.
 
 `LFIOptions` (`lfi_core.h:30-64`) carries the box size, a `stores_only` toggle
-that must agree with the verifier, and a deliberately scary `no_verify` flag whose
-comment marks it "(unsafe)" — verification is on by default and turning it off is
-the explicit opt-out.
+that must agree with the verifier, and a deliberately scary `no_verify` flag.
+The comment on that flag marks it "(unsafe)". Verification is on by default, and
+the explicit opt-out turns it off.
 
 **`lfi-bind` (a Go tool).** Sandboxed libraries are not called directly; the host
 calls into them through generated trampolines. `external/lfi/lfi-bind/README.md`
 describes the tool: "it generates routines to initialize the library sandbox, and
-trampolines for calling functions from the library." The workflow (README lines
-20-31) is: compile the library with the LFI compiler to a `.a`; relink it as a
-static-PIE against `boxrt` to produce a `.lfi` sandbox image; run `lfi-bind` over
-that image to emit an init file and a trampolines file; and compile those into the
-host. The generated header also defines the `LFI_CALL(fn, ...)` macro
-(`external/lfi/lfi-bind/embed/lib.h.in:164`) that the host uses to invoke a
-sandboxed function — you will see this macro all over the codec integration.
+trampolines for calling functions from the library."
 
-**`rlbox` and `rlbox-lfi`.** RLBox is a general-purpose sandboxing API: the host
-writes `tainted<T>` types so the compiler forces it to validate any value that
-crosses back out of the sandbox. `external/lfi/rlbox-lfi/README.md` describes the
+The workflow (README lines 20-31) has four steps. First, compile the library
+with the LFI compiler to a `.a`. Second, relink it as a static-PIE against
+`boxrt` to produce a `.lfi` sandbox image. Third, run `lfi-bind` over that image
+to emit an init file and a trampolines file. Fourth, compile those into the
+host.
+
+The generated header also defines the `LFI_CALL(fn, ...)` macro
+(`external/lfi/lfi-bind/embed/lib.h.in:164`) that the host uses to invoke a
+sandboxed function. You will see this macro all over the codec integration.
+
+**`rlbox` and `rlbox-lfi`.** RLBox is a general-purpose sandboxing API. The host
+writes `tainted<T>` types, so the compiler forces it to validate any value that
+crosses back out of the sandbox.
+
+`external/lfi/rlbox-lfi/README.md` describes the
 LFI plug-in as "integration with [the] RLBox sandboxing API to leverage the
 sandboxing from the LFI compiler." In AOSP this is a header-only library
-(`rlbox_lfi_headers`); it is the higher-level alternative to hand-written
-trampolines, available but not yet used by the first codec consumer — the Soong
-`lfi.use_rlbox` property is wired but rejected as "not supported yet"
+(`rlbox_lfi_headers`). It is the higher-level alternative to hand-written
+trampolines and is available, but the first codec consumer does not use it yet.
+The Soong `lfi.use_rlbox` property is wired but rejected as "not supported yet"
 (`build/soong/cc/lfi.go:90-91`).
 
 **`disarm` and `fadec`.** These are the instruction decoders the verifier depends
@@ -198,24 +216,25 @@ three pieces:
 - **`boxrt`** — "a set of runtime stub functions that get linked with the
   sandboxed library." This is the code that runs *inside* the sandbox to bootstrap
   it. Its minimal form (`system/lfi/boxrt/boxrt_minimal.c`) implements `abort`,
-  `lfi_brk`, and `lfi_pause` as raw `svc` syscalls and provides the
-  `_lfi_malloc`/`_lfi_free` family plus the `_lfi_ret` return sequence the
+  `lfi_brk`, and `lfi_pause` as raw `svc` syscalls. It also provides the
+  `_lfi_malloc`/`_lfi_free` family plus the `_lfi_ret` return sequence that the
   trampolines need.
 - **`allocator`** — "a thread-safe minimal allocator that utilizes spinlocks"
   (`system/lfi/allocator/alloc.c`). The sandbox has no system libc, so it needs its
-  own heap; this implicit-free-list allocator obtains memory through `lfi_brk` and
+  own heap. This implicit-free-list allocator gets memory through `lfi_brk` and
   guards it with an atomic spinlock.
 - **`relocator`** — "a minimal loader that does relocations for `-static-pie`
   that is necessary for lfi-bind" (`system/lfi/relocator/relocate.c` plus the
-  architecture entry stub `system/lfi/relocator/start.S`). Because the sandbox
-  image is a static-PIE, something must apply its `R_*_RELATIVE` relocations on
-  load before any sandbox code runs; the relocator does exactly that and then
+  architecture entry stub `system/lfi/relocator/start.S`). The sandbox
+  image is a static-PIE. So something must apply its `R_*_RELATIVE` relocations on
+  load, before any sandbox code runs. The relocator does exactly that and then
   jumps to the sandbox's `runtime_main`.
 
 These three combine into the runtime image baked into the sandbox library. The
 verifier (a trusted host component) and `boxrt`/`allocator`/`relocator` (untrusted
-sandbox-side code) are on opposite sides of the trust boundary even though they
-ship in adjacent repos — the in-sandbox glue is itself verified before it runs.
+sandbox-side code) are on opposite sides of the trust boundary.
+They ship in adjacent repos, but they are still on opposite sides. The in-sandbox glue is itself verified before it
+runs.
 
 This division of labor is summarized below.
 
@@ -250,9 +269,9 @@ per-module opt-in.
 
 Soong models LFI as a distinct toolchain selected alongside the OS and
 architecture. `build/soong/cc/config/toolchain.go` keys its toolchain-factory map
-on `[os][arch][lfi]`, with `registerLFIToolchainFactory` registering the `lfi=true`
-slot, and the `Toolchain` interface exposes an `Lfi() bool` method so the rest of
-Soong can ask whether a variant is being built for LFI.
+on `[os][arch][lfi]`. `registerLFIToolchainFactory` registers the `lfi=true`
+slot. The `Toolchain` interface exposes an `Lfi() bool` method, so the rest of
+Soong can ask whether a variant is built for LFI.
 
 The arm64 LFI toolchain itself lives in
 `build/soong/cc/config/arm64_lfi_device.go`. It is a thin specialization of the
@@ -270,8 +289,8 @@ func (t *toolchainLFIArm64) Cflags() string {
 }
 ```
 
-The `aarch64_lfi-...` triple is what drives clang's LFI assembly-rewriting pass —
-the reserved context register and masked memory accesses come from the compiler,
+The `aarch64_lfi-...` triple is what drives clang's LFI assembly-rewriting pass.
+The reserved context register and masked memory accesses come from the compiler,
 not from Soong flags. The factory also forces `armv8-a`/`cortex-a53` with
 `branchprot`, because, as the comment notes, "that's all the lfi compiler supports
 for now" (`arm64_lfi_device.go:69-77`). Only arm64 device is registered
@@ -305,12 +324,12 @@ func (lfi *Lfi) begin(ctx BaseModuleContext) {
 	}
 ```
 
-Enabling LFI on a binary then propagates down its static-dependency graph: a
-`lfiTransitionMutator` (`build/soong/cc/lfi.go:149-255`) creates an
+When LFI is enabled on a binary, it then propagates down its static-dependency graph.
+A `lfiTransitionMutator` (`build/soong/cc/lfi.go:149-255`) creates an
 `lfi_stores_and_loads` (or `lfi_stores_only`) variant of every static dependency
-of an LFI binary, so the whole transitive closure is recompiled with the LFI
+of an LFI binary. So the whole transitive closure is recompiled with the LFI
 toolchain. That is why the C library and math library need LFI builds of their
-own: `libc_lfi` (`bionic/libc/Android.bp`) and `libm_lfi`
+own. `libc_lfi` (`bionic/libc/Android.bp`) and `libm_lfi`
 (`bionic/libm/Android.bp`) are arm64-only, `stl: "none"`,
 `lfi_supported: true` static libraries restricted to the swcodec APEX
 (`libc_lfi` also sets `nocrt: true`). A sandboxed
@@ -346,12 +365,13 @@ cc_defaults {
 }
 ```
 
-Everything here follows from the sandbox model: `stl: "none"` and
-`system_shared_libs: []` because the sandbox has no normal C++ or system
-libraries; `nocrt: true` because `boxrt`/`relocator` supply startup, not the
-ordinary CRT; `libc_lfi`/`libm_lfi` as the only libraries; arm64-only; and
-`apex_available` restricted to `com.android.media.swcodec`, which both documents
-and enforces that the first production scope is exactly the software codec APEX.
+Everything here follows from the sandbox model. `stl: "none"` and
+`system_shared_libs: []` are there because the sandbox has no normal C++ or system
+libraries. `nocrt: true` is there because `boxrt`/`relocator` supply startup, not
+the ordinary CRT. `libc_lfi`/`libm_lfi` are the only libraries, and the defaults
+are arm64-only. `apex_available` is restricted to `com.android.media.swcodec`,
+which both documents and enforces that the first production scope is exactly the
+software codec APEX.
 
 The end-to-end build pipeline for the Opus sandbox is the chain of all of the
 above.
@@ -373,8 +393,8 @@ flowchart TD
 ## 43.4 Loading and Running a Sandboxed Codec
 
 The runtime consumer is the media codec stack. The boundary across which a
-sandboxed codec is exposed is `libapexcodecs`; the switch that selects the
-in-process LFI path is the `in_process_sw_codec_lfi` aconfig flag; and the actual
+sandboxed codec is exposed is `libapexcodecs`. The switch that selects the
+in-process LFI path is the `in_process_sw_codec_lfi` aconfig flag. The actual
 sandboxed decoder is `C2ApexOpusDec`.
 
 ### 43.4.1 `libapexcodecs`: the C ABI boundary
@@ -435,8 +455,9 @@ int MediaCodecInfo::getSecurityModel() const {
 
 Second, it selects the buffer-mapping functions. When the flag is on, the codec2
 client swaps the default `::mmap`/`::munmap` for the sandbox-aware mapping
-functions so buffers are mapped inside the box — for output blocks in
-`allocOutputBuffer` (`frameworks/av/media/codec2/hal/client/client.cpp:1906-1914`)
+functions. Then buffers are mapped inside the box. This happens for output
+blocks in `allocOutputBuffer`
+(`frameworks/av/media/codec2/hal/client/client.cpp:1906-1914`)
 and for input const linear blocks in `fillMemory` (`:2031-2038`):
 
 ```cpp
@@ -482,8 +503,8 @@ bool ensure() {
 
 **Memory comes from inside the box.** Allocations that the decoder will touch use
 the sandbox heap, not the host heap. `LfiAlloc` is a RAII wrapper around the
-generated `libopus_lfi_bin_box_malloc`/`_free` (`C2ApexOpusDec.cpp:71-85`), and the
-mapping hooks the framework asked for in §43.4.2 forward to the box's own
+generated `libopus_lfi_bin_box_malloc`/`_free` (`C2ApexOpusDec.cpp:71-85`). The
+mapping hooks that the framework asked for in §43.4.2 forward to the box's own
 `mmap`/`munmap` (`C2ApexOpusDec.cpp:207-215`):
 
 ```cpp
@@ -498,9 +519,10 @@ int C2ApexOpusDec::Unmap(void *addr, size_t size) {
 ```
 
 **Every codec call crosses the trampoline.** The actual decode work invokes
-`libopus` only through the `LFI_CALL` macro, which routes the call through the
-generated trampoline into the sandbox and back — for example creating the decoder
-(`C2ApexOpusDec.cpp:360`) and decoding a frame (`:478`):
+`libopus` only through the `LFI_CALL` macro. This macro routes the call through the
+generated trampoline into the sandbox and back. Examples are the call that
+creates the decoder (`C2ApexOpusDec.cpp:360`) and the call that decodes a frame
+(`:478`):
 
 ```cpp
 // frameworks/av/media/module/libapexcodecs/C2ApexOpusDec.cpp:360, 478
@@ -509,10 +531,10 @@ mDecoder = LFI_CALL(opus_multistream_decoder_create, /* ...args... */);
 int numSamples = LFI_CALL(opus_multistream_decode, /* ...args... */);
 ```
 
-Because the decoder is reached only through `LFI_CALL` and only ever touches
-box-allocated, box-mapped memory, a corruption bug in `opus_multistream_decode`
-can scribble over the sandbox heap but cannot reach the host process's memory —
-and it cannot make a syscall, because the verifier guarantees the only way out is
+The decoder is reached only through `LFI_CALL`, and it only ever touches
+box-allocated, box-mapped memory. So a corruption bug in `opus_multistream_decode`
+can scribble over the sandbox heap but cannot reach the host process's memory.
+It also cannot make a syscall. This is because the verifier guarantees that the only way out is
 back through the runtime's host-call handler.
 
 The end-to-end runtime flow is below.
@@ -547,10 +569,12 @@ LFI changes the shape of the isolation problem rather than strictly improving it
 and the tradeoffs are worth being precise about.
 
 **What you gain.** The decoder runs in-process, so there is no Binder round trip
-and no cross-process buffer plumbing for every frame — lower latency and less
-overhead than the separate-process model. The memory-safety guarantee does not
-depend on trusting the decoder or even the compiler, because the verifier
-re-checks the finished binary and rejects anything unsafe; the trusted computing
+and no cross-process buffer plumbing for every frame. This gives lower latency
+and less overhead than the separate-process model.
+
+The memory-safety guarantee does not
+depend on trusting the decoder or even the compiler. This is because the verifier
+re-checks the finished binary and rejects anything unsafe. The trusted computing
 base for the guarantee is the small verifier plus the runtime, not the large
 untrusted library. And the boundary is fine-grained: each sandboxed library gets
 its own `LFIBox`.
@@ -563,24 +587,27 @@ enforced by verified code in the *same* address space. It does not by itself sto
 side-channel leakage, and its correctness rests on the verifier being right about
 every instruction form. That is precisely why the platform models the LFI codec as
 `SECURITY_MODEL_MEMORY_SAFE` and not as the same thing as
-`SECURITY_MODEL_SANDBOXED` (`frameworks/av/media/libmedia/MediaCodecInfo.cpp:199`):
-they are different guarantees, surfaced to callers as different models.
+`SECURITY_MODEL_SANDBOXED` (`frameworks/av/media/libmedia/MediaCodecInfo.cpp:199`).
+They are different guarantees, and the platform shows them to callers as
+different models.
 
 **Why the scope is deliberately small in 17.** Several signals in the source say
-"new and constrained": LFI is arm64-device-only in Soong
-(`build/soong/cc/lfi.go:79`), `system_lfi_defaults` is `apex_available` only to
-`com.android.media.swcodec` (`system/lfi/Android.bp:39-41`), the whole runtime path
+"new and constrained". LFI is arm64-device-only in Soong
+(`build/soong/cc/lfi.go:79`). `system_lfi_defaults` is `apex_available` only to
+`com.android.media.swcodec` (`system/lfi/Android.bp:39-41`). The whole runtime path
 is behind the `in_process_sw_codec_lfi` aconfig flag
-(`frameworks/av/media/aconfig/codec_fwk.aconfig:153`), and the weaker
+(`frameworks/av/media/aconfig/codec_fwk.aconfig:153`). The weaker
 stores-only and RLBox modes are parsed but rejected as "not supported yet"
-(`build/soong/cc/lfi.go:88-91`). The first consumer is a single audio decoder.
-This is the conservative way to introduce a new isolation primitive: prove it on
-one well-bounded, attacker-reachable component (a software codec, the historic
-source of media CVEs) before widening it.
+(`build/soong/cc/lfi.go:88-91`).
 
-The honest summary is that LFI is not a replacement for process isolation; it is a
-second, lighter tool that gives memory safety for untrusted native code where a
-whole extra process would be too expensive, with a small verified TCB carrying the
+The first consumer is a single audio decoder.
+This is the conservative way to introduce a new isolation primitive. First prove
+it on one well-bounded, attacker-reachable component (a software codec, the
+historic source of media CVEs). Widen it only after that.
+
+The honest summary is that LFI is not a replacement for process isolation. It is a
+second, lighter tool. It gives memory safety for untrusted native code where a
+whole extra process would be too expensive. A small verified TCB carries the
 guarantee.
 
 ## 43.6 Try It
@@ -646,7 +673,7 @@ checkout.
 
 - **LFI is software fault isolation for untrusted native code.** It confines a
   library's memory accesses and control flow to a reserved region of its host
-  process via verified machine code, giving a memory-safety boundary without a
+  process via verified machine code. This gives a memory-safety boundary without a
   separate process. Android 17 adds it as a second, lighter isolation primitive
   alongside the classic separate-process sandbox.
 - **The threat model is memory safety, not full process isolation.** The asset is
@@ -655,25 +682,26 @@ checkout.
   `SECURITY_MODEL_MEMORY_SAFE`, separate from the separate-process
   `SECURITY_MODEL_SANDBOXED`.
 - **Verifier, runtime, and binding split across two trees.** `external/lfi`
-  vendors the toolchain — `lfi-verifier` (the trusted root that rejects
-  unsafe instructions), `lfi-runtime`/`liblfi` (reserves/maps the box and handles
-  host calls), `lfi-bind` (generates init + `LFI_CALL` trampolines), `rlbox`/
+  vendors the toolchain. It has `lfi-verifier` (the trusted root that rejects
+  unsafe instructions) and `lfi-runtime`/`liblfi` (reserves/maps the box and
+  handles host calls). It also has `lfi-bind` (generates init + `LFI_CALL`
+  trampolines), `rlbox`/
   `rlbox-lfi` (a higher-level API, not yet used), and the `disarm`/`fadec`
   decoders. `system/lfi` adds the in-sandbox glue: `boxrt`, a spinlock
   `allocator`, and a static-PIE `relocator`.
 - **Soong has an LFI cross-toolchain.** An `aarch64_lfi` clang triple drives the
-  rewriting pass; modules opt in with `lfi_supported`/`lfi: { enabled }`; a
+  rewriting pass. Modules opt in with `lfi_supported`/`lfi: { enabled }`. A
   transition mutator recompiles the whole static-dependency closure (hence
-  `libc_lfi`/`libm_lfi`); and `system_lfi_defaults` packages the common settings,
+  `libc_lfi`/`libm_lfi`). `system_lfi_defaults` packages the common settings,
   scoped to the swcodec APEX and arm64.
 - **The first consumer is a sandboxed software Opus decoder.** `libapexcodecs`
-  is the C ABI boundary; `ApexCodec_GetMapFn`/`GetUnmapFn` map buffers inside the
-  box; `C2ApexOpusDec` initializes the sandbox once, allocates and maps from the
-  box, and calls `libopus` only through `LFI_CALL` trampolines — all gated by the
-  `in_process_sw_codec_lfi` flag.
+  is the C ABI boundary. `ApexCodec_GetMapFn`/`GetUnmapFn` map buffers inside the
+  box. `C2ApexOpusDec` initializes the sandbox once, allocates and maps from the
+  box, and calls `libopus` only through `LFI_CALL` trampolines. The
+  `in_process_sw_codec_lfi` flag gates all of this.
 - **The tradeoff is a narrower guarantee for much lower cost.** LFI buys
   in-process memory safety with a small verified TCB, but it is not a substitute
-  for the coarse, kernel-enforced barrier of a separate process; 17 keeps it
+  for the coarse, kernel-enforced barrier of a separate process. In 17 it stays
   deliberately scoped to one decoder behind a flag.
 
 ### Key Source Files Reference

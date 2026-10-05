@@ -1,23 +1,27 @@
 # Chapter 42: DRM and Content Protection
 
 Digital Rights Management (DRM) is one of the most commercially critical subsystems in
-Android. Every time a user streams a movie from Netflix, rents a film on Google Play, or
-watches live sports through a premium app, the DRM framework silently negotiates licenses,
-decrypts content, and enforces output-protection policies -- all without the user noticing.
-This chapter dissects Android's DRM architecture from the Java API surface down through the
-native framework, across the HAL boundary, and into the vendor-supplied plugin
-implementations that perform the actual cryptographic operations.
+Android. A user can stream a movie from Netflix, rent a film on Google Play, or watch
+live sports through a premium app. Each time, the DRM framework silently negotiates
+licenses, decrypts content, and enforces output-protection policies. The user does not
+notice any of this.
+
+This chapter dissects Android's DRM architecture. It starts at the Java API surface and
+goes down through the native framework and across the HAL boundary. It ends in the
+vendor-supplied plugin implementations that perform the actual cryptographic operations.
 
 We begin with a high-level architectural overview (Section 42.1), then trace the framework
 code that applications interact with (Section 42.2). We next examine the stable AIDL HAL
-contracts that vendor plugins must implement (Section 42.3), discuss the Widevine DRM
-system that ships on virtually every Android device (Section 42.4), and walk through the
-ClearKey reference plugin line by line (Section 42.5). We then cover the secure codec path
-that protects decrypted frames from being captured in the clear (Section 42.6), the metrics
-and logging infrastructure that enables diagnostics without leaking protected material
-(Section 42.7), and the Android 17 DRM HAL changes that freeze the AIDL interface at version
-2 and add the key-handle decrypt-decode fast path (Section 42.8), before finishing with
-hands-on exercises (Section 42.9).
+contracts that vendor plugins must implement (Section 42.3). Then we discuss the Widevine
+DRM system that ships on virtually every Android device (Section 42.4). After that, we
+walk through the ClearKey reference plugin line by line (Section 42.5).
+
+We then cover the secure codec path. It protects decrypted frames from capture in the
+clear (Section 42.6). Next we cover the metrics and logging infrastructure, which enables
+diagnostics without leaking protected material (Section 42.7). After that we cover the
+Android 17 DRM HAL changes. They freeze the AIDL interface at version 2 and add the
+key-handle decrypt-decode fast path (Section 42.8). We finish with hands-on exercises
+(Section 42.9).
 
 ---
 
@@ -26,10 +30,15 @@ hands-on exercises (Section 42.9).
 ### 42.1.1 The Problem DRM Solves
 
 Content owners -- movie studios, music labels, sports leagues -- license their material to
-streaming services under strict conditions: the content must be encrypted in transit and at
-rest; decryption keys must never be exposed to application code; the decrypted frames must
-be protected from screen-capture or HDMI ripping; and the system must report back to the
-license server when playback completes (secure stops). Android's DRM framework exists to
+streaming services under strict conditions:
+
+- The content must be encrypted in transit and at rest.
+- Decryption keys must never be exposed to application code.
+- The decrypted frames must be protected from screen-capture or HDMI ripping.
+- The system must report back to the license server when playback completes (secure
+  stops).
+
+Android's DRM framework exists to
 satisfy these requirements while presenting a clean, DRM-scheme-agnostic API to application
 developers.
 
@@ -44,8 +53,8 @@ vendor HAL process, and the trusted execution environment:
 2. **MediaCrypto** -- A companion Java API that bridges the DRM session to the codec.
    Also lives in the app process but delegates all cryptographic work across Binder.
 
-3. **DRM Framework (libmediadrm)** -- The native C++ layer, loaded into the client
-   process itself via `libmedia_jni`, that routes calls to the appropriate HAL backend
+3. **DRM Framework (libmediadrm)** -- The native C++ layer. It is loaded into the client
+   process itself via `libmedia_jni`. It routes calls to the appropriate HAL backend
    over Binder, manages sessions via the `DrmSessionManager`, and collects metrics.
    (Older releases hosted this layer in a separate `mediadrmserver` process; that
    process no longer exists.)
@@ -116,9 +125,9 @@ graph TB
 ### 42.1.4 UUID-Based Scheme Selection
 
 Every DRM scheme is identified by a 16-byte UUID. When an application encounters
-DRM-protected content, it reads the scheme UUID from the content metadata (typically from
-PSSH boxes in ISO BMFF containers or ContentProtection elements in DASH manifests) and
-queries whether the device supports it:
+DRM-protected content, it reads the scheme UUID from the content metadata. The UUID is
+typically in PSSH boxes in ISO BMFF containers or in ContentProtection elements in DASH
+manifests. The application then queries whether the device supports the scheme:
 
 ```java
 // Source: frameworks/base/media/java/android/media/MediaDrm.java
@@ -310,8 +319,8 @@ private final Map<Integer, ListenerWithExecutor> mListenerMap =
 ```
 
 Events originate from the HAL plugin via the `IDrmPluginListener` AIDL interface, propagate
-through the `DrmHalListener` native class, and arrive at `MediaDrm.postEventFromNative()`
-which dispatches to the registered listener on the appropriate executor.
+through the `DrmHalListener` native class, and arrive at `MediaDrm.postEventFromNative()`.
+That method dispatches them to the registered listener on the appropriate executor.
 
 ### 42.2.3 Key Request / Response Flow
 
@@ -376,8 +385,8 @@ public final class MediaCrypto {
 
 The `requiresSecureDecoderComponent()` method is critical: it queries the HAL plugin to
 determine whether the current security policy requires a secure decoder. If it returns
-`true`, the application must configure `MediaCodec` with the `CONFIGURE_FLAG_SECURE` flag,
-and all decoded frames stay in secure (protected) memory that cannot be read by the CPU.
+`true`, the application must configure `MediaCodec` with the `CONFIGURE_FLAG_SECURE` flag.
+As a result, all decoded frames stay in secure (protected) memory that the CPU cannot read.
 
 ### 42.2.5 DrmHal -- The Unified Native Entry Point
 
@@ -479,9 +488,9 @@ static std::vector<MediaResourceParcel> toResourceVec(
 }
 ```
 
-If the system runs low on DRM session resources (many DRM implementations limit concurrent
-sessions), the `ResourceManagerService` can reclaim sessions from lower-priority
-applications by calling back into the `DrmSessionManager`, which closes the session and
+If the system runs low on DRM session resources, the `ResourceManagerService` can reclaim
+sessions from lower-priority applications. Many DRM implementations limit concurrent
+sessions. The service calls back into the `DrmSessionManager`, which closes the session and
 delivers an `EVENT_SESSION_RECLAIMED` event to the app.
 
 ### 42.2.8 DRM Event Propagation
@@ -675,7 +684,7 @@ The DRM HAL has gone through significant evolution:
 | AIDL V2 (current in 17) | AIDL | binder | Frozen; adds `ICryptoPlugin::getKeyHandle()` and the `KeyHandleResult` parcelable |
 
 The `versions_with_info` block in
-`hardware/interfaces/drm/aidl/Android.bp` declares both V1 and V2, and the interface is
+`hardware/interfaces/drm/aidl/Android.bp` declares both V1 and V2. The interface is
 marked `frozen: true`, so Android 17 ships V2 as the highest frozen AIDL DRM HAL version.
 Section 42.8 covers exactly what V2 adds over V1 and how the framework version-gates the new
 method.
@@ -716,7 +725,7 @@ interface IDrmFactory {
 ```
 
 The `CryptoSchemes` return value tells the framework which UUIDs and content types the
-factory supports, along with the minimum and maximum security levels for each MIME type:
+factory supports. It also gives the minimum and maximum security levels for each MIME type:
 
 ```mermaid
 classDiagram
@@ -887,8 +896,8 @@ parcelable DecryptArgs {
 ```
 
 The `secure` flag in `DecryptArgs` controls whether the output goes to a normal shared
-memory buffer (`nonsecureMemory`) or to a secure buffer handle (`secureMemory`) that only
-the hardware compositor and secure video decoder can access.
+memory buffer (`nonsecureMemory`) or to a secure buffer handle (`secureMemory`). Only
+the hardware compositor and secure video decoder can access that handle.
 
 ### 42.3.5 IDrmPluginListener -- Asynchronous Events
 
@@ -1119,9 +1128,9 @@ graph TB
 
 ### 42.4.3 TEE Integration
 
-For L1 security, Widevine relies on OEMCrypto, a standardized interface that device
-manufacturers implement inside their Trusted Execution Environment (TEE) -- typically
-ARM TrustZone or similar hardware-isolated environment.
+For L1 security, Widevine relies on OEMCrypto, a standardized interface. Device
+manufacturers implement it inside their Trusted Execution Environment (TEE). The TEE is
+typically ARM TrustZone or a similar hardware-isolated environment.
 
 OEMCrypto provides:
 
@@ -1132,7 +1141,7 @@ OEMCrypto provides:
 3. **Content decryption**: AES-CTR or AES-CBC decryption of media samples happens entirely
    within the secure world.
 4. **Output protection enforcement**: The TEE verifies HDCP levels on display outputs
-   before allowing decrypted content to be rendered.
+   before it lets decrypted content be rendered.
 5. **Secure buffer management**: Decrypted video frames are written to secure memory
    regions that cannot be read by the normal-world CPU.
 
@@ -1171,8 +1180,9 @@ graph LR
 Widevine devices are provisioned in two ways:
 
 1. **Factory Provisioning**: During device manufacturing, a unique device certificate
-   (containing the device's RSA public key and attestation from Widevine) is burned into
-   the TEE's secure storage. This is the standard approach for L1 devices.
+   is burned into the TEE's secure storage. The certificate contains the device's RSA
+   public key and attestation from Widevine. This is the standard approach for L1
+   devices.
 
 2. **Online Provisioning**: If the device certificate is not present (or for L3 devices),
    the device can request provisioning at runtime. The `getProvisionRequest()` /
@@ -1203,8 +1213,8 @@ HdcpLevels getHdcpLevels();
 
 This returns both the currently negotiated HDCP level (depends on connected displays) and
 the maximum HDCP level the device supports. Content policies may require specific HDCP
-levels (e.g., HDCP 2.2 for 4K content), and the DRM plugin must enforce these requirements,
-returning `ERROR_DRM_INSUFFICIENT_OUTPUT_PROTECTION` if the requirements are not met.
+levels (e.g., HDCP 2.2 for 4K content). The DRM plugin must enforce these requirements.
+It returns `ERROR_DRM_INSUFFICIENT_OUTPUT_PROTECTION` if the requirements are not met.
 
 ### 42.4.7 Integration with MediaCodec
 
@@ -1218,9 +1228,9 @@ codec.configure(format, surface, mediaCrypto,
 ```
 
 This triggers the codec to allocate secure input and output buffers. The encrypted input
-is decrypted by the `ICryptoPlugin::decrypt()` call with `DecryptArgs.secure = true`, and
-the decrypted output goes directly to a secure buffer that only the hardware video decoder
-and display compositor can access.
+is decrypted by the `ICryptoPlugin::decrypt()` call with `DecryptArgs.secure = true`. The
+decrypted output goes directly to a secure buffer. Only the hardware video decoder and
+display compositor can access that buffer.
 
 ---
 
@@ -1855,12 +1865,12 @@ hardware paths:
 KeyHandleResult getKeyHandle(in byte[] keyId, in Mode mode);
 ```
 
-This resolves a key ID into an opaque handle (`KeyHandleResult.keyHandle`) that a fused
-secure decrypt-decode component can consume directly, instead of routing each sample through
-`decrypt()`. The handle can reference a pre-loaded key inside the TEE, avoiding repeated
-key-ID-to-key-material resolution. Because this method only exists from V2 of the AIDL HAL,
-the framework version-gates the call; Section 42.8 traces that gating and the full Android 17
-plumbing.
+This resolves a key ID into an opaque handle (`KeyHandleResult.keyHandle`). A fused
+secure decrypt-decode component can consume the handle directly, instead of routing each
+sample through `decrypt()`. The handle can reference a pre-loaded key inside the TEE, avoiding repeated
+key-ID-to-key-material resolution. This method only exists from V2 of the AIDL HAL, so
+the framework version-gates the call. Section 42.8 traces that gating and the full
+Android 17 plumbing.
 
 ---
 
@@ -2021,8 +2031,8 @@ status_t MediaDrmMetrics::GetSerializedMetrics(
 ### 42.7.5 DrmMetricsLogger -- MediaMetrics Integration
 
 The `DrmMetricsLogger` class (`frameworks/av/drm/libmediadrm/DrmMetricsLogger.cpp`) is a
-wrapper around `DrmHal` that intercepts every API call, captures timing and result codes,
-and reports them to the `MediaMetrics` service:
+wrapper around `DrmHal`. It intercepts every API call and captures timing and result
+codes. Then it reports them to the `MediaMetrics` service:
 
 ```cpp
 // Source: frameworks/av/drm/libmediadrm/DrmMetricsLogger.cpp
@@ -2200,10 +2210,11 @@ public int getErrorContext();   // Additional error context
 
 Android 17 does not change the shape of the DRM stack described above. The Java API,
 `libmediadrm`, the dual AIDL+HIDL routing, ClearKey, and the secure codec path all carry
-forward. What changed is the AIDL DRM HAL contract: the `android.hardware.drm` interface is
-now frozen at version 2, and the V2 delta over V1 is wired all the way through the framework.
-This section pins down exactly what is in V2, how the framework discovers it at runtime, and
-why it matters for the secure decode path.
+forward. What changed is the AIDL DRM HAL contract. The `android.hardware.drm` interface is
+now frozen at version 2. The V2 delta over V1 is wired all the way through the framework.
+
+This section shows exactly what is in V2. It also shows how the framework discovers V2 at
+runtime and why V2 matters for the secure decode path.
 
 ### 42.8.1 The AIDL DRM HAL Is Frozen at V2
 
@@ -2224,7 +2235,7 @@ aidl_interface {
 ```
 
 A matching `aidl_api/android.hardware.drm/2/` snapshot directory holds the frozen V2 ABI.
-`frozen: true` means the AIDL toolchain rejects any unversioned change to the interface; a
+`frozen: true` means the AIDL toolchain rejects any unversioned change to the interface. A
 new method or field would have to land as a future V3. The convenience default in the same
 build file pins the NDK link target to V2:
 
@@ -2238,8 +2249,9 @@ cc_defaults {
 
 ### 42.8.2 What V2 Adds Over V1
 
-Comparing the two frozen snapshots shows the V2 delta is small and surgical. It is confined
-to `ICryptoPlugin`: a single new method, plus one new parcelable that the method returns.
+A comparison of the two frozen snapshots shows that the V2 delta is small and surgical. It
+is confined to `ICryptoPlugin`. It has a single new method, plus one new parcelable that the
+method returns.
 
 ```
 // Source: hardware/interfaces/drm/aidl/android/hardware/drm/ICryptoPlugin.aidl
@@ -2259,17 +2271,19 @@ parcelable KeyHandleResult {
 
 The V1 `aidl_api` snapshot of `ICryptoPlugin` has the original six methods (`decrypt`,
 `getLogMessages`, `notifyResolution`, `requiresSecureDecoderComponent`,
-`setMediaDrmSession`, `setSharedBufferBase`). V2 adds `getKeyHandle()` as a seventh, and the
+`setMediaDrmSession`, `setSharedBufferBase`). V2 adds `getKeyHandle()` as a seventh. The
 `KeyHandleResult.aidl` file only exists from version 2 onward (its header carries a 2025
 copyright). No other interface (`IDrmFactory`, `IDrmPlugin`, `IDrmPluginListener`) changed
 between V1 and V2.
 
 The purpose of `getKeyHandle()` is the combined decrypt-and-decode hardware path. Its
 contract notes that the returned handle "is used by components that perform decryption and
-decoding in the same step." Instead of calling `decrypt()` for every sample and handing the
-decrypted bytes to a separate decoder, a fused secure component can resolve the key once into
-an opaque handle and then drive a single hardware operation that both decrypts and decodes,
-keeping the content in protected memory throughout.
+decoding in the same step." Without this method, `decrypt()` is called for every
+sample and the decrypted bytes are handed to a separate decoder.
+
+With it, a fused secure component
+can resolve the key once into an opaque handle. The component then drives a single hardware
+operation that both decrypts and decodes. The content stays in protected memory throughout.
 
 ### 42.8.3 Runtime Version Gating in the Framework
 
@@ -2292,8 +2306,8 @@ DrmStatus CryptoHal::getKeyHandle(const uint8_t key[16], CryptoPlugin::Mode mode
 }
 ```
 
-The AIDL backend queries the plugin's reported interface version and refuses the call if the
-plugin only implements V1, returning `ERROR_UNSUPPORTED` rather than crossing a Binder call
+The AIDL backend queries the plugin's reported interface version. It refuses the call if the
+plugin only implements V1, and it returns `ERROR_UNSUPPORTED`. This avoids a Binder call that
 the plugin cannot satisfy:
 
 ```cpp
@@ -2304,11 +2318,11 @@ if (mPlugin->getInterfaceVersion(&version).isOk() && version < 2) {
 }
 ```
 
-Before reaching the plugin, `CryptoHalAidl::getKeyHandle()` runs the same subsample and
-buffer-bounds validation as `decrypt()` does, using `__builtin_add_overflow` to reject
-integer-overflowing subsample sizes and to confirm the sample fits inside the source buffer.
-It then forwards a 16-byte key ID and the cipher mode to the plugin and copies out the opaque
-handle:
+Before it reaches the plugin, `CryptoHalAidl::getKeyHandle()` runs the same subsample and
+buffer-bounds validation as `decrypt()` does. It uses `__builtin_add_overflow` to reject
+integer-overflowing subsample sizes and to confirm that the sample fits inside the source
+buffer. It then forwards a 16-byte key ID and the cipher mode to the plugin and copies out the
+opaque handle:
 
 ```cpp
 // Source: frameworks/av/drm/libmediadrm/CryptoHalAidl.cpp
@@ -2323,11 +2337,12 @@ keyHandle = toVector(result.keyHandle);
 
 The handle path is driven from the codec buffer channel. `CCodecBufferChannel` calls
 `mCrypto->getKeyHandle()` in its encrypted-buffer paths only when its
-`mSendEncryptionKeyHandle` flag is set -- a static, configure-time decision: the flag is
+`mSendEncryptionKeyHandle` flag is set. This is a static, configure-time decision. The flag is
 set when the Codec2 component advertises the `C2StreamEncryptionKeyInfo::input` parameter
 and the `com.android.media.codec.flags.decrypt_and_decode_in_hal` aconfig flag is enabled.
+
 If `getKeyHandle()` fails, the buffer channel logs the error and propagates the status to
-its caller; there is no fallback to the per-sample `decrypt()` flow:
+its caller. There is no fallback to the per-sample `decrypt()` flow:
 
 ```cpp
 // Source: frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp
@@ -2363,8 +2378,8 @@ sequenceDiagram
     end
 ```
 
-The AOSP reference ClearKey plugin does implement the V2 method, but since it is a
-software-only plugin with no fused secure decode-decrypt block, it simply declines:
+The AOSP reference ClearKey plugin does implement the V2 method. It is a software-only
+plugin with no fused secure decode-decrypt block, so it simply declines:
 
 ```cpp
 // Source: frameworks/av/drm/mediadrm/plugins/clearkey/aidl/CryptoPlugin.cpp
@@ -2375,15 +2390,17 @@ software-only plugin with no fused secure decode-decrypt block, it simply declin
 }
 ```
 
-In practice a scheme like ClearKey never reaches this stub through the codec path: the
+In practice a scheme like ClearKey never reaches this stub through the codec path. The
 key-handle route is selected up front from the codec component's advertised parameters
-(`mSendEncryptionKeyHandle`), and the software decoders used with an L3-only scheme do
-not advertise `C2StreamEncryptionKeyInfo::input`, so the buffer channel uses the per-sample
-`decrypt()` path from the start. And if the key-handle path *is* entered and
-`getKeyHandle()` fails -- as it would with ClearKey's `ERROR_DRM_CANNOT_HANDLE` -- the
-buffer channel returns the error to its caller rather than silently retrying with
-`decrypt()`. The key-handle fast path is an opt-in for fused hardware decrypt-decode
-stacks (Widevine L1 class hardware), not a new requirement for every plugin.
+(`mSendEncryptionKeyHandle`). The software decoders used with an L3-only scheme do
+not advertise `C2StreamEncryptionKeyInfo::input`. So the buffer channel uses the per-sample
+`decrypt()` path from the start.
+
+If the key-handle path *is* entered and
+`getKeyHandle()` fails, the buffer channel returns the error to its caller. It does not
+silently retry with `decrypt()`. ClearKey's `ERROR_DRM_CANNOT_HANDLE` would cause such a
+failure. The key-handle fast path is an opt-in for fused hardware decrypt-decode
+stacks (Widevine L1 class hardware). It is not a new requirement for every plugin.
 
 ---
 

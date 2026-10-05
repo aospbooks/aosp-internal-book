@@ -22,11 +22,11 @@ software codecs). Chapters 40–42, 68.
 Android's security architecture is one of the most comprehensive and layered
 defenses deployed at consumer-device scale.  Every component, from the
 bootloader through the kernel, system services, and application framework,
-participates in a multi-level "defense-in-depth" strategy.  This chapter walks
-through each major subsystem -- SELinux mandatory access control, Verified Boot,
-hardware-backed key storage, the Trusty TEE, biometric authentication, app
-sandboxing, encryption, and network security -- reading the actual AOSP source
-code at every step.
+participates in a multi-level "defense-in-depth" strategy.  This chapter covers
+each major subsystem -- SELinux mandatory access control, Verified Boot,
+hardware-backed key storage, and the Trusty TEE.  It also covers biometric
+authentication, app sandboxing, encryption, and network security.  It reads the
+actual AOSP source code at every step.
 
 ---
 
@@ -150,9 +150,10 @@ flowchart LR
 ```
 
 The chain of trust starts at non-modifiable hardware (fused public keys in the
-SoC's boot ROM) and extends through every layer until it reaches the
-application.  If any link in this chain is broken, the device can detect it
-and respond (refuse to boot, show a warning, or wipe data depending on policy).
+SoC's boot ROM).  It extends through every layer until it reaches the
+application.  If any link in this chain is broken, the device can detect it.
+The device can then respond: refuse to boot, show a warning, or wipe data,
+depending on policy.
 
 ### 40.1.6  Security Boundary Definitions
 
@@ -224,8 +225,8 @@ Android supports multiple users on a single device.  Each user gets:
 - MLS (Multi-Level Security) categories in SELinux to prevent cross-user
   data access even within the same app.
 
-The SELinux MLS categories are assigned based on the user ID, creating
-kernel-enforced separation between users at the MAC level.  (Cryptographic
+The SELinux MLS categories are assigned based on the user ID.
+This creates kernel-enforced separation between users at the MAC level.  (Cryptographic
 separation comes from the per-user FBE keys, covered in section 40.8.)
 
 ### 40.1.9  Work Profile Security
@@ -501,7 +502,7 @@ neverallow {
 } self:global_capability_class_set { net_admin net_raw };
 ```
 
-This ensures that a compromised audio or camera HAL cannot gain network
+This makes sure that a compromised audio or camera HAL cannot gain network
 capabilities.
 
 ### 40.2.8  Vendor Sepolicy Split (Treble)
@@ -709,8 +710,9 @@ neverallow appdomain {
 neverallow { appdomain -shell } proc_net_tcp_udp:file *;
 ```
 
-These neverallow rules collectively ensure that even if a framework bug allows
-a code path to be reached, the kernel-level MAC policy blocks the operation.
+These neverallow rules collectively make sure of one thing.  Even if a
+framework bug allows a code path to be reached, the kernel-level MAC policy
+blocks the operation.
 
 ### 40.2.11  Policy Compilation and Loading
 
@@ -873,7 +875,7 @@ The category assignment is controlled by `seapp_contexts`:
 
 ## 40.3  Verified Boot (AVB)
 
-Android Verified Boot (AVB) ensures that all executed code comes from a trusted
+Android Verified Boot (AVB) makes sure that all executed code comes from a trusted
 source rather than from an attacker or corruption.  The implementation lives
 in:
 
@@ -1089,7 +1091,7 @@ There are up to 32 rollback index locations:
 ### 40.3.7  The AVB Footer
 
 For partitions that contain both image data and vbmeta, the vbmeta is appended
-after the image, and a footer at the very end of the partition points to it.
+after the image. A footer at the very end of the partition points to it.
 From `external/avb/libavb/avb_footer.h`:
 
 ```c
@@ -1111,8 +1113,8 @@ typedef struct AvbFooter {
 
 Verified Boot would be incomplete without runtime integrity checks.  For
 read-only partitions (system, vendor, product), AVB sets up
-**dm-verity** -- a Linux device-mapper target that verifies each disk block
-against a Merkle tree hash on read.
+**dm-verity**. This is a Linux device-mapper target that verifies each disk
+block against a Merkle tree hash on read.
 
 The hashtree error modes determine what happens when corruption is detected:
 
@@ -1729,9 +1731,9 @@ The shim exists because `rkpdapp` cannot host a system service itself and needs
 network access that system_server is not allowed to perform.  As the
 `system-server/README.md` explains, system_server hosts a visible service and
 proxies every call through to the `rkpdapp` process, which does the network
-work.  The app exposes two components in `app/AndroidManifest.xml`: the
-`RemoteProvisioningService` bound through the `com.android.rkpdapp.IRemoteProvisioning`
-action, and `PeriodicProvisioner`, a WorkManager `Worker`
+work.  The app exposes two components in `app/AndroidManifest.xml`. The first is the
+`RemoteProvisioningService`, bound through the `com.android.rkpdapp.IRemoteProvisioning`
+action. The second is `PeriodicProvisioner`, a WorkManager `Worker`
 (`app/src/com/android/rkpdapp/provisioner/PeriodicProvisioner.java`) that
 refills the key pool on a schedule.
 
@@ -1739,7 +1741,7 @@ When a caller asks for a registration,
 `RemoteProvisioningService.getRegistration`
 (`app/src/com/android/rkpdapp/service/RemoteProvisioningService.java`) first
 rejects the request if no provisioning URL is configured (`Settings.getDefaultUrl`
-empty), and restricts binders to the system UID and itself.  It then resolves
+empty).  It also restricts binders to the system UID and itself.  It then resolves
 the named `IRemotelyProvisionedComponent` through `ServiceManagerInterface` and
 hands back an `IRegistration` backed by `RegistrationBinder`.
 
@@ -1747,17 +1749,17 @@ hands back an `IRegistration` backed by `RegistrationBinder`.
 
 `Provisioner.provisionKeys`
 (`app/src/com/android/rkpdapp/provisioner/Provisioner.java`) drives the
-end-to-end flow against two collaborators: `SystemInterface`, which wraps the
-KeyMint `IRemotelyProvisionedComponent` HAL, and `ServerInterface`, which speaks
+end-to-end flow. It works with two collaborators. `SystemInterface` wraps the
+KeyMint `IRemotelyProvisionedComponent` HAL. `ServerInterface` speaks
 HTTP to the RKP backend (`app/src/com/android/rkpdapp/interfaces/`).
 
 The HAL side generates the raw material.  `SystemInterface.generateKey` calls
 `IRemotelyProvisionedComponent.generateEcdsaP256KeyPair`, which returns a
 `MacedPublicKey` (a public key MAC'd by a device-private key the host never
-sees).  A batch of these is then passed to `SystemInterface.generateCsr`, which
+sees).  A batch of these is then passed to `SystemInterface.generateCsr`. It
 calls `generateCertificateRequestV2` (the v3 HAL path) or the older
-`generateCertificateRequest` plus `DeviceInfo` / `ProtectedData` (v1), producing
-a CBOR certificate signing request.
+`generateCertificateRequest` plus `DeviceInfo` / `ProtectedData` (v1). The
+result is a CBOR certificate signing request.
 
 The server side runs in two HTTP operations defined in `ServerInterface`:
 
@@ -1769,9 +1771,9 @@ The server side runs in two HTTP operations defined in `ServerInterface`:
 
 `Provisioner` stores the signed keys in a Room database
 (`app/src/com/android/rkpdapp/database/`, `ProvisionedKeyDao` /
-`ProvisionedKey`) keyed by the owning `IRemotelyProvisionedComponent` and an
-expiration time, so Keystore2 can later draw a pre-attested key from the pool
-without a fresh network round-trip.  `WidevineProvisioner` reuses the same
+`ProvisionedKey`). The keys are keyed by the owning
+`IRemotelyProvisionedComponent` and an expiration time. This lets Keystore2 later
+draw a pre-attested key from the pool without a fresh network round-trip.  `WidevineProvisioner` reuses the same
 machinery for the Widevine DRM component.
 
 ```mermaid
@@ -1799,8 +1801,8 @@ Behavior is gated by aconfig flags in `flags/rkpd_flags.aconfig`
 (`com.android.rkpd.flags`), including `enable_feedback_loop` (report cert use
 back to the server via `ConfirmCertificates`), `report_device_reset`, and
 `enable_widevine_multiple_round_trips`.  The post-processing that may rewrite
-the returned chain, and the Keystore2-side gating and concurrency cap, are
-separate and covered in sections 40.10.5 and 40.10.6.
+the returned chain is separate. The Keystore2-side gating and concurrency cap
+are also separate. Sections 40.10.5 and 40.10.6 cover them.
 
 ### 40.4.12  KeyMint AIDL Interface
 
@@ -1916,8 +1918,8 @@ processor with its own:
 - Independent clock
 
 StrongBox supports a subset of KeyMint algorithms.  It has been optional
-since its introduction in Android 9 -- the CDD strongly recommends it but
-does not require it, and devices without a secure element expose only the
+since its introduction in Android 9. The CDD strongly recommends it but
+does not require it. Devices without a secure element expose only the
 `SOFTWARE` and `TRUSTED_ENVIRONMENT` security levels.
 
 ---
@@ -2097,10 +2099,10 @@ fn inner_main() -> Result<(), HalServiceError> {
 
 The tamper-evident storage that backs counters such as the Keymaster rollback
 state is modeled by the access-controlled NVRAM HAL.  AOSP ships a *reference*
-implementation under `system/nvram/` (`core/` is the portable reference logic; a
-userspace "fake" HAL implements the full API surface for illustration but, as
-its README states, does not meet the persistence and tamper-evidence
-requirements of a real deployment) -- a production device backs these NVRAM
+implementation under `system/nvram/`. In it, `core/` is the portable reference
+logic. A userspace "fake" HAL implements the full API surface for illustration.
+As its README states, it does not meet the persistence and tamper-evidence
+requirements of a real deployment. A production device backs these NVRAM
 spaces with hardware such as RPMB or a TEE.
 
 ### 40.5.6  Confirmation UI
@@ -2129,19 +2131,20 @@ class TrustyConfirmationUI : public BnConfirmationUI {
 ```
 
 The TA in the secure world controls the display directly (or via a secure
-display path), ensuring the normal world OS cannot modify what the user sees.
-The user's confirmation is signed by the TA, producing a
+display path). This makes sure the normal world OS cannot modify what the user
+sees. The TA signs the user's confirmation. The result is a
 `HardwareAuthToken` that cryptographically proves the user approved the
 displayed content.
 
 The actual on-screen prompt is drawn by a small, dependency-light C++ rendering
 engine, libteeui (`system/teeui/libteeui/`).  It rasterizes the confirmation
-layout -- text labels, buttons, and fonts -- using a bundled FreeType build
-(`libft2.nodep`) so the renderer can run inside the resource-constrained secure
-world with no reliance on the normal-world UI toolkit.  The Trusty
+layout (text labels, buttons, and fonts) with a bundled FreeType build
+(`libft2.nodep`).  This lets the renderer run inside the resource-constrained
+secure world, with no reliance on the normal-world UI toolkit.  The Trusty
 ConfirmationUI HAL links the `libteeui_hal_support` variant of this library
-(see its `static_libs` in `system/core/trusty/confirmationui/Android.bp`), which
-supplies the message-formatting and secure-input glue around the core renderer.
+(see its `static_libs` in `system/core/trusty/confirmationui/Android.bp`).  That
+variant supplies the message-formatting and secure-input glue around the core
+renderer.
 
 ### 40.5.7  SecretKeeper
 
@@ -2236,9 +2239,9 @@ TIPC channels have these properties:
 ### 40.5.12  Secure Storage
 
 The Trusty Storage proxy (`system/core/trusty/storage/`) provides persistent
-storage for TAs.  Since the secure world typically cannot directly access the
-filesystem, the proxy runs in the normal world and services storage requests
-from TAs through a secure protocol:
+storage for TAs.  The secure world typically cannot directly access the
+filesystem.  So the proxy runs in the normal world and services storage
+requests from TAs through a secure protocol:
 
 ```
 Normal World                    Secure World
@@ -2257,9 +2260,9 @@ to the normal world for persistence.
 
 Android 17 adds a Trusty build aimed at the "Android Desktop" device class:
 Android running as a desktop OS on PC-class arm64 and x86_64 hardware.  This is
-a form-factor signal in the TEE, separate from desktop *windowing* (freeform
-multi-window, desks, window decorations), which lives in WindowManager and
-WMShell and is covered in chapters 22 and 23.  What Android 17 adds here is the
+a form-factor signal in the TEE.  It is separate from desktop *windowing*
+(freeform multi-window, desks, window decorations).  Windowing lives in
+WindowManager and WMShell, and chapters 22 and 23 cover it.  What Android 17 adds here is the
 secure-world bring-up for that hardware, not any window-management code.
 
 The device configs live in `trusty/device/desktop/` (copyright 2024).  The
@@ -2268,31 +2271,39 @@ common include `trusty/device/desktop/common/desktop-inc.mk` is headed
 trees build the targets: `trusty/device/desktop/arm64/desktop-arm64/` and
 `trusty/device/desktop/x86_64/desktop-x86_64/`.  The x86_64 tree ships the
 base project makefile plus `_ext_boot` and `-test` variants (for example
-`project/desktop-x86_64.mk`), while the arm64 tree adds a `-test-debug`
+`project/desktop-x86_64.mk`).  The arm64 tree adds a `-test-debug`
 variant on top of those (plus a `qemu-` test-debug project).  The LK
 kernel platform glue for these targets is the Rust code under
-`trusty/kernel/platform/desktop/`.  The desktop Trusty image is signed and
-packaged as a Trusty VM rather than burned into a TrustZone secure world; the
-Android-17 release tooling renames the signing tool to `ResignTrustyVM` for
-this (the desktop Trusty VM is installed under `vm/trusty_vm`, per
-`trusty/vendor/google/aosp/scripts/Android.bp`).
+`trusty/kernel/platform/desktop/`.
+
+The desktop Trusty image is signed and
+packaged as a Trusty VM rather than burned into a TrustZone secure world.  For
+this, the Android-17 release tooling renames the signing tool to
+`ResignTrustyVM`.  The desktop Trusty VM is installed under `vm/trusty_vm`, per
+`trusty/vendor/google/aosp/scripts/Android.bp`.
 
 The trusted apps for this target are gathered under `trusty/user/desktop/app/`.
-The set is the security stack a desktop device needs: `gsc_svc` is the service
-for the Google Security Chip (a Titan-class security chip); `pinweaver` does
-knowledge-factor throttling; `finger_guard` guards fingerprint enrollment and
-matching; `keymint_provisioning` and `keymint_strongbox` provide KeyMint and
-its StrongBox security level; `secretkeeper` and `weaver` provide the secret
-storage primitives covered in sections 40.5.7 and 40.14; and `hwbcc`, `hwkey`,
-and `vm_rkp` supply boot-certificate, hardware-key, and remote key provisioning
-support for the VM.  The `gsc_svc` app serves the `IGsc` AIDL interface
+The set is the security stack a desktop device needs:
+
+- `gsc_svc` is the service for the Google Security Chip (a Titan-class security
+  chip).
+- `pinweaver` does knowledge-factor throttling.
+- `finger_guard` guards fingerprint enrollment and matching.
+- `keymint_provisioning` and `keymint_strongbox` provide KeyMint and its
+  StrongBox security level.
+- `secretkeeper` and `weaver` provide the secret storage primitives covered in
+  sections 40.5.7 and 40.14.
+- `hwbcc`, `hwkey`, and `vm_rkp` supply boot-certificate, hardware-key, and
+  remote key provisioning support for the VM.
+
+The `gsc_svc` app serves the `IGsc` AIDL interface
 (`android.system.desktop.security.gsc.IGsc`, in
-`trusty/user/desktop/interface/gscd/`), whose one method `transmit(byte[])`
+`trusty/user/desktop/interface/gscd/`).  Its one method `transmit(byte[])`
 relays a serialized TPM 2.0 command to the GSC firmware and returns the
 response.  Other desktop AIDL interfaces sit alongside it under
 `trusty/user/desktop/interface/` (`pinweaver`, `finger_guard`, `boot_params`,
-`keymint_provisioning`), backed by support libraries under
-`trusty/user/desktop/lib/` such as `gsc_svc_client`, `tpm_commands`,
+`keymint_provisioning`).  Support libraries under `trusty/user/desktop/lib/`
+back them, such as `gsc_svc_client`, `tpm_commands`,
 `keymint_access_policy`, and `secretkeeper_secure_store`.
 
 ---
@@ -2359,9 +2370,10 @@ Key security properties:
 
 - **Throttling in hardware** -- the reference implementation
   (`system/gatekeeper/gatekeeper.cpp`) enforces a fixed timeout table
-  indexed by the failure counter: no delay for the first 5 failures, then
-  1 minute, 5, 15, 30, and 90 minutes, 4, 12, and 36 hours, 4 days, and so
-  on up to years.  It is a table lookup, not a doubling backoff.  The
+  indexed by the failure counter.  There is no delay for the first 5 failures.
+  After that the delays are 1 minute, 5, 15, 30, and 90 minutes.  Then they are
+  4, 12, and 36 hours, 4 days, and so on up to years.  It is a table lookup, not a doubling
+  backoff.  The
   normal world cannot bypass this.
 - **Per-user isolation** -- each user has their own enrolled handle, stored
   with the synthetic-password protector state in
@@ -2474,7 +2486,7 @@ flowchart TD
 ```
 
 The HMAC key used to authenticate HATs is established through the
-`ISharedSecret` interface, where all TEE components (KeyMint, Gatekeeper,
+`ISharedSecret` interface.  There, all TEE components (KeyMint, Gatekeeper,
 Biometrics) agree on a shared secret at boot time.
 
 ### 40.6.7  Lockout Policy
@@ -2732,9 +2744,9 @@ include:
 | **Reboot** | `reboot` |
 
 Notably, `ptrace`, `unshare`, and `setns` are *not* blocked by the app
-seccomp filter -- they are in the generated allowlist
-(`bionic/libc/SYSCALLS.TXT`); tracing other domains is instead forbidden
-by SELinux neverallow rules (and Yama restricts same-domain tracing).
+seccomp filter.  They are in the generated allowlist
+(`bionic/libc/SYSCALLS.TXT`).  SELinux neverallow rules instead forbid tracing
+of other domains (and Yama restricts same-domain tracing).
 
 A blocked syscall triggers `SECCOMP_RET_TRAP`, which delivers `SIGSYS` to
 the calling thread -- normally fatal, with the crash routed through
@@ -2801,8 +2813,8 @@ During specialization (in the order `SpecializeCommon` in
 The `INTERNET` permission is still reflected in group membership: when
 granted, the app's process gets the `inet` supplementary group (GID 3003),
 assigned via `frameworks/base/data/etc/platform.xml`.  Enforcement, however,
-no longer relies on the old `CONFIG_ANDROID_PARANOID_NETWORK` kernel patch
-(which has been removed): the `inet_create` eBPF cgroup program in
+no longer relies on the old `CONFIG_ANDROID_PARANOID_NETWORK` kernel patch,
+which is removed.  The `inet_create` eBPF cgroup program in
 `packages/modules/Connectivity/bpf/progs/netd.c` decides socket creation
 from a per-appId permission map (`BPF_PERMISSION_INTERNET`).  The
 permission-related groups:
@@ -2862,8 +2874,8 @@ Example blocked syscalls and their security rationale:
 | `kexec_load` | Loading a new kernel (absent from `SYSCALLS.TXT` entirely) |
 
 Note that `ptrace`, `unshare`, `setns`, and `pivot_root` are *not* on the
-app seccomp blocklists -- `pivot_root` is even explicitly allowlisted for
-boot -- so restrictions on those come from SELinux and other mechanisms,
+app seccomp blocklists.  `pivot_root` is even explicitly allowlisted for
+boot.  So restrictions on those come from SELinux and other mechanisms,
 not seccomp.
 
 ### 40.7.9  Process-Level Isolation Details
@@ -3186,8 +3198,8 @@ The key installation process uses the kernel's fscrypt API:
 ### 40.8.6  Metadata Encryption
 
 Metadata encryption protects the filesystem metadata that FBE leaves in the
-clear -- directory structure, file sizes, permissions, and timestamps
-(filenames are already encrypted by fscrypt itself).  The implementation is in
+clear -- directory structure, file sizes, permissions, and timestamps.
+Filenames are already encrypted by fscrypt itself.  The implementation is in
 `system/vold/MetadataCrypt.cpp`:
 
 ```cpp
@@ -3383,9 +3395,9 @@ graph TB
 
 The encryption subsystems covered above (FBE, metadata encryption, dm-default-key)
 protect data *at rest on the device*. Android also needs to protect keys
-that leave the device — most importantly, the user's lock-screen-protected
-keys when they are backed up to a remote vault for later recovery on a new
-device. The "SecureBox" library at `frameworks/base/libs/securebox/`
+that leave the device. The most important case is the user's
+lock-screen-protected keys. They are backed up to a remote vault for later
+recovery on a new device. The "SecureBox" library at `frameworks/base/libs/securebox/`
 provides the cryptographic primitive that the recoverable key store uses
 to wrap those keys end-to-end.
 
@@ -3419,14 +3431,14 @@ The signatures encode the design contract:
 - A caller can encrypt with the recipient's **public key**, with a
   **shared secret**, or with **both** (in which case both are required
   to decrypt). At least one of the two must be non-null.
-- `header` is authenticated but not encrypted — it travels in cleartext
-  but the GCM tag binds it to the payload, so any modification fails
+- `header` is authenticated but not encrypted. It travels in cleartext,
+  but the GCM tag binds it to the payload. Any modification fails
   decryption with `AEADBadTagException`.
 - `payload` is the encrypted body. Either input may be null/empty.
 
-The library is built as a plain `java_library` with no `static_libs` and
-no Android dependencies beyond `@hide` annotations and an
-`ArrayUtils.concat` helper — a deliberate choice so that the same code
+The library is built as a plain `java_library` with no `static_libs`.
+It has no Android dependencies beyond `@hide` annotations and an
+`ArrayUtils.concat` helper. This is a deliberate choice, so that the same code
 can be vetted as a self-contained cryptographic unit.
 
 #### The SecureBox v2 Wire Format
@@ -3446,8 +3458,8 @@ The output of `encrypt(...)` is a single byte array with the layout:
   in SecureBox v2).
 - **sender pubKey** is present *only* in the public-key paths
   (`theirPublicKey != null`). The sender generates a fresh ephemeral
-  P-256 key pair per `encrypt(...)` call, performs ECDH against the
-  recipient's public key, and emits its own public key in
+  P-256 key pair per `encrypt(...)` call. It performs ECDH against the
+  recipient's public key. Then it emits its own public key in
   uncompressed-point form (`0x04 || X (32 B) || Y (32 B)`,
   `EC_PUBLIC_KEY_LEN_BYTES = 65`).
 - **nonce** is 12 freshly-random bytes per call (`SecureRandom`).
@@ -3464,10 +3476,10 @@ private static final byte[] HKDF_INFO_WITHOUT_PUBLIC_KEY =
         "SHARED HKDF-SHA-256 AES-128-GCM".getBytes(StandardCharsets.UTF_8);
 ```
 
-Mixing the two info strings is what makes the same library
-unambiguously cover both the ECDH and pure-shared-secret cases — the
-derived AES key is bound to its derivation mode, so a payload encrypted
-in one mode cannot decrypt in the other even if the keying material
+The two different info strings let the same library
+unambiguously cover both the ECDH and pure-shared-secret cases. The
+derived AES key is bound to its derivation mode. So a payload encrypted
+in one mode cannot decrypt in the other, even if the keying material
 collides.
 
 The full key-derivation chain is:
@@ -3501,7 +3513,7 @@ flowchart LR
 #### Curve Validation on Decode
 
 `SecureBox` ships its own P-256 parameters (the canonical NIST p, a, b,
-G, n constants in the static initializer) instead of trusting the JCE
+G, n constants in the static initializer). It does not trust the JCE
 to resolve them. The reason is `decodePublicKey(...)` validates that
 the received point actually lies on the curve:
 
@@ -3525,10 +3537,10 @@ private static void validateEcPoint(BigInteger x, BigInteger y) throws InvalidKe
 }
 ```
 
-This blocks invalid-curve attacks: an attacker who controls the
+This blocks invalid-curve attacks. An attacker who controls the
 `encryptedPayload` cannot smuggle a malicious "public key" that lives
-on a weaker curve and use the resulting ECDH leakage to recover the
-recipient's private key. The check matches IETF / NIST SP 800-56A
+on a weaker curve. The attacker then cannot use the resulting ECDH
+leakage to recover the recipient's private key. The check matches IETF / NIST SP 800-56A
 public-key-validation guidance and is performed before the key is
 handed to `KeyAgreement`.
 
@@ -3562,10 +3574,10 @@ The high-level recovery flow:
    read it — only the recipient device with the corresponding
    `recoveryServicePrivateKey` plus the user-derived `sharedSecret`
    can `SecureBox.decrypt(...)` it.
-3. On a *target* device, after successful lock-screen credential
-   re-entry against the cloud-issued challenge, the system retrieves
-   the wrapped blob and `decrypt(...)`s it, repopulating the keystore
-   with the user's recoverable keys.
+3. On a *target* device, the lock-screen credential is re-entered
+   against the cloud-issued challenge. After this succeeds,
+   the system retrieves the wrapped blob and `decrypt(...)`s it. This
+   repopulates the keystore with the user's recoverable keys.
 
 The `header` argument is used to bind each blob to its context
 (recovery agent ID, vault version, intended slot). Any tampering with
@@ -3581,8 +3593,8 @@ flows. Here it is `system_server` that generates the ephemeral P-256
 key pair -- `RemoteLockscreenValidationSessionStorage` calls
 `SecureBox.genKeyPair()` and hands out the public key. Settings'
 `encryptDeviceCredentialGuess` then calls `SecureBox.decodePublicKey`
-followed by `SecureBox.encrypt` on the credential guess, using the
-public-key path with a null shared secret, and
+and then `SecureBox.encrypt` on the credential guess. The
+public-key path is used, with a null shared secret.
 `RecoverableKeyStoreManager` performs the matching
 `SecureBox.decrypt` against the session's private key.
 
@@ -3602,14 +3614,14 @@ is deliberately not:
   framework dependencies means the same compiled class file is used
   in both contexts, with no provider-installation differences.
 - The implementation must run on every Android device that supports
-  recoverable key stores. Avoiding a provider lets the code work even
-  when the active JCE provider has been replaced or restricted (e.g.
+  recoverable key stores. The library does not use a provider. So the code
+  works even if the active JCE provider is replaced or restricted (e.g.
   by FIPS-mode builds that disallow generic GCM modes).
 
 `SecureBox` is therefore a small, self-contained, intentionally
 boring building block — the boringness is the security argument. The
 v2 format has not changed since the file was added (2017 copyright
-header), and the consumer code can rely on a stable wire shape across
+header). So the consumer code can rely on a stable wire shape across
 the entire fleet that supports recoverable key stores.
 
 ---
@@ -3725,16 +3737,16 @@ flowchart TD
 Pin-sets have strongly recommended (but not platform-enforced) features:
 
 - **Expiration date** -- the `expiration` attribute is optional (pins never
-  expire if it is omitted), but setting one ensures a wrong pin does not
-  permanently brick the app's connectivity.
-- **Backup pins** -- the parser imposes no minimum pin count, but
-  specifying at least two pins (one current, one backup) is strongly
+  expire if it is omitted). However, an expiration date makes sure a wrong
+  pin does not permanently brick the app's connectivity.
+- **Backup pins** -- the parser imposes no minimum pin count. However, at
+  least two pins (one current, one backup) are strongly
   recommended to enable key rotation.
 
 ### 40.9.5  Certificate Transparency
 
 Certificate Transparency (CT) verification is enabled by default for apps
-targeting SDK levels *after* Baklava -- that is, targetSdk 37 / Android 17,
+that target SDK levels *after* Baklava. That is, targetSdk 37 / Android 17,
 per the `@EnabledAfter` semantics of the compat change:
 
 ```java
@@ -3902,8 +3914,8 @@ The automatic mode discovery works by:
 Android's VPN framework integrates with the security model:
 
 - A VPN app's `VpnService` must declare
-  `android:permission="android.permission.BIND_VPN_SERVICE"`; this
-  signature-level permission is held by the system, ensuring only the
+  `android:permission="android.permission.BIND_VPN_SERVICE"`. This
+  signature-level permission is held by the system, so only the
   system can bind the service (the app itself does not hold it).
 - VPN traffic is routed through a TUN interface.
 - The VPN app can see all DNS queries and network traffic, but:
@@ -3936,15 +3948,15 @@ or netlink configuration.
 ## 40.10  Android 17 Security Updates
 
 Android 17 pushes the hardware-backed security stack in three directions at
-once: it adds the first post-quantum key algorithm to KeyMint, it consolidates
-the secure-clock interface inside the KeyMint trusted application, and it lets
-the whole KeyMint/Gatekeeper trust domain run inside a protected VM reached over
-`IAccessor`.  Keystore2 also gains an optional attestation-certificate
+once. It adds the first post-quantum key algorithm to KeyMint. It consolidates
+the secure-clock interface inside the KeyMint trusted application. It also lets
+the whole KeyMint/Gatekeeper trust domain run inside a protected VM that is
+reached over `IAccessor`.  Keystore2 also gains an optional attestation-certificate
 post-processing hook and a set of Remote Key Provisioning safety limits.  This
 section folds those changes into the architecture described above.
 
 (The unrelated in-process native sandbox introduced in Android 17 is covered in
-its own chapter on the Lightweight Fault Isolation sandbox; this chapter only
+its own chapter on the Lightweight Fault Isolation sandbox. This chapter only
 notes that KeyMint and Gatekeeper are unaffected by it.)
 
 ### 40.10.1  ML-DSA Post-Quantum Keys
@@ -3977,18 +3989,22 @@ enum MlDsaVariant {
 }
 ```
 
-Because ML-DSA parameter sets are not described by a single key-size integer
-the way RSA and EC are, the variant is carried by a new tag rather than
+ML-DSA parameter sets are not described by a single key-size integer,
+as RSA and EC are. So the variant is carried by a new tag, not by
 `Tag::KEY_SIZE`.  `Tag.aidl` defines `ML_DSA_VARIANT = TagType.ENUM | 11`, and
 `KeyParameterValue.aidl` adds a matching `MlDsaVariant mlDsaVariant` arm.  The
 contract in
 `hardware/interfaces/security/keymint/aidl/android/hardware/security/keymint/IKeyMintDevice.aidl`
-makes the rules explicit: `Tag::ML_DSA_VARIANT` must be supplied to generate an
-ML-DSA key (otherwise `generateKey` returns
-`ErrorCode::UNSUPPORTED_ML_DSA_VARIANT`, defined as `-87` in `ErrorCode.aidl`);
-no `KEY_SIZE` is passed; TEE implementations must support both ML-DSA-65 and
-ML-DSA-87; StrongBox does not support ML-DSA at all; the only purposes allowed
-are `SIGN` or `ATTEST_KEY` (never both); and the only digest is `Digest::NONE`.
+makes the rules explicit:
+
+- `Tag::ML_DSA_VARIANT` must be supplied to generate an ML-DSA key
+  (otherwise `generateKey` returns
+  `ErrorCode::UNSUPPORTED_ML_DSA_VARIANT`, defined as `-87` in `ErrorCode.aidl`).
+- No `KEY_SIZE` is passed.
+- TEE implementations must support both ML-DSA-65 and ML-DSA-87.
+- StrongBox does not support ML-DSA at all.
+- The only purposes allowed are `SIGN` or `ATTEST_KEY` (never both).
+- The only digest is `Digest::NONE`.
 
 The variant is also recorded in the attestation record.  The
 `AuthorizationList` schema documented in `KeyCreationResult.aidl` carries it as
@@ -4021,7 +4037,7 @@ flowchart TD
 
 ### 40.10.2  ML-DSA Seed Import
 
-An ML-DSA private key is fully determined by a 32-byte seed; the large expanded
+An ML-DSA private key is fully determined by a 32-byte seed. The large expanded
 key (4032 bytes for ML-DSA-65, 4896 bytes for ML-DSA-87) is derived from it.
 Android 17 therefore lets a key be imported in seed form rather than as the
 expanded blob.  `system/keymint/common/src/crypto/mldsa.rs` defines
@@ -4037,10 +4053,11 @@ pub enum Key {
 `import_raw_key` accepts a bare 32-byte seed plus a variant, while
 `import_pkcs8_key` accepts the PKCS#8 form defined in RFC 9881 section 6.  That
 PKCS#8 structure has a `CHOICE` of seed / expandedKey / both; the
-implementation supports only the seed alternative.  Because the seed has a
-fixed 32-byte length, the code skips full ASN.1 parsing and instead matches a
-22-byte DER prefix (the SEQUENCE, version, algorithm OID, and the
-context-tagged seed wrapper) followed by the seed bytes.  Any other length or
+implementation supports only the seed alternative.
+
+The seed has a fixed 32-byte length. So the code skips full ASN.1 parsing.
+Instead, it matches a 22-byte DER prefix (the SEQUENCE, version, algorithm OID,
+and the context-tagged seed wrapper), followed by the seed bytes.  Any other length or
 prefix is rejected with `InvalidArgument`.  Keystore2 mirrors this on the
 service side: insecure (software) import of an ML-DSA private key expects the
 PKCS#8 seed format.
@@ -4069,26 +4086,29 @@ pub fn generate_timestamp(&self, challenge: i64) -> Result<TimeStampToken, Error
 }
 ```
 
-Because KeyMint and the secure clock now share the same `device_hmac` shared
-secret, a single trusted application can both issue and verify the timestamp
-token, removing the need for a standalone `hal_timestamp_service`.  The SELinux
-policy was updated to match: `system/sepolicy/private/hal_keymint.te` no longer
-attaches a separate timestamp service attribute, and the documented model is
+KeyMint and the secure clock now share the same `device_hmac` shared
+secret. So a single trusted application can both issue and verify the timestamp
+token. This removes the need for a standalone `hal_timestamp_service`.  The SELinux
+policy was updated to match.
+`system/sepolicy/private/hal_keymint.te` no longer
+attaches a separate timestamp service attribute.
+The documented model is
 that "the keymint HAL serves the timestamp interface also."
 
 This change also explains the deprecation noted in section 40.4.12.  The
 `deviceLocked` method in `IKeyMintDevice.aidl` still takes a `TimeStampToken`
-argument, but it is marked `@deprecated` and its parameters are annotated
-"N/A due to the deprecation," so a conformant implementation returns
+argument. But it is marked `@deprecated`, and its parameters are annotated
+"N/A due to the deprecation." So a conformant implementation returns
 `ErrorCode::UNIMPLEMENTED` and never consumes the token there.
 
 ### 40.10.4  KeyMint, Gatekeeper, and RKP Inside a Protected VM
 
 Android 17 extends the protected-VM (Microdroid) model to the hardware-backed
-security HALs.  Instead of a vendor service registered directly with
-`servicemanager`, the KeyMint, Gatekeeper, SecureClock, SharedSecret, and
-Remotely Provisioned Component interfaces can be hosted inside a security VM and
-reached through `android.os.IAccessor` proxies.  `servicemanager` resolves the
+security HALs.  The KeyMint, Gatekeeper, SecureClock, SharedSecret, and
+Remotely Provisioned Component interfaces can be hosted inside a security VM
+and reached through `android.os.IAccessor` proxies.  The security VM takes the
+place of a vendor service registered directly with `servicemanager`.
+`servicemanager` resolves the
 client-visible name to an `IAccessor` that forwards binder traffic into the VM.
 
 `system/sepolicy/private/service.te` defines a dedicated SELinux type for each
@@ -4117,12 +4137,12 @@ android.os.IAccessor/IProvisioning/security_vm_keymint            u:object_r:acc
 ```
 
 The system-side KeyMint HAL is granted `find` on its accessor in
-`system/sepolicy/private/hal_keymint_system.te`, and per-interface accessor
-permissions were added across the keymint-in-vm policy ("keymint-in-vm: Add
+`system/sepolicy/private/hal_keymint_system.te`.  Per-interface accessor
+permissions were also added across the keymint-in-vm policy ("keymint-in-vm: Add
 permissions for IRemotelyProvisionedComponent accessor," and the equivalents for
-`ISecureClock`, `IProvisioning`, `ISharedSecret`, and `IGatekeeper").  The
-result is that the entire root-of-trust HAL surface can be isolated inside a
-protected VM while the framework keeps talking to it through ordinary binder
+`ISecureClock`, `IProvisioning`, `ISharedSecret`, and `IGatekeeper").  As a
+result, the entire root-of-trust HAL surface can be isolated inside a
+protected VM.  The framework still talks to it through ordinary binder
 names.
 
 The accessor indirection that makes this work is shown below.
@@ -4148,9 +4168,8 @@ provisioning daemon (RKPD):
   `system/security/keystore2/src/remote_provisioning.rs` now treats RKP as
   enabled only when `remote_provisioning.hostname` is set to a non-empty value.
   On an RKP-only device with no hostname configured, key generation fails with
-  `ResponseCode::OUT_OF_KEYS_PERMANENT_ERROR` instead of silently falling back,
-  which surfaces a misconfiguration early rather than handing out unattested
-  keys.
+  `ResponseCode::OUT_OF_KEYS_PERMANENT_ERROR`. It does not fall back silently.
+  This shows a misconfiguration early and does not give out unattested keys.
 
 - **ML-DSA counts as an asymmetric algorithm for RKP.**
   `is_asymmetric_key` matches `Algorithm::RSA`, `Algorithm::EC`, and now
@@ -4160,9 +4179,9 @@ provisioning daemon (RKPD):
 - **Concurrent RKPD calls are capped.**
   `system/security/keystore2/rkpd_client/src/lib.rs` defines
   `RKP_MAX_CONCURRENT_OPERATIONS = 15` and guards each call with a
-  `ConcurrentOperation` RAII counter; exceeding the cap returns
-  `TooManyConcurrentOperations` rather than starving the rest of the system's
-  threads on the network round-trip.
+  `ConcurrentOperation` RAII counter. A call over the cap returns
+  `TooManyConcurrentOperations`. This stops the calls from starving the rest of
+  the system's threads on the network round-trip.
 
 ```mermaid
 flowchart TD
@@ -4184,9 +4203,9 @@ chain after KeyMint produces it.  When the system property
 chain through `process_certificate_chain`
 (`system/security/keystore2/postprocessor_client/src/lib.rs`) instead of
 storing the raw chain.  That helper connects to the lazily started binder
-service `rkp_cert_processor.service`, with a 5-second timeout; if the connection
-ever times out, an `AtomicBool` latches the failure so the post-processor is not
-retried until the next reboot.  Critically, any failure falls back to the
+service `rkp_cert_processor.service`, with a 5-second timeout. If the connection
+ever times out, an `AtomicBool` latches the failure. As a result, the post-processor is
+not retried until the next reboot.  Critically, any failure falls back to the
 original certificate chain, so post-processing can never block key generation.
 
 The post-processor service itself lives in
@@ -4196,15 +4215,18 @@ The post-processor service itself lives in
 `system/security/keystore2/aidl/android/security/postprocessor/`).  Its
 `processKeystoreCertificates` implementation in
 `packages/services/DroidfoodAttestationFixer/src/lib.rs` base64-encodes the leaf
-and remaining chain, sends them to a backend over a small `libcurl` bridge, and
-returns the overwritten chain (falling back to the original on any decode or
-server error).  The whole package is flag-gated: its
+and remaining chain. It sends them to a backend over a small `libcurl` bridge
+and returns the overwritten chain. On any decode or server error, it falls back
+to the original chain.
+
+A flag gates the whole package. Its
 `droidfood_attestation_flags.aconfig` declares
 `droidfood_attestation_bringup` (a `is_fixed_read_only` flag in the
-`android.security.postprocessor` package), and the service is installed to
+`android.security.postprocessor` package). The service is installed to
 `system_ext` and started `disabled` / `oneshot` from
-`packages/services/DroidfoodAttestationFixer/droidfoodattestation.rc`, so it
-runs only when explicitly enabled for the Droidfood (internal dogfood) program.
+`packages/services/DroidfoodAttestationFixer/droidfoodattestation.rc`. So it
+runs only when it is explicitly enabled for the Droidfood (internal dogfood)
+program.
 
 The post-processing flow, including its fail-safe fallback, is shown below.
 
@@ -4224,17 +4246,17 @@ flowchart TD
 ### 40.10.7  HPKE Hybrid Public-Key Encryption Through JCA
 
 Hybrid Public Key Encryption (HPKE, RFC 9180) combines a KEM (key
-encapsulation), a KDF, and an AEAD into one scheme: a sender encapsulates a
+encapsulation), a KDF, and an AEAD into one scheme. A sender encapsulates a
 fresh symmetric key to the recipient's public key and uses it to seal a
-message, so the recipient needs only its private key to open it. BoringSSL has
-implemented HPKE for a while and Conscrypt exposed it internally, but Android 17
-promotes it to a public API under `android.crypto.hpke`, gated by the
-`com.android.libcore.hpke_public_api` aconfig flag
+message. So the recipient needs only its private key to open the message.
+BoringSSL has implemented HPKE for a while, and Conscrypt exposed it
+internally. Android 17 promotes it to a public API under `android.crypto.hpke`,
+gated by the `com.android.libcore.hpke_public_api` aconfig flag
 (`libcore/libcore.aconfig`).
 
 The public surface lives in libcore at
 `libcore/luni/src/main/java/android/crypto/hpke/`. An app does not talk to a JCA
-`Cipher`; instead the entry point is `Hpke`, which resolves an implementation
+`Cipher`. Instead the entry point is `Hpke`. It resolves an implementation
 through the JCA Provider mechanism under a custom service type, `ConscryptHpke`:
 
 ```java
@@ -4247,10 +4269,10 @@ byte[] ct  = sender.seal(plaintext, aad);
 ```
 
 The suite name is a `KEM/KDF/AEAD` triple. The three components are named with
-`AlgorithmParameterSpec` subclasses, each a `java.security.spec.NamedParameterSpec`:
+`AlgorithmParameterSpec` subclasses. Each is a `java.security.spec.NamedParameterSpec`:
 `KemParameterSpec` (for example `DHKEM_X25519_HKDF_SHA256`), `KdfParameterSpec`
-(`HKDF_SHA256`), and `AeadParameterSpec`, whose constants are
-`AeadParameterSpec.AES_128_GCM`, `AES_256_GCM`, and `CHACHA20POLY1305`.
+(`HKDF_SHA256`), and `AeadParameterSpec`. Its constants
+are `AeadParameterSpec.AES_128_GCM`, `AES_256_GCM`, and `CHACHA20POLY1305`.
 
 The provider-facing contract is `HpkeSpi`
 (`libcore/luni/src/main/java/android/crypto/hpke/HpkeSpi.java`), the
@@ -4270,8 +4292,8 @@ byte[] getEncapsulated();
 
 Conscrypt registers the implementations in its provider. `OpenSSLProvider`
 (`external/conscrypt/repackaged/common/src/main/java/com/android/org/conscrypt/OpenSSLProvider.java`)
-puts a `ConscryptHpke.<suite>` entry for each supported KEM/KDF/AEAD triple,
-choosing the adapter class that bridges to `android.crypto.hpke.HpkeSpi` when
+puts a `ConscryptHpke.<suite>` entry for each supported KEM/KDF/AEAD triple.
+It chooses the adapter class that bridges to `android.crypto.hpke.HpkeSpi` when
 that public interface is present on the platform:
 
 ```java
@@ -4293,24 +4315,26 @@ the PSK and authenticated modes are not yet wired through.
 ### 40.10.8  Lock-Screen Rate-Limiting Rename and Recovery Shortlink
 
 Two smaller lock-screen changes land in `frameworks/base`. First, the method
-that reports how long primary authentication is throttled was renamed:
-`LockPatternUtils#getLockoutAttemptDeadline(int)` became `getLockoutEndTime(int)`,
-and it now returns a `java.time.Duration` instead of a raw deadline timestamp.
+that reports how long primary authentication is throttled has a new name.
+`LockPatternUtils#getLockoutAttemptDeadline(int)` became `getLockoutEndTime(int)`.
+It now returns a `java.time.Duration` instead of a raw deadline timestamp.
+
 The value is the time since boot at which the user may attempt PIN, pattern, or
-password again, or `Duration.ZERO` when no lockout is in effect
+password again. It is `Duration.ZERO` when no lockout is in effect
 (`frameworks/base/core/java/com/android/internal/widget/LockPatternUtils.java`,
 lines 1187-1197). The result is served through a `PropertyInvalidatedCache` and
 backed by `ParcelDuration getLockoutEndTime(int userId)` on the lock-settings
 binder interface (`ILockSettings.aidl`, line 76).
 
 Second, a new string resource `config_lockscreenLockoutShortlink` (default
-`g.co/android/unlock`) gives the bouncer a recovery URL to show once a device is
-locked out (`frameworks/base/core/res/res/values/config.xml`, line 1552, with
+`g.co/android/unlock`) gives the bouncer a recovery URL. The bouncer shows it
+once a device is locked out
+(`frameworks/base/core/res/res/values/config.xml`, line 1552, with
 its `java-symbol` in `symbols.xml`). SystemUI substitutes it into the locked-out
 bouncer messages when the `android.security.Flags.lockscreenTimeoutShortlink`
 aconfig flag is set
-(`frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/shared/model/BouncerMessageStrings.kt`),
-so a user who has forgotten the credential is pointed at the account-recovery
+(`frameworks/base/packages/SystemUI/src/com/android/systemui/bouncer/shared/model/BouncerMessageStrings.kt`).
+So a user who has forgotten the credential is pointed at the account-recovery
 flow rather than only being told to wait.
 
 ### 40.10.9  SELinux memfd Class Compatibility
@@ -4318,21 +4342,23 @@ flow rather than only being told to wait.
 Android 17 expects the SELinux policy to treat anonymous memory file descriptors
 as their own object class. The kernel and `libsepol` carry a policy capability
 `memfd_class` (`POLICYDB_CAP_MEMFD_CLASS` in
-`external/selinux/libsepol/src/polcaps.c`); when it is enabled, the kernel labels
-`memfd_create()` descriptors with the `memfd_file` class instead of folding them
-into the generic `file` class. AOSP's userspace policy already defines that class
-(`class memfd_file` in `system/sepolicy/private/security_classes`) and relies on
-it throughout: `domain.te` grants every domain `memfd_file` access to its own
-descriptors and locks down `ioctl` on others, and media, sensor, allocator, and
-zygote domains pass `memfd_file` descriptors across IPC
+`external/selinux/libsepol/src/polcaps.c`). When it is enabled, the kernel
+labels `memfd_create()` descriptors with the `memfd_file` class. It does not
+fold them into the generic `file` class.
+
+AOSP's userspace policy already defines
+that class (`class memfd_file` in `system/sepolicy/private/security_classes`).
+It relies on the class throughout. `domain.te` grants every domain `memfd_file`
+access to its own descriptors and locks down `ioctl` on others. Media, sensor,
+allocator, and zygote domains pass `memfd_file` descriptors across IPC
 (`system/sepolicy/private/domain.te`, `app.te`, `mediaserver.te`).
 
-Because those allow rules name the `memfd_file` class explicitly, a device whose
-kernel does not enable the `memfd_class` capability would see those descriptors
-labeled `file`, the `memfd_file` rules would never match, and the affected IPC
-would be denied. Devices must therefore enable the `memfd_class` policy
-capability and support the `memfd_file` class so the shipped policy applies as
-written.
+Those allow rules name the `memfd_file` class explicitly. As a result, a device
+whose kernel does not enable the `memfd_class` capability would see
+those descriptors labeled `file`. The `memfd_file` rules would never match, and
+the affected IPC would be denied. Devices must therefore enable the
+`memfd_class` policy capability and support the `memfd_file` class so the
+shipped policy applies as written.
 
 ### 40.10.10  Per-App Keystore Key Limit (API 37)
 
@@ -4348,22 +4374,24 @@ const API_37_PER_UID_KEY_LIMIT: i32 = 50_000;     // line 82
 ```
 
 The check is gated by the `keystore2` aconfig flag `limit_keys_per_uid`
-(`security_level.rs:563`): when it is on, key generation for an app targeting
-Android 17 fails once the app's key count reaches `API_37_PER_UID_KEY_LIMIT` (the
-comparison at line 584), surfacing as a Keystore error to the caller; apps below
-the target keep the looser 200,000 fallback. `keystore2` also tracks per-UID key
-counts for diagnostics -- `dumpsys` prints the worst offenders via
-`KEYS_PER_UID_MAX_UIDS` / `KEYS_PER_UID_MIN_KEY_COUNT`
-(`system/security/keystore2/src/maintenance.rs:436`-440) -- so an OEM can spot apps
-approaching the cap before enforcement bites.
+(`security_level.rs:563`). When the flag is on, key generation fails for an app
+targeting Android 17 once its key count reaches
+`API_37_PER_UID_KEY_LIMIT` (the comparison at line 584). The caller sees a
+Keystore error. Apps below the target keep the looser 200,000 fallback.
+
+`keystore2` also tracks per-UID key counts for diagnostics. `dumpsys` prints
+the worst offenders via `KEYS_PER_UID_MAX_UIDS` / `KEYS_PER_UID_MIN_KEY_COUNT`
+(`system/security/keystore2/src/maintenance.rs:436`-440). So an OEM can spot
+apps approaching the cap before enforcement bites.
 
 ---
 
 ## 40.11  Security Posture and Version Evolution
 
-This section steps back from individual subsystems to look at how Android keeps
-its security current: updatable components, patch levels, and the long arc of
-attack-surface reduction that culminates in the Android 17 features above.
+This section steps back from individual subsystems. It shows how Android keeps
+its security current through updatable components and patch levels. It also
+shows the long arc of attack-surface reduction that culminates in the Android 17
+features above.
 
 ### 40.11.1  Security Updates and Mainline Modules
 
@@ -4486,10 +4514,10 @@ cd system/security/keystore2
 atest keystore2_test
 ```
 
-For deeper background, the Android Security Bulletin tracks monthly patches and
-CVEs, the Android CDD lists mandatory security requirements, and the in-tree
-READMEs (`external/avb/README.md`, `system/sepolicy/README.md`, and the
-Keystore2 design notes under `system/security/keystore2/`) document each
+For deeper background, use these sources. The Android Security Bulletin tracks
+monthly patches and CVEs. The Android CDD lists mandatory security requirements.
+The in-tree READMEs (`external/avb/README.md`, `system/sepolicy/README.md`, and
+the Keystore2 design notes under `system/security/keystore2/`) document each
 subsystem.
 
 ---
@@ -4497,42 +4525,46 @@ subsystem.
 ## 40.12  AuthGraph: Authenticated Key Exchange Between Secure Components
 
 Several of the subsystems above establish an encrypted, mutually authenticated
-channel between two security domains that do not share a binder transport --
-for example, a client running in a protected VM and the SecretKeeper service in
-a TEE.  The protocol that bootstraps that channel is AuthGraph, an authenticated
-key-exchange (AKE) protocol with an AIDL contract,
+channel between two security domains. These domains do not share a binder
+transport. One example is a client in a protected VM and the SecretKeeper
+service in a TEE.  AuthGraph is the protocol that bootstraps that channel. It is
+an authenticated key-exchange (AKE) protocol with an AIDL contract,
 `IAuthGraphKeyExchange` (`hardware/interfaces/security/authgraph/aidl/android/hardware/security/authgraph/IAuthGraphKeyExchange.aidl`),
 and a roughly 7.5K-line Rust reference implementation under `system/authgraph/`.
 
 ### 40.12.1  What AuthGraph Provides
 
-AuthGraph negotiates a pair of symmetric session keys -- one per direction --
-between two parties named P1 (the *source*, typically the client) and P2 (the
-*sink*, typically the service).  Each party must already hold two things,
-described in the AIDL header: a **persistent identity** (a signing key whose
-public half is carried in a self-signed or DICE certificate chain) and a
-**per-boot key** (an in-memory symmetric key with the lifetime of one boot).
-The output is two 256-bit AES keys plus a shared `session_id`, after which both
+AuthGraph negotiates a pair of symmetric session keys, one per direction.
+The two parties are P1 (the *source*, typically the client) and P2 (the
+*sink*, typically the service).  Each party must already hold two things, as the
+AIDL header describes.  The first is a **persistent identity**, a signing
+key whose public half is carried in a self-signed or DICE certificate chain.
+The second is a **per-boot key**, an in-memory symmetric key with the
+lifetime of one boot.
+
+The output is two 256-bit AES keys plus a shared `session_id`. After that, both
 sides can exchange encrypted, replay-resistant messages.
 
-Two design choices recur throughout the protocol.  First, derived keys are never
-returned in the clear: they are wrapped in *arcs* -- CBOR/COSE blobs encrypted
-under the holder's per-boot key, with protected headers that record the peer
-identity, the session id, and whether authentication has completed.  An arc both
-hides the key from the normal world and lets a party stay nearly stateless
-between calls.  Second, mutual authentication is bound to the key material: each
-party signs the `session_id` (an HMAC over both nonces) with its persistent
-signing key, and the peer verifies that signature against the certificate chain
-in the peer's identity, so a man-in-the-middle that cannot produce a valid
-signature is rejected.
+Two design choices recur throughout the protocol.  First, derived keys are
+never returned in the clear. They are wrapped in *arcs*. An arc is a
+CBOR/COSE blob encrypted under the holder's per-boot key. Its protected headers
+record the peer identity, the session id, and whether authentication has
+completed.  An arc both hides the key from the normal world and lets a party
+stay nearly stateless between calls.
+
+Second, mutual authentication is bound to
+the key material. Each party signs the `session_id` (an HMAC over both nonces)
+with its persistent signing key. The peer verifies that signature against the
+certificate chain in the peer's identity. So a man-in-the-middle that cannot
+produce a valid signature is rejected.
 
 ### 40.12.2  The Four-Method Handshake
 
 The interface defines four methods.  Three run during the handshake -- `create`
 and `finish` on P1, `init` on P2 -- and `authenticationComplete` lets P2 finish
 out-of-band once it has seen P1's signature.  The shared secret itself is an
-ephemeral ECDH agreement on NIST curve P-256: each side generates a fresh P-256
-key pair and a 16-byte nonce, and the Diffie-Hellman result `Z` is run through
+ephemeral ECDH agreement on NIST curve P-256.  Each side generates a fresh P-256
+key pair and a 16-byte nonce. The Diffie-Hellman result `Z` is run through
 HKDF to derive the session keys.
 
 ```mermaid
@@ -4550,21 +4582,26 @@ sequenceDiagram
 
 The flow follows the AIDL documentation step by step:
 
-1. **`create()`** runs on P1.  It produces a `SessionInitiationInfo`: an
-   ephemeral P-256 public key (with the matching private key sealed in an arc
-   under P1's per-boot key), a 16-byte nonce, P1's persistent identity, and the
-   highest protocol (AIDL) version P1 supports.
+1. **`create()`** runs on P1.  It produces a `SessionInitiationInfo`.  This
+   holds an ephemeral P-256 public key, a 16-byte nonce, P1's persistent
+   identity, and the highest protocol (AIDL) version P1 supports.  The matching
+   private key is sealed in an arc under P1's per-boot key.
 2. **`init(peerPubKey, peerId, peerNonce, peerVersion)`** runs on P2.  P2
-   generates its own ephemeral P-256 key pair and nonce, computes the ECDH
-   secret `Z`, and derives a cryptographic secret using the SHA-256 digest of a
-   CBOR `salt_input` (which binds both versions, both public keys, both nonces,
-   and both certificate chains) as the HKDF salt.  From that it derives two
-   AES-256 keys -- contexts `b"KE_ENCRYPTION_KEY_SOURCE_TO_SINK"` and
-   `b"KE_ENCRYPTION_KEY_SINK_TO_SOURCE"` -- and an HMAC key
-   (`b"KE_HMAC_KEY"`).  It HMACs the two nonces to form the `session_id`, signs
-   it with its identity key, and returns everything as a `KeInitResult`, with
-   the two session keys handed back as arcs marked `authentication_complete =
-   false`.
+   generates its own ephemeral P-256 key pair and nonce. It computes the ECDH
+   secret `Z`. Then it derives a cryptographic secret, with the SHA-256 digest
+   of a CBOR `salt_input` as the HKDF salt.  That input binds both versions,
+   both public keys, both nonces, and both certificate chains.
+
+    From that secret it derives two AES-256 keys, with contexts
+    `b"KE_ENCRYPTION_KEY_SOURCE_TO_SINK"` and
+    `b"KE_ENCRYPTION_KEY_SINK_TO_SOURCE"`.  It also derives an HMAC key
+    (`b"KE_HMAC_KEY"`).  It HMACs the two nonces to form the `session_id` and
+    signs it with its identity key.  It returns everything as a `KeInitResult`.
+    The two session keys are handed back as arcs marked
+    `authentication_complete =
+    false`.
+
+
 3. **`finish(peerPubKey, peerId, peerSignature, peerNonce, peerVersion, ownKey)`**
    runs back on P1.  P1 repeats the same ECDH/HKDF derivation, recomputes the
    `session_id`, and verifies P2's signature over it (returning
@@ -4572,12 +4609,12 @@ The flow follows the AIDL documentation step by step:
    the two session keys as arcs marked `authentication_complete = true` and
    signs the `session_id` with its identity.
 4. **`authenticationComplete(peerSignature, sharedKeys)`** runs on P2.  P2 takes
-   P1's signature from `finish`, verifies it against the `session_id` recorded in
-   the shared-key arcs, and flips its own arcs to
-   `authentication_complete = true`, completing the mutual authentication.
+   P1's signature from `finish`.  It verifies the signature against the
+   `session_id` recorded in the shared-key arcs.  Then it flips its own arcs to
+   `authentication_complete = true`.  This completes the mutual authentication.
 
-Version negotiation is built in: P2 returns a negotiated version no higher than
-P1's advertised version, and `finish` rejects a `peerVersion` greater than the
+Version negotiation is built in.  P2 returns a negotiated version no higher than
+P1's advertised version.  `finish` rejects a `peerVersion` greater than the
 one P1 offered in `create` with `INCOMPATIBLE_PROTOCOL_VERSION`.
 
 ### 40.12.3  The Reference Implementation
@@ -4587,10 +4624,10 @@ can reuse the protocol logic while swapping in its own primitives:
 
 - `system/authgraph/core/` holds the cryptography-agnostic protocol engine.
   `system/authgraph/core/src/keyexchange.rs` implements the `create`/`init`/
-  `finish`/`authenticationComplete` state machine and defines the HKDF context
-  strings shown above; `arc.rs` handles arc sealing, `key.rs` the key and
-  identity types, and `traits.rs` the `Device`, `EcDh`, `Hkdf`, and `Sha256`
-  abstractions a backend must supply.  The crate is `#![no_std]` so it can run
+  `finish`/`authenticationComplete` state machine.  It also defines the HKDF
+  context strings shown above.  `arc.rs` handles arc sealing, and `key.rs` the
+  key and identity types.  `traits.rs` holds the `Device`, `EcDh`, `Hkdf`, and
+  `Sha256` abstractions a backend must supply.  The crate is `#![no_std]` so it can run
   inside a secure-world TA.
 - `system/authgraph/boringssl/` provides a default BoringSSL-backed
   implementation of those crypto traits; a partner can substitute its own
@@ -4610,54 +4647,57 @@ services that need a channel into a different security domain:
   secrets in a higher-privilege domain, so its request/response CBOR protocol
   must be encrypted.  `ISecretkeeper.aidl`
   (`hardware/interfaces/security/secretkeeper/aidl/android/hardware/security/secretkeeper/ISecretkeeper.aidl`)
-  imports `IAuthGraphKeyExchange` and exposes `getAuthGraphKe()`; the pVM client
-  acts as P1, SecretKeeper as P2, and the resulting session keys protect every
-  subsequent SecretManagement message.  Its reference implementation under
+  imports `IAuthGraphKeyExchange` and exposes `getAuthGraphKe()`.  The pVM
+  client acts as P1 and SecretKeeper as P2.  The resulting session keys protect
+  every subsequent SecretManagement message.  Its reference implementation under
   `system/secretkeeper/` reuses the `system/authgraph/` crates for exactly this
   step.
 - **The SEE AuthMgr.**  The Secure Execution Environment authorization manager,
   `IAuthMgrAuthorization`
   (`hardware/interfaces/security/see/authmgr/aidl/android/hardware/security/see/authmgr/IAuthMgrAuthorization.aidl`),
-  authenticates and authorizes a pVM client before it may reach trusted HALs
-  hosted in a TEE -- the in-VM root-of-trust model from section 40.10.4.  It
-  does *not* run the AuthGraph AKE handshake.  Instead it authenticates the
-  AuthMgr frontend (in the pVM) to the AuthMgr backend (in the TEE) via a
-  DICE-based challenge-response: `initAuthentication` returns a 32-byte
-  challenge, and `completeAuthentication` verifies the frontend's signature over
-  a `SignedConnectionRequest` (which binds in that challenge) against a stored
-  DICE policy, validating the frontend's DICE certificate chain and enforcing
-  rollback protection.  What it reuses from AuthGraph is the DICE
-  certificate-chain and key *types* -- `authgraph_core::key` items such as
-  `CertChain`, `DiceChainEntry`, `EcSignKey`, `EcVerifyKey`,
-  `InstanceIdentifier`, and `Policy`, plus the `EcDsa`/`Rng` traits -- not the
-  AuthGraph create/init/finish key-exchange, shared-key derivation, or session
-  contexts.
+  authenticates and authorizes a pVM client before the client may reach trusted
+  HALs hosted in a TEE.  This is the in-VM root-of-trust model from section
+  40.10.4.  It does *not* run the AuthGraph AKE handshake.
+
+    Instead it authenticates the AuthMgr frontend (in the pVM) to the AuthMgr
+    backend (in the TEE) via a DICE-based challenge-response.
+    `initAuthentication` returns a 32-byte challenge.  `completeAuthentication`
+    verifies the frontend's signature over a `SignedConnectionRequest` (which
+    binds in that challenge) against a stored DICE policy.  It also validates the
+    frontend's DICE certificate chain and enforces rollback protection.
+
+    What it reuses from AuthGraph is the DICE certificate-chain and key *types*.
+    These are `authgraph_core::key` items such as `CertChain`, `DiceChainEntry`,
+    `EcSignKey`, `EcVerifyKey`, `InstanceIdentifier`, and `Policy`, plus the
+    `EcDsa`/`Rng` traits.  It does not reuse the AuthGraph create/init/finish
+    key-exchange, shared-key derivation, or session contexts.
 
 These two consumers use AuthGraph differently.  SecretKeeper runs the full,
-vendor-pluggable, DICE-aware AKE to let two mutually distrustful Android
+vendor-pluggable, DICE-aware AKE.  With it, two mutually distrustful Android
 security domains agree on session keys without a shared transport or a
 pre-shared secret.  The SEE AuthMgr borrows only AuthGraph's DICE
 certificate-chain and key types for its own DICE-based authentication protocol.
 
 ## 40.13  external/keyattestation: The Relying-Party Verifier Library
 
-Section 40.4.7 covers the *producer* side of key attestation: a key is
-generated inside secure hardware, and KeyMint emits a certificate chain whose
-leaf carries a `KeyDescription` extension describing the key's properties and
-the device's verified-boot state.  The relying party then has to *verify* that
-chain: a server, an enterprise enrollment backend, or another app validates the
-chain back to a trusted root, parses the attestation extension, and decides
-whether to trust the key.  Historically each verifier reimplemented that logic,
-often imperfectly.
+Section 40.4.7 covers the *producer* side of key attestation.  A key is
+generated inside secure hardware.  KeyMint emits a certificate chain whose
+leaf carries a `KeyDescription` extension.  The extension describes the key's
+properties and the device's verified-boot state.
+
+The relying party then has to *verify* that chain.  A server, an enterprise
+enrollment backend, or another app validates the chain back to a trusted root.
+It parses the attestation extension and decides whether to trust the key.
+Historically each verifier reimplemented that logic, often imperfectly.
 
 `external/keyattestation` is the AOSP home for that verifier side.  It is a
 small Kotlin library (`java_library` named `keyattestation`, declared in
-`external/keyattestation/Android.bp`) that parses and validates Android key
+`external/keyattestation/Android.bp`).  It parses and validates Android key
 attestation certificate chains on behalf of a relying party.  The entry point
 is the `Verifier` class
-(`external/keyattestation/src/main/kotlin/Verifier.kt`), constructed with three
-caller-supplied sources (a set of trust anchors, a set of revoked certificate
-serial numbers, and a time source) and exposing a single `verify(chain)`
+(`external/keyattestation/src/main/kotlin/Verifier.kt`).  The caller constructs
+it with three sources: a set of trust anchors, a set of revoked certificate
+serial numbers, and a time source.  It exposes a single `verify(chain)`
 method:
 
 ```kotlin
@@ -4669,41 +4709,47 @@ val verifier = Verifier(
 val result = verifier.verify(certificateChain)
 ```
 
-`verify` returns a sealed `VerificationResult`: `Success` (carrying the
-attested public key, the challenge, the security level, the verified-boot
-state, and device identity), or one of several failure states
-(`PathValidationFailure`, `ChainParsingFailure`, `ChallengeMismatch`,
-`ExtensionParsingFailure`, `ExtensionConstraintViolation`).  Beyond plain path
-validation it enforces attestation-specific invariants: the key's `origin` must
-be `GENERATED`, and the attestation security level must equal the KeyMint
-security level.
+`verify` returns a sealed `VerificationResult`.  The result is `Success`, or one
+of several failure states (`PathValidationFailure`, `ChainParsingFailure`,
+`ChallengeMismatch`, `ExtensionParsingFailure`,
+`ExtensionConstraintViolation`).  A success result carries the attested public key,
+the challenge, the security level, the verified-boot state, and device
+identity.  Beyond plain path validation, verification enforces attestation-specific
+invariants.  The key's `origin` must be `GENERATED`, and the attestation
+security level must equal the KeyMint security level.
 
-Two design choices shape the library.  Validation runs through a custom JCA
-provider instead of the stock PKIX validator.  `KeyAttestationProvider`
+Two design choices shape the library.  The first is the validator.  Validation
+runs through a custom JCA provider instead of the stock PKIX validator.
+
+`KeyAttestationProvider`
 (`external/keyattestation/src/main/kotlin/provider/KeyAttestationProvider.kt`)
 registers a `CertPathValidator` algorithm named `"KeyAttestation"`, backed by
 `KeyAttestationCertPathValidator`
 (`external/keyattestation/src/main/kotlin/provider/KeyAttestationCertPathValidator.kt`).
 That class exists because older devices emit chains that do not fully conform
-to RFC 5280 and so cannot be validated by the JDK's built-in
-`PKIXCertPathValidator`; the custom validator is deliberately more permissive
-about those chains.  Revocation is handled by a `PKIXRevocationChecker`
+to RFC 5280.  The JDK's built-in `PKIXCertPathValidator` cannot validate these
+chains.  The custom validator is deliberately more permissive
+about them.
+
+Revocation is handled by a `PKIXRevocationChecker`
 subclass, `RevocationChecker`
 (`external/keyattestation/src/main/kotlin/provider/RevocationChecker.kt`), which
 fails any certificate whose hex serial appears in the caller-supplied revoked
-set.  The other choice is what the library leaves out: it ships only the
+set.
+
+The other choice is what the library leaves out.  It ships only the
 verification logic and a set of well-known roots
-(`external/keyattestation/roots.json`).  Fetching the live revocation list
-(from the Android attestation status endpoint) and supplying the trust anchors
-are the caller's job, which keeps the library free of network and policy
+(`external/keyattestation/roots.json`).  The caller must fetch the live
+revocation list (from the Android attestation status endpoint) and supply the
+trust anchors.  This keeps the library free of network and policy
 assumptions.
 
 This is the verifier counterpart to the KeyMint producer path.  KeyMint mints
-the chain inside the TEE or StrongBox; `keyattestation` is what a relying party
-links in to check that chain.  The module is visible to
+the chain inside the TEE or StrongBox.  A relying party links in `keyattestation`
+to check that chain.  The module is visible to
 `frameworks/base/core/java` and to vendor subpackages (per its `Android.bp`
-`visibility` list), so several callers share one implementation instead of each
-writing its own.
+`visibility` list).  So several callers share one implementation instead of
+each writing its own.
 
 ## 40.14  Weaver: Throttle-Resistant Secret Slots
 
@@ -4712,22 +4758,25 @@ throttles guessing.  Weaver is the storage primitive that backs that throttling
 and ties the credential to file-based encryption.  It provides a fixed array of
 *slots*, each holding a key-value pair, where the value can be read back only by
 presenting the correct key.  The lockscreen flow stores a
-synthetic-password-derived secret as a Weaver value, keyed by a secret derived
-from the user's credential, so that the encryption key material is released
+synthetic-password-derived secret as a Weaver value.  A secret derived from the
+user's credential is the key.  So the encryption key material is released
 only when the credential is presented and the per-slot throttle permits it.
 
 The HAL contract lives in
 `hardware/interfaces/weaver/aidl/android/hardware/weaver/IWeaver.aidl`.  It is
-deliberately small: `getConfig()` reports the slot count and key/value sizes
-(recommended at least 64 slots and 16-byte keys/values); `write()` overwrites a
-slot idempotently; `read(slotId, key)` returns a `WeaverReadResponse` whose
+deliberately small.  `getConfig()` reports the slot count and key/value sizes
+(recommended at least 64 slots and 16-byte keys/values).  `write()` overwrites a
+slot idempotently.  `read(slotId, key)` returns a `WeaverReadResponse` whose
 `WeaverReadStatus` is `OK` (with the value), `INCORRECT_KEY`, `THROTTLE`, or
-`FAILED`; and `getTimeout(slotId)` reports the remaining throttle.  The AIDL
-spells out the throttle rules the implementation must honor: throttling is per
-slot, the failure count must be persisted across reboots, a throttled read must
-reveal nothing and must not change the failure count, and key comparison must
-be constant-time.  One rule is easy to miss: the failure count must be
-incremented *before* the key is checked and reset to zero only on success, so
+`FAILED`.  `getTimeout(slotId)` reports the remaining throttle.
+
+The AIDL spells out the throttle rules the implementation must honor.
+Throttling is per slot.  The failure count must be persisted across reboots.
+
+A throttled read
+must reveal nothing and must not change the failure count.  Key comparison must
+be constant-time.  One rule is easy to miss.  The failure count must be
+incremented *before* the key is checked and reset to zero only on success.  So
 an attacker cannot test a key without the attempt being counted.
 
 `system/weaver` is the Rust *reference TA and HAL service* implementing that
@@ -4736,13 +4785,16 @@ contract (it is not the HAL interface itself, which is under
 `system/weaver/ta/src/lib.rs`, which runs inside the secure environment and
 processes CBOR-encoded requests forwarded by the HAL service in
 `system/weaver/hal/src/lib.rs`.  Each `Slot` stores its `slot_key`,
-`slot_value`, a `failure_counter`, and a `last_checked_timestamp`.  The
-throttle policy is the `TIMEOUT_TABLE` in that file: failures 0-4 incur no
-delay, then the timeout grows steeply (1 minute at 5 failures, 5/15/30/90
-minutes, then hours, days, and ultimately years), and once the table is
-exhausted further attempts return a timeout of `i64::MAX`.  Slots are required
+`slot_value`, a `failure_counter`, and a `last_checked_timestamp`.
+
+The throttle policy is the `TIMEOUT_TABLE` in that file.  Failures 0-4 incur no
+delay.  Then the timeout grows steeply: 1 minute at 5 failures, 5/15/30/90
+minutes, then hours, days, and ultimately years.  Once the table is
+exhausted, further attempts return a timeout of `i64::MAX`.
+
+Slots are required
 to persist across boots and across an untrusted factory reset (with the value
-cleared), so the throttle cannot be reset by rebooting.  This is the
+cleared).  So the throttle cannot be reset by rebooting.  This is the
 hardware-backed counterpart to the in-TEE throttling that section 40.6.1
 describes for Gatekeeper.
 
@@ -4758,53 +4810,60 @@ flowchart TD
 The newest addition to the contract is `warmUp()`, a `oneway` hint added in
 Weaver AIDL v3 (in `hardware/interfaces/weaver/aidl`, not in `system/weaver`).
 It conveys that a read or write will probably happen within a few seconds (for
-example when the user starts entering their PIN), so an implementation whose
-secure hardware sits in a low-power state can begin transitioning to a ready
-state asynchronously, cutting the latency of the upcoming credential check.  It
-is purely advisory: reads and writes must still work without a preceding
-`warmUp()`, there is no matching cool-down call (implementations re-enter low
-power after an idle timeout, recommended at five seconds), and the method may
-be a no-op where it does not apply.
+example when the user starts entering their PIN).  An implementation whose
+secure hardware sits in a low-power state can then start to move to a ready
+state asynchronously.  This cuts the latency of the upcoming credential check.
+
+The hint is purely advisory.  Reads and writes must still work without a
+preceding `warmUp()`.  There is no matching cool-down call: implementations
+re-enter low power after an idle timeout, recommended at five seconds.  The
+method may be a no-op where it does not apply.
 
 ## 40.15  Keystore Certificate Post-Processor
 
 Section 40.4.7 describes the attestation certificate chain Keystore returns for
-a hardware-backed key, and section 40.13 covers `external/keyattestation`, the
+a hardware-backed key.  Section 40.13 covers `external/keyattestation`, the
 library a relying party uses to verify that chain.  Android 17 adds a hook on
-the *issuing* side: after Keystore has assembled the chain, it can hand the
+the *issuing* side.  After Keystore has assembled the chain, it can hand the
 chain to a registered service that returns a replacement chain.  The platform
-piece is an AIDL contract plus a service lookup; the actual post-processing is
+piece is an AIDL contract plus a service lookup.  The actual post-processing is
 left to whatever service is registered under a fixed name.
 
 The contract is `IKeystoreCertificatePostProcessor`, in package
 `android.security.postprocessor`
 (`system/security/keystore2/aidl/android/security/postprocessor/IKeystoreCertificatePostProcessor.aidl`).
-It has one method, `processKeystoreCertificates(in CertificateChain)`, which
-takes a `CertificateChain` (a `leafCertificate` plus a `remainingChain` of the
-concatenated DER-encoded intermediates and root) and returns a replacement
-`CertificateChain`.  An implementing service derives from the generated
-`BnKeystoreCertificatePostProcessor`.
+It has one method, `processKeystoreCertificates(in CertificateChain)`.  The
+method takes a `CertificateChain` and returns a replacement `CertificateChain`.
+Such a chain is a `leafCertificate` plus a `remainingChain` of the
+concatenated DER-encoded intermediates and root.  An implementing service
+derives from the generated `BnKeystoreCertificatePostProcessor`.
 
 Keystore actually invokes this hook, but only on a narrow path and only when a
 runtime flag is set.  The call lives in
 `system/security/keystore2/src/security_level.rs`, in the branch that handles a
 key attested with an RKP-provisioned attestation key
 (`AttestationKeyInfo::RkpdProvisioned`).  That branch checks the system property
-`remote_provisioning.use_cert_processor` (default `false`); when it is set, it
-calls `process_certificate_chain` from the `postprocessor_client` helper crate
-(`system/security/keystore2/postprocessor_client/src/lib.rs`) instead of just
-appending the RKP chain to the result.  Keystore does not bind a post-processor
-at startup or for the common attestation paths; it looks one up by name only at
-this point and only behind the flag.
+`remote_provisioning.use_cert_processor` (default `false`).
+
+When the property is
+set, the branch calls `process_certificate_chain` from the `postprocessor_client`
+helper crate
+(`system/security/keystore2/postprocessor_client/src/lib.rs`).  It does this
+instead of just appending the RKP chain to the result.  Keystore does not bind a
+post-processor at startup or for the common attestation paths.  It looks one up
+by name only at this point and only behind the flag.
 
 The helper crate is where the lookup happens.  `process_certificate_chain`
-packs the leaf and remaining certificates into a `CertificateChain`, then calls
-`binder::wait_for_interface("rkp_cert_processor.service")` to find the
+packs the leaf and remaining certificates into a `CertificateChain`.  Then it
+calls `binder::wait_for_interface("rkp_cert_processor.service")` to find the
 registered post-processor and invokes `processKeystoreCertificates` on it.  The
-service name is hard-coded, the lookup runs on a worker thread with a 5-second
-timeout, and the result is fail-open: on success the returned chain replaces the
-original, and on any error (timeout, missing service, or a service-specific
-error) the helper logs a warning and falls back to the original Keystore chain.
+service name is hard-coded.  The lookup runs on a worker thread with a 5-second
+timeout.
+
+The result is fail-open.  On success the returned chain replaces the
+original.  On any error (timeout, missing service, or a service-specific
+error), the helper logs a warning and falls back to the original Keystore chain.
+
 A timeout latches a process-wide flag so Keystore stops retrying the lookup
 until the next reboot.  So the hook is a registered-service contract that
 Keystore consults by name, not a chain of post-processors or a callback the
@@ -4827,27 +4886,31 @@ AOSP ships one consumer of this hook, `packages/services/DroidfoodAttestationFix
 a Rust service that builds the binary `rkp_cert_processor`.  It is meant for
 dogfood and test devices whose factory-provisioned attestation chain needs to be
 fixed up, not for production.  `main.rs` registers the implementation under the
-expected name with `binder::register_lazy_service("rkp_cert_processor.service", ...)`,
-so it starts on demand when Keystore looks the service up.  `lib.rs` implements
-`processKeystoreCertificates` by base64-encoding the existing leaf and chain,
-POSTing them to a server over a small libcurl-backed C++ client (`src/curl`),
-and returning the server's replacement chain; on a decode or server error it
+expected name with `binder::register_lazy_service("rkp_cert_processor.service", ...)`.
+So it starts on demand when Keystore looks the service up.
+
+`lib.rs` implements
+`processKeystoreCertificates`.  It base64-encodes the existing leaf and chain
+and POSTs them to a server over a small libcurl-backed C++ client (`src/curl`).
+Then it returns the server's replacement chain.  On a decode or server error it
 returns a service-specific error, which leaves Keystore on the original chain.
 
-The build wires it as a `system_ext` component (`Android.bp`): the
-`rust_binary` is `system_ext_specific`, and its init script
-`droidfoodattestation.rc` installs a service that runs `/system_ext/bin/rkp_cert_processor`,
-declares `interface aidl rkp_cert_processor.service`, and is `oneshot` and
-`disabled` (started lazily by the service manager rather than at boot).  The
-whole package is gated by an aconfig flag,
+The build wires it as a `system_ext` component (`Android.bp`).  The
+`rust_binary` is `system_ext_specific`.  Its init script
+`droidfoodattestation.rc` installs a service that runs `/system_ext/bin/rkp_cert_processor`
+and declares `interface aidl rkp_cert_processor.service`.  The service is
+`oneshot` and `disabled` (started lazily by the service manager rather than at
+boot).  An aconfig flag gates the whole package:
 `android.security.postprocessor.droidfood_attestation_bringup`
 (`droidfood_attestation_flags.aconfig`, namespace `hardware_backed_security`,
-bug 361877215), declared `is_fixed_read_only` so it is fixed at build time and
-container `system_ext`.  The flag controls the package rollout; the
+bug 361877215).  The flag is declared `is_fixed_read_only`, so it is fixed at
+build time and container `system_ext`.
+
+The flag controls the package rollout.  The
 `remote_provisioning.use_cert_processor` property controls whether Keystore
 attempts the lookup at all.  DroidfoodAttestationFixer is one reference
-implementation of the post-processor contract; the reusable platform addition is
-the `IKeystoreCertificatePostProcessor` AIDL and the named service lookup in
+implementation of the post-processor contract.  The reusable platform addition
+is the `IKeystoreCertificatePostProcessor` AIDL and the named service lookup in
 Keystore, which any vendor service could implement instead.
 
 ## 40.16  Try It
@@ -5267,8 +5330,8 @@ The key insight is that these layers are not alternatives -- they are
 **cumulative**.  An attacker must defeat all of them simultaneously to fully
 compromise a device.  Each layer assumes the layer below it might be
 partially compromised and provides independent protection.  Android 17 extends
-the same philosophy to new fronts: post-quantum signatures hedge against future
-cryptographic breaks, and moving the root-of-trust HALs into protected VMs
+the same philosophy to new fronts.  Post-quantum signatures hedge against future
+cryptographic breaks.  Moving the root-of-trust HALs into protected VMs
 shrinks the host attack surface that can reach them.
 
 ### Key Source Files Reference
@@ -5321,10 +5384,11 @@ shrinks the host attack surface that can reach them.
 # Chapter 41: Credential Manager and Passkeys
 
 The Credential Manager framework, introduced in Android 14, provides a unified API for
-managing user credentials -- passwords, passkeys (FIDO2/WebAuthn), federated sign-in
-tokens, and digital identity documents. It replaces the fragmented landscape of
-individual autofill services and proprietary sign-in SDKs with a single, pluggable
-system service that mediates between requesting apps and credential provider apps.
+managing user credentials. The credentials are passwords, passkeys (FIDO2/WebAuthn),
+federated sign-in tokens, and digital identity documents. It replaces the fragmented landscape of
+individual autofill services and proprietary sign-in SDKs. In their place is a
+single, pluggable system service. This service mediates between requesting apps and
+credential provider apps.
 
 This chapter traces the complete architecture from the client-facing
 `CredentialManager` API through the system service, provider sessions, the selection
@@ -5636,7 +5700,7 @@ private final SparseArray<Map<IBinder, RequestSession>> mRequestSessions =
 
 The `SparseArray` is keyed by user ID. Each user can have multiple concurrent
 request sessions (identified by `IBinder` tokens). Sessions are added when a
-request begins and removed when they complete or are cancelled:
+request begins and removed when they complete or are canceled:
 
 ```java
 private void addSessionLocked(@UserIdInt int userId,
@@ -5839,8 +5903,8 @@ The `userId` argument matters: `updateProvidersWhenPackageRemoved()` writes the
 `CREDENTIAL_SERVICE` and `CREDENTIAL_SERVICE_PRIMARY` settings unconditionally *for
 that user*. The sibling path, `updateProvidersWhenServiceRemoved()` (reached from
 `handleServiceRemovedMultiModeLocked()`), is where Android 17 gates the choice on the
-`multi_user_fix_enabled` flag: with the flag set it writes for the affected `userId`,
-rather than for `UserHandle.myUserId()` as the legacy path did. This is the multi-user
+`multi_user_fix_enabled` flag. With the flag set, it writes for the affected `userId`.
+The legacy path wrote for `UserHandle.myUserId()` instead. This is the multi-user
 correctness fix discussed in section 41.8.2. For package updates,
 `CredentialManagerServiceImpl.handlePackageUpdateLocked()` re-validates the provider's
 manifest and capabilities.
@@ -5996,8 +6060,8 @@ classDiagram
 
 **CredentialEntry** -- Represents a single available credential (e.g., "user@example.com
 password" or "Passkey for example.com"). The `PendingIntent` that fires when it is
-selected is not a separate field — it is embedded in the entry's `Slice` as a
-`SliceAction`, which is also how `Action` and `RemoteEntry` carry theirs.
+selected is not a separate field. It is embedded in the entry's `Slice` as a
+`SliceAction`. `Action` and `RemoteEntry` also carry theirs this way.
 
 **Action** -- A generic action the provider wants to show (e.g., "Manage passwords").
 
@@ -6040,7 +6104,7 @@ public class RemoteCredentialService
 **Key timeouts:**
 
 - **Request timeout:** 3 seconds. If a provider does not respond within 3 seconds,
-  the request is cancelled and the provider is reported as failed.
+  the request is canceled and the provider is reported as failed.
 - **Idle disconnect:** 5 seconds. After completing requests, the service unbinds
   after 5 seconds of inactivity.
 
@@ -6318,8 +6382,8 @@ bundle contains:
 | `androidx.credentials.BUNDLE_KEY_PASSWORD` | String | Password value |
 
 Note the `androidx.` prefix: these keys are Jetpack `androidx.credentials`
-conventions, not framework constants — the framework treats the bundle as opaque
-and only the Jetpack library on each end interprets the keys.
+conventions, not framework constants. The framework treats the bundle as opaque.
+Only the Jetpack library on each end interprets the keys.
 
 A password-focused `BeginGetCredentialResponse` returns `CredentialEntry` items,
 one for each stored password matching the calling app.
@@ -6329,8 +6393,8 @@ one for each stored password matching the calling app.
 The Credential Manager integrates with the existing autofill framework through a
 specialized code path. The `getCandidateCredentials()` Binder method is restricted
 to the system's configured credential-autofill service. On Android 17 this caller
-check is unconditional (the `safeguard_candidate_credentials_api_caller` bugfix flag
-that previously gated it has graduated), and it rejects callers it cannot positively
+check is unconditional. The `safeguard_candidate_credentials_api_caller` bugfix flag
+that previously gated it has graduated. The check rejects callers it cannot positively
 identify:
 
 ```java
@@ -6356,7 +6420,7 @@ if (!Objects.equals(componentName.getPackageName(), callingProcessPackage)) {
 ```
 
 This creates a `GetCandidateRequestSession` which returns candidates to the autofill
-service for display in the autofill dropdown, providing a seamless experience in
+service for display in the autofill dropdown. This gives a seamless experience in
 form fields.
 
 ### 41.5.3 Autofill Placeholder
@@ -6480,8 +6544,8 @@ public Set<FilterResult> getMatchingProviders(Set<Set<String>> supportedElementK
 ```
 
 Matching uses set containment. A request carries a *set of* element-key sets
-(`Set<Set<String>>`); `canProviderSatisfyAny()` returns true if the provider's
-registered keys are a superset of *any one* of those requested sets, and the
+(`Set<Set<String>>`). `canProviderSatisfyAny()` returns true if the provider's
+registered keys are a superset of *any one* of those requested sets. The
 single-set helper `checkForMatch()` does the actual `containsAll` test:
 
 ```java
@@ -6673,8 +6737,8 @@ any cached state for the calling app:
 // Providers clear cached tokens, session state, etc.
 ```
 
-This operation is critical for security hygiene -- when a user logs out of
-an app, the app should call `clearCredentialState()` to ensure that credential
+This operation is critical for security hygiene. When a user logs out of
+an app, the app should call `clearCredentialState()` to make sure that credential
 providers do not have stale authentication state.
 
 ### 41.7.5 Settings Integration
@@ -6846,11 +6910,12 @@ if (Flags.multiUserFixEnabled()) {
 }
 ```
 
-These flags allow gradual rollout of behavior changes without code branches, following
-the AOSP trunk-stable development model. As flags graduate to "launched" their branches
-collapse: by Android 17 the `clear_session_enabled` and `hybrid_filter_opt_fix_enabled`
-flags cited by earlier code paths have been removed (their behavior is now
-unconditional), while several bugfix flags described in section 41.8 are still live.
+These flags let a release roll out behavior changes gradually without code branches.
+This follows the AOSP trunk-stable development model. As flags graduate to "launched",
+their branches collapse. By Android 17 the `clear_session_enabled` and
+`hybrid_filter_opt_fix_enabled` flags cited by earlier code paths have been removed,
+and their behavior is now unconditional. Several bugfix flags described in section
+41.8 are still live.
 
 ### 41.7.10 Security Considerations
 
@@ -7075,10 +7140,10 @@ When the selector UI is shown, it may include information about disabled provide
 // The UI may include a "More options" or "Enable provider" action
 ```
 
-The `DisabledProviderData` class is minimal: it carries only the provider's
+The `DisabledProviderData` class is minimal. It carries only the provider's
 flattened `ComponentName` string, inherited from its `ProviderData` base class.
 It holds no display name, no settings intent, and no list of supported
-credential types — the selector UI resolves the provider's label and icon
+credential types. The selector UI resolves the provider's label and icon
 itself from the component name via `PackageManager`.
 
 This still helps users discover and enable credential providers they have
@@ -7131,8 +7196,8 @@ The Credential Manager interacts with the lock screen in several ways:
    in CE storage, so they are unavailable until the user unlocks
 
 4. **Credential Manager as keyguard input:** Some OEMs integrate passkey
-   authentication directly into the lock screen flow, allowing passkey-based
-   device unlock (though this is not part of AOSP)
+   authentication directly into the lock screen flow. This allows passkey-based
+   device unlock, but it is not part of AOSP
 
 ### 41.7.21 Performance Characteristics
 
@@ -7162,8 +7227,8 @@ Optimization strategies:
 
 The Credential Manager framework is mature by Android 17, so the release brings no new
 top-level architecture. The 16-to-17 work is a cluster of correctness and
-hardening fixes, expressed through new entries in
-`frameworks/base/core/java/android/credentials/flags.aconfig`, plus the retirement of
+hardening fixes. The fixes appear as new entries in
+`frameworks/base/core/java/android/credentials/flags.aconfig`. The work also retires
 flags whose behavior has graduated to unconditional. This section maps each change to
 the code it gates.
 
@@ -7186,7 +7251,7 @@ The flags relevant to this release, all in the `credential_manager` namespace:
 Two flags that earlier code branched on have been **removed** in 17, collapsing their
 branches: `clear_session_enabled` and `hybrid_filter_opt_fix_enabled`. Citations to
 `Flags.clearSessionEnabled()` from older sources no longer compile against the 17 tree
-because the symbol is gone; the session-cleanup behavior it gated is now always on.
+because the symbol is gone. The session-cleanup behavior it gated is now always on.
 
 ### 41.8.2 Multi-User Settings Correctness
 
@@ -7215,8 +7280,8 @@ if (Flags.multiUserFixEnabled()) {
 
 The same `userId`-versus-`myUserId()` branch appears for the `CREDENTIAL_SERVICE`
 (secondary) key. The fix is reached from `handleServiceRemovedMultiModeLocked()`
-(the service-removal counterpart of the package-removal path in section 41.2.9),
-which threads the `userId` all the way down.
+(the service-removal counterpart of the package-removal path in section 41.2.9).
+That method threads the `userId` all the way down.
 
 **Source:** `frameworks/base/services/credentials/java/com/android/server/credentials/CredentialManagerService.java`
 
@@ -7226,8 +7291,8 @@ A provider with many stored credentials can produce a `GetCredentialProviderData
 whose entry lists overflow the Binder transaction limit when the UI intent is built. In
 Android 17, `parceled_credential_fix_enabled` switches the three entry lists
 (credential entries, action chips, authentication entries) from raw
-`writeTypedList()` to `ParceledListSlice`, which streams large lists across Binder
-without tripping `TransactionTooLargeException`:
+`writeTypedList()` to `ParceledListSlice`. This type streams large lists across Binder
+and does not cause `TransactionTooLargeException`:
 
 ```java
 // From GetCredentialProviderData.writeToParcel(), Android 17
@@ -7254,17 +7319,17 @@ they make the selector robust for password managers that hold hundreds of entrie
 Two fixes harden the boundaries the service depends on:
 
 - **`cpif_exc_fix_enabled`** is intended to catch exceptions thrown while
-  `CredentialProviderInfoFactory` parses a malformed provider manifest, so that a
+  `CredentialProviderInfoFactory` parses a malformed provider manifest. This way, a
   single broken provider package cannot take down the whole enumeration. As of this
-  tree, though, the flag is only *declared* in `flags.aconfig` — no code reads it
+  tree, though, the flag is only *declared* in `flags.aconfig`. No code reads it
   yet, so the guarded fix has not landed at any call site.
 
 - **`safeguard_candidate_credentials_api_caller`** (now graduated to unconditional)
   enforces that only the OEM-configured credential-autofill component, named by
   `config_defaultCredentialManagerAutofillService`, may call
-  `getCandidateCredentials()`. The check rejects a caller whose component name cannot be
-  resolved, whose calling package cannot be determined, or whose package does not match
-  the configured autofill service (section 41.5.2). This closes a path by which an
+  `getCandidateCredentials()`. The check rejects a caller if its component name cannot be
+  resolved or its calling package cannot be determined. It also rejects a caller whose
+  package does not match the configured autofill service (section 41.5.2). This closes a path by which an
   arbitrary app could have harvested credential candidates intended only for the
   autofill surface.
 
@@ -7273,11 +7338,11 @@ Two fixes harden the boundaries the service depends on:
 ### 41.8.5 Identity Credential API Deprecation
 
 Separately from Credential Manager, Android 17 continues to wind down the older
-`android.security.identity` (Identity Credential) API in favor of the digital-credential
-flow described in section 41.6, where identity documents move through the same
-`CredentialManager` path using a provider-defined type string
+`android.security.identity` (Identity Credential) API. The digital-credential
+flow described in section 41.6 is the preferred path. In this flow, identity documents
+move through the same `CredentialManager` path. This is done using a provider-defined type string
 (`"com.credman.IdentityCredential"`) and the `CredentialDescriptionRegistry`. App code
-targeting digital identity should use the Credential Manager registry path rather than
+that targets digital identity should use the Credential Manager registry path rather than
 the deprecated standalone API.
 
 ---
@@ -7297,11 +7362,11 @@ adb shell settings get --user 0 secure credential_service_primary
 ```
 
 **A note on `dumpsys`:** unlike most system services, `CredentialManagerService`
-implements no dump handler — its published `credential` binder falls back to
+implements no dump handler. Its published `credential` binder falls back to
 `Binder`'s no-op `dump()`, so `adb shell dumpsys credential` prints nothing
-useful. To inspect state, rely on the `Settings.Secure` keys above and on logcat
-(the service logs provider construction, session lifecycle, and status changes
-under the `CredentialManager` tag; see section 41.9.8).
+useful. To inspect state, rely on the `Settings.Secure` keys above and on logcat.
+The service logs provider construction, session lifecycle, and status changes
+under the `CredentialManager` tag (see section 41.9.8).
 
 ### 41.9.2 Enabling a Provider
 
@@ -7561,30 +7626,34 @@ architecture rests on several key pillars:
   trustworthy credential picker
 
 The framework supports passwords, passkeys (FIDO2/WebAuthn), and digital identity
-credentials through the same unified path, with extensibility for future credential
+credentials through the same unified path. It is extensible for future credential
 types through the provider capability system.
 
 <!-- chapter:42-drm -->
 # Chapter 42: DRM and Content Protection
 
 Digital Rights Management (DRM) is one of the most commercially critical subsystems in
-Android. Every time a user streams a movie from Netflix, rents a film on Google Play, or
-watches live sports through a premium app, the DRM framework silently negotiates licenses,
-decrypts content, and enforces output-protection policies -- all without the user noticing.
-This chapter dissects Android's DRM architecture from the Java API surface down through the
-native framework, across the HAL boundary, and into the vendor-supplied plugin
-implementations that perform the actual cryptographic operations.
+Android. A user can stream a movie from Netflix, rent a film on Google Play, or watch
+live sports through a premium app. Each time, the DRM framework silently negotiates
+licenses, decrypts content, and enforces output-protection policies. The user does not
+notice any of this.
+
+This chapter dissects Android's DRM architecture. It starts at the Java API surface and
+goes down through the native framework and across the HAL boundary. It ends in the
+vendor-supplied plugin implementations that perform the actual cryptographic operations.
 
 We begin with a high-level architectural overview (Section 42.1), then trace the framework
 code that applications interact with (Section 42.2). We next examine the stable AIDL HAL
-contracts that vendor plugins must implement (Section 42.3), discuss the Widevine DRM
-system that ships on virtually every Android device (Section 42.4), and walk through the
-ClearKey reference plugin line by line (Section 42.5). We then cover the secure codec path
-that protects decrypted frames from being captured in the clear (Section 42.6), the metrics
-and logging infrastructure that enables diagnostics without leaking protected material
-(Section 42.7), and the Android 17 DRM HAL changes that freeze the AIDL interface at version
-2 and add the key-handle decrypt-decode fast path (Section 42.8), before finishing with
-hands-on exercises (Section 42.9).
+contracts that vendor plugins must implement (Section 42.3). Then we discuss the Widevine
+DRM system that ships on virtually every Android device (Section 42.4). After that, we
+walk through the ClearKey reference plugin line by line (Section 42.5).
+
+We then cover the secure codec path. It protects decrypted frames from capture in the
+clear (Section 42.6). Next we cover the metrics and logging infrastructure, which enables
+diagnostics without leaking protected material (Section 42.7). After that we cover the
+Android 17 DRM HAL changes. They freeze the AIDL interface at version 2 and add the
+key-handle decrypt-decode fast path (Section 42.8). We finish with hands-on exercises
+(Section 42.9).
 
 ---
 
@@ -7593,10 +7662,15 @@ hands-on exercises (Section 42.9).
 ### 42.1.1 The Problem DRM Solves
 
 Content owners -- movie studios, music labels, sports leagues -- license their material to
-streaming services under strict conditions: the content must be encrypted in transit and at
-rest; decryption keys must never be exposed to application code; the decrypted frames must
-be protected from screen-capture or HDMI ripping; and the system must report back to the
-license server when playback completes (secure stops). Android's DRM framework exists to
+streaming services under strict conditions:
+
+- The content must be encrypted in transit and at rest.
+- Decryption keys must never be exposed to application code.
+- The decrypted frames must be protected from screen-capture or HDMI ripping.
+- The system must report back to the license server when playback completes (secure
+  stops).
+
+Android's DRM framework exists to
 satisfy these requirements while presenting a clean, DRM-scheme-agnostic API to application
 developers.
 
@@ -7611,8 +7685,8 @@ vendor HAL process, and the trusted execution environment:
 2. **MediaCrypto** -- A companion Java API that bridges the DRM session to the codec.
    Also lives in the app process but delegates all cryptographic work across Binder.
 
-3. **DRM Framework (libmediadrm)** -- The native C++ layer, loaded into the client
-   process itself via `libmedia_jni`, that routes calls to the appropriate HAL backend
+3. **DRM Framework (libmediadrm)** -- The native C++ layer. It is loaded into the client
+   process itself via `libmedia_jni`. It routes calls to the appropriate HAL backend
    over Binder, manages sessions via the `DrmSessionManager`, and collects metrics.
    (Older releases hosted this layer in a separate `mediadrmserver` process; that
    process no longer exists.)
@@ -7683,9 +7757,9 @@ graph TB
 ### 42.1.4 UUID-Based Scheme Selection
 
 Every DRM scheme is identified by a 16-byte UUID. When an application encounters
-DRM-protected content, it reads the scheme UUID from the content metadata (typically from
-PSSH boxes in ISO BMFF containers or ContentProtection elements in DASH manifests) and
-queries whether the device supports it:
+DRM-protected content, it reads the scheme UUID from the content metadata. The UUID is
+typically in PSSH boxes in ISO BMFF containers or in ContentProtection elements in DASH
+manifests. The application then queries whether the device supports the scheme:
 
 ```java
 // Source: frameworks/base/media/java/android/media/MediaDrm.java
@@ -7877,8 +7951,8 @@ private final Map<Integer, ListenerWithExecutor> mListenerMap =
 ```
 
 Events originate from the HAL plugin via the `IDrmPluginListener` AIDL interface, propagate
-through the `DrmHalListener` native class, and arrive at `MediaDrm.postEventFromNative()`
-which dispatches to the registered listener on the appropriate executor.
+through the `DrmHalListener` native class, and arrive at `MediaDrm.postEventFromNative()`.
+That method dispatches them to the registered listener on the appropriate executor.
 
 ### 42.2.3 Key Request / Response Flow
 
@@ -7943,8 +8017,8 @@ public final class MediaCrypto {
 
 The `requiresSecureDecoderComponent()` method is critical: it queries the HAL plugin to
 determine whether the current security policy requires a secure decoder. If it returns
-`true`, the application must configure `MediaCodec` with the `CONFIGURE_FLAG_SECURE` flag,
-and all decoded frames stay in secure (protected) memory that cannot be read by the CPU.
+`true`, the application must configure `MediaCodec` with the `CONFIGURE_FLAG_SECURE` flag.
+As a result, all decoded frames stay in secure (protected) memory that the CPU cannot read.
 
 ### 42.2.5 DrmHal -- The Unified Native Entry Point
 
@@ -8046,9 +8120,9 @@ static std::vector<MediaResourceParcel> toResourceVec(
 }
 ```
 
-If the system runs low on DRM session resources (many DRM implementations limit concurrent
-sessions), the `ResourceManagerService` can reclaim sessions from lower-priority
-applications by calling back into the `DrmSessionManager`, which closes the session and
+If the system runs low on DRM session resources, the `ResourceManagerService` can reclaim
+sessions from lower-priority applications. Many DRM implementations limit concurrent
+sessions. The service calls back into the `DrmSessionManager`, which closes the session and
 delivers an `EVENT_SESSION_RECLAIMED` event to the app.
 
 ### 42.2.8 DRM Event Propagation
@@ -8242,7 +8316,7 @@ The DRM HAL has gone through significant evolution:
 | AIDL V2 (current in 17) | AIDL | binder | Frozen; adds `ICryptoPlugin::getKeyHandle()` and the `KeyHandleResult` parcelable |
 
 The `versions_with_info` block in
-`hardware/interfaces/drm/aidl/Android.bp` declares both V1 and V2, and the interface is
+`hardware/interfaces/drm/aidl/Android.bp` declares both V1 and V2. The interface is
 marked `frozen: true`, so Android 17 ships V2 as the highest frozen AIDL DRM HAL version.
 Section 42.8 covers exactly what V2 adds over V1 and how the framework version-gates the new
 method.
@@ -8283,7 +8357,7 @@ interface IDrmFactory {
 ```
 
 The `CryptoSchemes` return value tells the framework which UUIDs and content types the
-factory supports, along with the minimum and maximum security levels for each MIME type:
+factory supports. It also gives the minimum and maximum security levels for each MIME type:
 
 ```mermaid
 classDiagram
@@ -8454,8 +8528,8 @@ parcelable DecryptArgs {
 ```
 
 The `secure` flag in `DecryptArgs` controls whether the output goes to a normal shared
-memory buffer (`nonsecureMemory`) or to a secure buffer handle (`secureMemory`) that only
-the hardware compositor and secure video decoder can access.
+memory buffer (`nonsecureMemory`) or to a secure buffer handle (`secureMemory`). Only
+the hardware compositor and secure video decoder can access that handle.
 
 ### 42.3.5 IDrmPluginListener -- Asynchronous Events
 
@@ -8686,9 +8760,9 @@ graph TB
 
 ### 42.4.3 TEE Integration
 
-For L1 security, Widevine relies on OEMCrypto, a standardized interface that device
-manufacturers implement inside their Trusted Execution Environment (TEE) -- typically
-ARM TrustZone or similar hardware-isolated environment.
+For L1 security, Widevine relies on OEMCrypto, a standardized interface. Device
+manufacturers implement it inside their Trusted Execution Environment (TEE). The TEE is
+typically ARM TrustZone or a similar hardware-isolated environment.
 
 OEMCrypto provides:
 
@@ -8699,7 +8773,7 @@ OEMCrypto provides:
 3. **Content decryption**: AES-CTR or AES-CBC decryption of media samples happens entirely
    within the secure world.
 4. **Output protection enforcement**: The TEE verifies HDCP levels on display outputs
-   before allowing decrypted content to be rendered.
+   before it lets decrypted content be rendered.
 5. **Secure buffer management**: Decrypted video frames are written to secure memory
    regions that cannot be read by the normal-world CPU.
 
@@ -8738,8 +8812,9 @@ graph LR
 Widevine devices are provisioned in two ways:
 
 1. **Factory Provisioning**: During device manufacturing, a unique device certificate
-   (containing the device's RSA public key and attestation from Widevine) is burned into
-   the TEE's secure storage. This is the standard approach for L1 devices.
+   is burned into the TEE's secure storage. The certificate contains the device's RSA
+   public key and attestation from Widevine. This is the standard approach for L1
+   devices.
 
 2. **Online Provisioning**: If the device certificate is not present (or for L3 devices),
    the device can request provisioning at runtime. The `getProvisionRequest()` /
@@ -8770,8 +8845,8 @@ HdcpLevels getHdcpLevels();
 
 This returns both the currently negotiated HDCP level (depends on connected displays) and
 the maximum HDCP level the device supports. Content policies may require specific HDCP
-levels (e.g., HDCP 2.2 for 4K content), and the DRM plugin must enforce these requirements,
-returning `ERROR_DRM_INSUFFICIENT_OUTPUT_PROTECTION` if the requirements are not met.
+levels (e.g., HDCP 2.2 for 4K content). The DRM plugin must enforce these requirements.
+It returns `ERROR_DRM_INSUFFICIENT_OUTPUT_PROTECTION` if the requirements are not met.
 
 ### 42.4.7 Integration with MediaCodec
 
@@ -8785,9 +8860,9 @@ codec.configure(format, surface, mediaCrypto,
 ```
 
 This triggers the codec to allocate secure input and output buffers. The encrypted input
-is decrypted by the `ICryptoPlugin::decrypt()` call with `DecryptArgs.secure = true`, and
-the decrypted output goes directly to a secure buffer that only the hardware video decoder
-and display compositor can access.
+is decrypted by the `ICryptoPlugin::decrypt()` call with `DecryptArgs.secure = true`. The
+decrypted output goes directly to a secure buffer. Only the hardware video decoder and
+display compositor can access that buffer.
 
 ---
 
@@ -9422,12 +9497,12 @@ hardware paths:
 KeyHandleResult getKeyHandle(in byte[] keyId, in Mode mode);
 ```
 
-This resolves a key ID into an opaque handle (`KeyHandleResult.keyHandle`) that a fused
-secure decrypt-decode component can consume directly, instead of routing each sample through
-`decrypt()`. The handle can reference a pre-loaded key inside the TEE, avoiding repeated
-key-ID-to-key-material resolution. Because this method only exists from V2 of the AIDL HAL,
-the framework version-gates the call; Section 42.8 traces that gating and the full Android 17
-plumbing.
+This resolves a key ID into an opaque handle (`KeyHandleResult.keyHandle`). A fused
+secure decrypt-decode component can consume the handle directly, instead of routing each
+sample through `decrypt()`. The handle can reference a pre-loaded key inside the TEE, avoiding repeated
+key-ID-to-key-material resolution. This method only exists from V2 of the AIDL HAL, so
+the framework version-gates the call. Section 42.8 traces that gating and the full
+Android 17 plumbing.
 
 ---
 
@@ -9588,8 +9663,8 @@ status_t MediaDrmMetrics::GetSerializedMetrics(
 ### 42.7.5 DrmMetricsLogger -- MediaMetrics Integration
 
 The `DrmMetricsLogger` class (`frameworks/av/drm/libmediadrm/DrmMetricsLogger.cpp`) is a
-wrapper around `DrmHal` that intercepts every API call, captures timing and result codes,
-and reports them to the `MediaMetrics` service:
+wrapper around `DrmHal`. It intercepts every API call and captures timing and result
+codes. Then it reports them to the `MediaMetrics` service:
 
 ```cpp
 // Source: frameworks/av/drm/libmediadrm/DrmMetricsLogger.cpp
@@ -9767,10 +9842,11 @@ public int getErrorContext();   // Additional error context
 
 Android 17 does not change the shape of the DRM stack described above. The Java API,
 `libmediadrm`, the dual AIDL+HIDL routing, ClearKey, and the secure codec path all carry
-forward. What changed is the AIDL DRM HAL contract: the `android.hardware.drm` interface is
-now frozen at version 2, and the V2 delta over V1 is wired all the way through the framework.
-This section pins down exactly what is in V2, how the framework discovers it at runtime, and
-why it matters for the secure decode path.
+forward. What changed is the AIDL DRM HAL contract. The `android.hardware.drm` interface is
+now frozen at version 2. The V2 delta over V1 is wired all the way through the framework.
+
+This section shows exactly what is in V2. It also shows how the framework discovers V2 at
+runtime and why V2 matters for the secure decode path.
 
 ### 42.8.1 The AIDL DRM HAL Is Frozen at V2
 
@@ -9791,7 +9867,7 @@ aidl_interface {
 ```
 
 A matching `aidl_api/android.hardware.drm/2/` snapshot directory holds the frozen V2 ABI.
-`frozen: true` means the AIDL toolchain rejects any unversioned change to the interface; a
+`frozen: true` means the AIDL toolchain rejects any unversioned change to the interface. A
 new method or field would have to land as a future V3. The convenience default in the same
 build file pins the NDK link target to V2:
 
@@ -9805,8 +9881,9 @@ cc_defaults {
 
 ### 42.8.2 What V2 Adds Over V1
 
-Comparing the two frozen snapshots shows the V2 delta is small and surgical. It is confined
-to `ICryptoPlugin`: a single new method, plus one new parcelable that the method returns.
+A comparison of the two frozen snapshots shows that the V2 delta is small and surgical. It
+is confined to `ICryptoPlugin`. It has a single new method, plus one new parcelable that the
+method returns.
 
 ```
 // Source: hardware/interfaces/drm/aidl/android/hardware/drm/ICryptoPlugin.aidl
@@ -9826,17 +9903,19 @@ parcelable KeyHandleResult {
 
 The V1 `aidl_api` snapshot of `ICryptoPlugin` has the original six methods (`decrypt`,
 `getLogMessages`, `notifyResolution`, `requiresSecureDecoderComponent`,
-`setMediaDrmSession`, `setSharedBufferBase`). V2 adds `getKeyHandle()` as a seventh, and the
+`setMediaDrmSession`, `setSharedBufferBase`). V2 adds `getKeyHandle()` as a seventh. The
 `KeyHandleResult.aidl` file only exists from version 2 onward (its header carries a 2025
 copyright). No other interface (`IDrmFactory`, `IDrmPlugin`, `IDrmPluginListener`) changed
 between V1 and V2.
 
 The purpose of `getKeyHandle()` is the combined decrypt-and-decode hardware path. Its
 contract notes that the returned handle "is used by components that perform decryption and
-decoding in the same step." Instead of calling `decrypt()` for every sample and handing the
-decrypted bytes to a separate decoder, a fused secure component can resolve the key once into
-an opaque handle and then drive a single hardware operation that both decrypts and decodes,
-keeping the content in protected memory throughout.
+decoding in the same step." Without this method, `decrypt()` is called for every
+sample and the decrypted bytes are handed to a separate decoder.
+
+With it, a fused secure component
+can resolve the key once into an opaque handle. The component then drives a single hardware
+operation that both decrypts and decodes. The content stays in protected memory throughout.
 
 ### 42.8.3 Runtime Version Gating in the Framework
 
@@ -9859,8 +9938,8 @@ DrmStatus CryptoHal::getKeyHandle(const uint8_t key[16], CryptoPlugin::Mode mode
 }
 ```
 
-The AIDL backend queries the plugin's reported interface version and refuses the call if the
-plugin only implements V1, returning `ERROR_UNSUPPORTED` rather than crossing a Binder call
+The AIDL backend queries the plugin's reported interface version. It refuses the call if the
+plugin only implements V1, and it returns `ERROR_UNSUPPORTED`. This avoids a Binder call that
 the plugin cannot satisfy:
 
 ```cpp
@@ -9871,11 +9950,11 @@ if (mPlugin->getInterfaceVersion(&version).isOk() && version < 2) {
 }
 ```
 
-Before reaching the plugin, `CryptoHalAidl::getKeyHandle()` runs the same subsample and
-buffer-bounds validation as `decrypt()` does, using `__builtin_add_overflow` to reject
-integer-overflowing subsample sizes and to confirm the sample fits inside the source buffer.
-It then forwards a 16-byte key ID and the cipher mode to the plugin and copies out the opaque
-handle:
+Before it reaches the plugin, `CryptoHalAidl::getKeyHandle()` runs the same subsample and
+buffer-bounds validation as `decrypt()` does. It uses `__builtin_add_overflow` to reject
+integer-overflowing subsample sizes and to confirm that the sample fits inside the source
+buffer. It then forwards a 16-byte key ID and the cipher mode to the plugin and copies out the
+opaque handle:
 
 ```cpp
 // Source: frameworks/av/drm/libmediadrm/CryptoHalAidl.cpp
@@ -9890,11 +9969,12 @@ keyHandle = toVector(result.keyHandle);
 
 The handle path is driven from the codec buffer channel. `CCodecBufferChannel` calls
 `mCrypto->getKeyHandle()` in its encrypted-buffer paths only when its
-`mSendEncryptionKeyHandle` flag is set -- a static, configure-time decision: the flag is
+`mSendEncryptionKeyHandle` flag is set. This is a static, configure-time decision. The flag is
 set when the Codec2 component advertises the `C2StreamEncryptionKeyInfo::input` parameter
 and the `com.android.media.codec.flags.decrypt_and_decode_in_hal` aconfig flag is enabled.
+
 If `getKeyHandle()` fails, the buffer channel logs the error and propagates the status to
-its caller; there is no fallback to the per-sample `decrypt()` flow:
+its caller. There is no fallback to the per-sample `decrypt()` flow:
 
 ```cpp
 // Source: frameworks/av/media/codec2/sfplugin/CCodecBufferChannel.cpp
@@ -9930,8 +10010,8 @@ sequenceDiagram
     end
 ```
 
-The AOSP reference ClearKey plugin does implement the V2 method, but since it is a
-software-only plugin with no fused secure decode-decrypt block, it simply declines:
+The AOSP reference ClearKey plugin does implement the V2 method. It is a software-only
+plugin with no fused secure decode-decrypt block, so it simply declines:
 
 ```cpp
 // Source: frameworks/av/drm/mediadrm/plugins/clearkey/aidl/CryptoPlugin.cpp
@@ -9942,15 +10022,17 @@ software-only plugin with no fused secure decode-decrypt block, it simply declin
 }
 ```
 
-In practice a scheme like ClearKey never reaches this stub through the codec path: the
+In practice a scheme like ClearKey never reaches this stub through the codec path. The
 key-handle route is selected up front from the codec component's advertised parameters
-(`mSendEncryptionKeyHandle`), and the software decoders used with an L3-only scheme do
-not advertise `C2StreamEncryptionKeyInfo::input`, so the buffer channel uses the per-sample
-`decrypt()` path from the start. And if the key-handle path *is* entered and
-`getKeyHandle()` fails -- as it would with ClearKey's `ERROR_DRM_CANNOT_HANDLE` -- the
-buffer channel returns the error to its caller rather than silently retrying with
-`decrypt()`. The key-handle fast path is an opt-in for fused hardware decrypt-decode
-stacks (Widevine L1 class hardware), not a new requirement for every plugin.
+(`mSendEncryptionKeyHandle`). The software decoders used with an L3-only scheme do
+not advertise `C2StreamEncryptionKeyInfo::input`. So the buffer channel uses the per-sample
+`decrypt()` path from the start.
+
+If the key-handle path *is* entered and
+`getKeyHandle()` fails, the buffer channel returns the error to its caller. It does not
+silently retry with `decrypt()`. ClearKey's `ERROR_DRM_CANNOT_HANDLE` would cause such a
+failure. The key-handle fast path is an opt-in for fused hardware decrypt-decode
+stacks (Widevine L1 class hardware). It is not a new requirement for every plugin.
 
 ---
 
@@ -10335,32 +10417,38 @@ demands of content protection, device diversity, and application simplicity.
 
 Android has always isolated untrusted native code with the heaviest tool it
 owns: a separate process. The software media codecs are the canonical example.
-Because a malformed audio or video frame can drive a buffer overflow in a C
-decoder, AOSP runs the software codecs in their own hardened APEX process
-(`com.android.media.swcodec`), reached over Binder, so that a memory-corruption
-bug in `libopus` or an AAC decoder cannot reach into the app or the media
-server. The isolation is real, but it is not free: every decoded frame crosses a
-process boundary, buffers are shared through ashmem and Binder, and a whole
+A malformed audio or video frame can drive a buffer overflow in a C decoder.
+So AOSP runs the software codecs in their own hardened APEX process
+(`com.android.media.swcodec`), reached over Binder. A memory-corruption
+bug in `libopus` or an AAC decoder then cannot reach into the app or the media
+server.
+
+The isolation is real, but it is not free. Every decoded frame crosses a
+process boundary. Buffers are shared through ashmem and Binder. A whole
 process must be spawned, scheduled, and kept warm.
 
 Android 17 adds a second, much lighter isolation primitive: **Lightweight Fault
 Isolation (LFI)**. LFI confines an untrusted native library's memory accesses and
-control flow to a reserved region of *its own host process's* address space,
-enforced by machine code that a verifier has proven cannot escape that region.
-The untrusted decoder runs in-process, but it provably cannot read or write
-outside its sandbox, cannot jump to code outside it, and cannot make raw
+control flow to a reserved region of *its own host process's* address space.
+Machine code enforces this, and a verifier has proven that this code cannot
+escape the region.
+
+The untrusted decoder runs in-process. It provably cannot read or write
+outside its sandbox, jump to code outside it, or make raw
 syscalls. There is no second process, no Binder hop, and no buffer copy across an
-address-space boundary, yet a memory-safety bug in the decoder stays inside the
+address-space boundary. Yet a memory-safety bug in the decoder stays inside the
 sandbox.
 
 The first production consumer is exactly the case that motivated swcodec in the
-first place: a software Opus decoder running inside the media APEX, sandboxed by
-LFI instead of (or alongside) the separate-process model. This chapter explains
-what LFI is and the threat model it serves, the verifier/runtime/binding split
-between the in-tree glue (`system/lfi`) and the external toolchain
-(`external/lfi`), how a sandboxed codec is compiled and loaded, the Soong LFI
-toolchain that builds it, and the security tradeoffs of pulling untrusted code
-back into the process it used to be isolated from.
+first place. It is a software Opus decoder that runs inside the media APEX.
+LFI sandboxes it instead of (or alongside) the separate-process model.
+
+This chapter explains what LFI is and the threat model it serves. It describes
+the verifier/runtime/binding split between the in-tree glue (`system/lfi`) and
+the external toolchain (`external/lfi`). It shows how a sandboxed codec is
+compiled and loaded, and the Soong LFI toolchain that builds it. It also covers
+the security tradeoffs when untrusted code moves back into the process that it
+used to be isolated from.
 
 ---
 
@@ -10368,14 +10456,16 @@ back into the process it used to be isolated from.
 
 ### 43.1.1 Software fault isolation, modernized
 
-LFI is a software-fault-isolation (SFI) scheme: the idea that you can run
-untrusted machine code safely in your own address space if every memory access
-and every control transfer it makes is constrained to a sandbox region by the
-*instructions themselves*. Classic SFI (Google Native Client and its
-predecessors) achieved this by masking the high bits of every address before a
-load, store, or jump, so a sandboxed pointer could never name memory outside a
+LFI is a software-fault-isolation (SFI) scheme. The idea is that you can run
+untrusted machine code safely in your own address space. This works if the
+*instructions themselves* constrain every memory access and every control
+transfer that the code makes to a sandbox region.
+
+Classic SFI (Google Native
+Client and its predecessors) masked the high bits of every address before a
+load, store, or jump. A sandboxed pointer could then never name memory outside a
 power-of-two-aligned region. LFI is the modern, research-grade descendant of that
-line of work; `system/lfi/README.md` points readers at the Stanford LFI paper and
+line of work. `system/lfi/README.md` points readers at the Stanford LFI paper and
 the LLVM LFI documentation as background.
 
 The key property is that safety does not depend on trusting the untrusted code.
@@ -10385,7 +10475,7 @@ It depends on two things the platform *does* trust:
    addresses, restricted control flow, a reserved register holding the sandbox
    base), and
 2. A **verifier** that re-checks the finished binary instruction by instruction
-   and refuses to load anything that could escape — so even a malicious or
+   and refuses to load anything that could escape. So even a malicious or
    miscompiled library cannot get past the gate.
 
 Because the guarantee is re-established by the verifier at load time, the threat
@@ -10399,20 +10489,22 @@ media swcodec process and, by extension, the buffers and credentials it holds.
 The adversary is a malformed media bitstream that triggers undefined behavior
 (out-of-bounds read/write, use-after-free, type confusion) inside an untrusted C
 decoder. Without LFI the platform's only structural answer is to put that decoder
-in a different process so the blast radius of a corruption bug is one sacrificial
-process. LFI offers a different containment boundary: the decoder runs in-process,
-but the verified machine code guarantees it can only touch its sandbox region,
-can only transfer control to verified targets inside the sandbox, and cannot
-issue arbitrary syscalls — every "syscall" becomes a call back into a trusted
-runtime that decides what to allow.
+in a different process. Then the blast radius of a corruption bug is one
+sacrificial process.
+
+LFI offers a different containment boundary. The decoder runs in-process,
+but the verified machine code guarantees three things. It can only touch its
+sandbox region. It can only transfer control to verified targets inside the
+sandbox. It cannot issue arbitrary syscalls, because every "syscall" becomes a
+call back into a trusted runtime that decides what to allow.
 
 What LFI is *not* is a confidentiality boundary against side channels or a
 defense against logic bugs in the decoder's allowed behavior. It is a
 **memory-safety** boundary: it turns "this codec has a heap overflow" from a
-process-compromise primitive into a contained fault. The honest framing in the
-source reflects this — `MediaCodecInfo::getSecurityModel()` reports the LFI path
+process-compromise primitive into a contained fault. The source reflects
+this honestly. `MediaCodecInfo::getSecurityModel()` reports the LFI path
 as `SECURITY_MODEL_MEMORY_SAFE`, distinct from the `SECURITY_MODEL_SANDBOXED`
-(separate-process) model, rather than claiming the two are equivalent
+(separate-process) model. It does not claim that the two are equivalent
 (`frameworks/av/media/libmedia/MediaCodecInfo.cpp:199`).
 
 The diagram contrasts the two containment strategies for the same untrusted
@@ -10468,18 +10560,20 @@ lfiv_verify_riscv64(char *code, size_t size, uintptr_t addr, struct LFIVOptions 
 The `LFIVOptions` struct (`lfiv.h:12-26`) selects the sandbox model. There are two
 box types (`lfiv.h:7-10`): `LFI_BOX_FULL`, which constrains both loads and stores
 (and control flow), and `LFI_BOX_STORES`, a weaker stores-only mode. It can also
-reserve a **context register** (`ctxreg`, `lfiv.h:19-22`) — `x25` on arm64,
-`r15` on x64 — that the sandbox is forbidden to modify and may only use for
-64-bit loads/stores from the address it holds. The sandbox base lives in a
+reserve a **context register** (`ctxreg`, `lfiv.h:19-22`). This is `x25` on arm64
+and `r15` on x64. The sandbox is forbidden to modify it and may only use it for
+64-bit loads/stores from the address it holds.
+
+The sandbox base lives in a
 separate reserved register — `x27` on arm64 (`REG_BASE`,
 `external/lfi/lfi-verifier/src/arm64/verify.c:67`). The verifier links against
 the instruction decoders below to understand the bytes it is checking.
 
 **`lfi-runtime` (builds `liblfi`).** The runtime owns the sandbox at execution
-time. Per `external/lfi/lfi-runtime/README.md`, it splits into a `core` layer that
-reserves virtual address space, maps sandbox memory, and transfers control into
-and out of the sandbox, and a `linux` layer that provides a Linux emulation layer
-(host-call handling) on top of core. The core object model is three structs
+time. Per `external/lfi/lfi-runtime/README.md`, it splits into two layers. A
+`core` layer reserves virtual address space, maps sandbox memory, and transfers
+control into and out of the sandbox. A `linux` layer provides a Linux emulation
+layer (host-call handling) on top of core. The core object model is three structs
 documented in `external/lfi/lfi-runtime/core/include/lfi_core.h:16-28`:
 
 - `LFIEngine` — "tracks a large pool of virtual memory and manages the allocation
@@ -10491,29 +10585,35 @@ documented in `external/lfi/lfi-runtime/core/include/lfi_core.h:16-28`:
   context per sandbox thread.
 
 `LFIOptions` (`lfi_core.h:30-64`) carries the box size, a `stores_only` toggle
-that must agree with the verifier, and a deliberately scary `no_verify` flag whose
-comment marks it "(unsafe)" — verification is on by default and turning it off is
-the explicit opt-out.
+that must agree with the verifier, and a deliberately scary `no_verify` flag.
+The comment on that flag marks it "(unsafe)". Verification is on by default, and
+the explicit opt-out turns it off.
 
 **`lfi-bind` (a Go tool).** Sandboxed libraries are not called directly; the host
 calls into them through generated trampolines. `external/lfi/lfi-bind/README.md`
 describes the tool: "it generates routines to initialize the library sandbox, and
-trampolines for calling functions from the library." The workflow (README lines
-20-31) is: compile the library with the LFI compiler to a `.a`; relink it as a
-static-PIE against `boxrt` to produce a `.lfi` sandbox image; run `lfi-bind` over
-that image to emit an init file and a trampolines file; and compile those into the
-host. The generated header also defines the `LFI_CALL(fn, ...)` macro
-(`external/lfi/lfi-bind/embed/lib.h.in:164`) that the host uses to invoke a
-sandboxed function — you will see this macro all over the codec integration.
+trampolines for calling functions from the library."
 
-**`rlbox` and `rlbox-lfi`.** RLBox is a general-purpose sandboxing API: the host
-writes `tainted<T>` types so the compiler forces it to validate any value that
-crosses back out of the sandbox. `external/lfi/rlbox-lfi/README.md` describes the
+The workflow (README lines 20-31) has four steps. First, compile the library
+with the LFI compiler to a `.a`. Second, relink it as a static-PIE against
+`boxrt` to produce a `.lfi` sandbox image. Third, run `lfi-bind` over that image
+to emit an init file and a trampolines file. Fourth, compile those into the
+host.
+
+The generated header also defines the `LFI_CALL(fn, ...)` macro
+(`external/lfi/lfi-bind/embed/lib.h.in:164`) that the host uses to invoke a
+sandboxed function. You will see this macro all over the codec integration.
+
+**`rlbox` and `rlbox-lfi`.** RLBox is a general-purpose sandboxing API. The host
+writes `tainted<T>` types, so the compiler forces it to validate any value that
+crosses back out of the sandbox.
+
+`external/lfi/rlbox-lfi/README.md` describes the
 LFI plug-in as "integration with [the] RLBox sandboxing API to leverage the
 sandboxing from the LFI compiler." In AOSP this is a header-only library
-(`rlbox_lfi_headers`); it is the higher-level alternative to hand-written
-trampolines, available but not yet used by the first codec consumer — the Soong
-`lfi.use_rlbox` property is wired but rejected as "not supported yet"
+(`rlbox_lfi_headers`). It is the higher-level alternative to hand-written
+trampolines and is available, but the first codec consumer does not use it yet.
+The Soong `lfi.use_rlbox` property is wired but rejected as "not supported yet"
 (`build/soong/cc/lfi.go:90-91`).
 
 **`disarm` and `fadec`.** These are the instruction decoders the verifier depends
@@ -10531,24 +10631,25 @@ three pieces:
 - **`boxrt`** — "a set of runtime stub functions that get linked with the
   sandboxed library." This is the code that runs *inside* the sandbox to bootstrap
   it. Its minimal form (`system/lfi/boxrt/boxrt_minimal.c`) implements `abort`,
-  `lfi_brk`, and `lfi_pause` as raw `svc` syscalls and provides the
-  `_lfi_malloc`/`_lfi_free` family plus the `_lfi_ret` return sequence the
+  `lfi_brk`, and `lfi_pause` as raw `svc` syscalls. It also provides the
+  `_lfi_malloc`/`_lfi_free` family plus the `_lfi_ret` return sequence that the
   trampolines need.
 - **`allocator`** — "a thread-safe minimal allocator that utilizes spinlocks"
   (`system/lfi/allocator/alloc.c`). The sandbox has no system libc, so it needs its
-  own heap; this implicit-free-list allocator obtains memory through `lfi_brk` and
+  own heap. This implicit-free-list allocator gets memory through `lfi_brk` and
   guards it with an atomic spinlock.
 - **`relocator`** — "a minimal loader that does relocations for `-static-pie`
   that is necessary for lfi-bind" (`system/lfi/relocator/relocate.c` plus the
-  architecture entry stub `system/lfi/relocator/start.S`). Because the sandbox
-  image is a static-PIE, something must apply its `R_*_RELATIVE` relocations on
-  load before any sandbox code runs; the relocator does exactly that and then
+  architecture entry stub `system/lfi/relocator/start.S`). The sandbox
+  image is a static-PIE. So something must apply its `R_*_RELATIVE` relocations on
+  load, before any sandbox code runs. The relocator does exactly that and then
   jumps to the sandbox's `runtime_main`.
 
 These three combine into the runtime image baked into the sandbox library. The
 verifier (a trusted host component) and `boxrt`/`allocator`/`relocator` (untrusted
-sandbox-side code) are on opposite sides of the trust boundary even though they
-ship in adjacent repos — the in-sandbox glue is itself verified before it runs.
+sandbox-side code) are on opposite sides of the trust boundary.
+They ship in adjacent repos, but they are still on opposite sides. The in-sandbox glue is itself verified before it
+runs.
 
 This division of labor is summarized below.
 
@@ -10583,9 +10684,9 @@ per-module opt-in.
 
 Soong models LFI as a distinct toolchain selected alongside the OS and
 architecture. `build/soong/cc/config/toolchain.go` keys its toolchain-factory map
-on `[os][arch][lfi]`, with `registerLFIToolchainFactory` registering the `lfi=true`
-slot, and the `Toolchain` interface exposes an `Lfi() bool` method so the rest of
-Soong can ask whether a variant is being built for LFI.
+on `[os][arch][lfi]`. `registerLFIToolchainFactory` registers the `lfi=true`
+slot. The `Toolchain` interface exposes an `Lfi() bool` method, so the rest of
+Soong can ask whether a variant is built for LFI.
 
 The arm64 LFI toolchain itself lives in
 `build/soong/cc/config/arm64_lfi_device.go`. It is a thin specialization of the
@@ -10603,8 +10704,8 @@ func (t *toolchainLFIArm64) Cflags() string {
 }
 ```
 
-The `aarch64_lfi-...` triple is what drives clang's LFI assembly-rewriting pass —
-the reserved context register and masked memory accesses come from the compiler,
+The `aarch64_lfi-...` triple is what drives clang's LFI assembly-rewriting pass.
+The reserved context register and masked memory accesses come from the compiler,
 not from Soong flags. The factory also forces `armv8-a`/`cortex-a53` with
 `branchprot`, because, as the comment notes, "that's all the lfi compiler supports
 for now" (`arm64_lfi_device.go:69-77`). Only arm64 device is registered
@@ -10638,12 +10739,12 @@ func (lfi *Lfi) begin(ctx BaseModuleContext) {
 	}
 ```
 
-Enabling LFI on a binary then propagates down its static-dependency graph: a
-`lfiTransitionMutator` (`build/soong/cc/lfi.go:149-255`) creates an
+When LFI is enabled on a binary, it then propagates down its static-dependency graph.
+A `lfiTransitionMutator` (`build/soong/cc/lfi.go:149-255`) creates an
 `lfi_stores_and_loads` (or `lfi_stores_only`) variant of every static dependency
-of an LFI binary, so the whole transitive closure is recompiled with the LFI
+of an LFI binary. So the whole transitive closure is recompiled with the LFI
 toolchain. That is why the C library and math library need LFI builds of their
-own: `libc_lfi` (`bionic/libc/Android.bp`) and `libm_lfi`
+own. `libc_lfi` (`bionic/libc/Android.bp`) and `libm_lfi`
 (`bionic/libm/Android.bp`) are arm64-only, `stl: "none"`,
 `lfi_supported: true` static libraries restricted to the swcodec APEX
 (`libc_lfi` also sets `nocrt: true`). A sandboxed
@@ -10679,12 +10780,13 @@ cc_defaults {
 }
 ```
 
-Everything here follows from the sandbox model: `stl: "none"` and
-`system_shared_libs: []` because the sandbox has no normal C++ or system
-libraries; `nocrt: true` because `boxrt`/`relocator` supply startup, not the
-ordinary CRT; `libc_lfi`/`libm_lfi` as the only libraries; arm64-only; and
-`apex_available` restricted to `com.android.media.swcodec`, which both documents
-and enforces that the first production scope is exactly the software codec APEX.
+Everything here follows from the sandbox model. `stl: "none"` and
+`system_shared_libs: []` are there because the sandbox has no normal C++ or system
+libraries. `nocrt: true` is there because `boxrt`/`relocator` supply startup, not
+the ordinary CRT. `libc_lfi`/`libm_lfi` are the only libraries, and the defaults
+are arm64-only. `apex_available` is restricted to `com.android.media.swcodec`,
+which both documents and enforces that the first production scope is exactly the
+software codec APEX.
 
 The end-to-end build pipeline for the Opus sandbox is the chain of all of the
 above.
@@ -10706,8 +10808,8 @@ flowchart TD
 ## 43.4 Loading and Running a Sandboxed Codec
 
 The runtime consumer is the media codec stack. The boundary across which a
-sandboxed codec is exposed is `libapexcodecs`; the switch that selects the
-in-process LFI path is the `in_process_sw_codec_lfi` aconfig flag; and the actual
+sandboxed codec is exposed is `libapexcodecs`. The switch that selects the
+in-process LFI path is the `in_process_sw_codec_lfi` aconfig flag. The actual
 sandboxed decoder is `C2ApexOpusDec`.
 
 ### 43.4.1 `libapexcodecs`: the C ABI boundary
@@ -10768,8 +10870,9 @@ int MediaCodecInfo::getSecurityModel() const {
 
 Second, it selects the buffer-mapping functions. When the flag is on, the codec2
 client swaps the default `::mmap`/`::munmap` for the sandbox-aware mapping
-functions so buffers are mapped inside the box — for output blocks in
-`allocOutputBuffer` (`frameworks/av/media/codec2/hal/client/client.cpp:1906-1914`)
+functions. Then buffers are mapped inside the box. This happens for output
+blocks in `allocOutputBuffer`
+(`frameworks/av/media/codec2/hal/client/client.cpp:1906-1914`)
 and for input const linear blocks in `fillMemory` (`:2031-2038`):
 
 ```cpp
@@ -10815,8 +10918,8 @@ bool ensure() {
 
 **Memory comes from inside the box.** Allocations that the decoder will touch use
 the sandbox heap, not the host heap. `LfiAlloc` is a RAII wrapper around the
-generated `libopus_lfi_bin_box_malloc`/`_free` (`C2ApexOpusDec.cpp:71-85`), and the
-mapping hooks the framework asked for in §43.4.2 forward to the box's own
+generated `libopus_lfi_bin_box_malloc`/`_free` (`C2ApexOpusDec.cpp:71-85`). The
+mapping hooks that the framework asked for in §43.4.2 forward to the box's own
 `mmap`/`munmap` (`C2ApexOpusDec.cpp:207-215`):
 
 ```cpp
@@ -10831,9 +10934,10 @@ int C2ApexOpusDec::Unmap(void *addr, size_t size) {
 ```
 
 **Every codec call crosses the trampoline.** The actual decode work invokes
-`libopus` only through the `LFI_CALL` macro, which routes the call through the
-generated trampoline into the sandbox and back — for example creating the decoder
-(`C2ApexOpusDec.cpp:360`) and decoding a frame (`:478`):
+`libopus` only through the `LFI_CALL` macro. This macro routes the call through the
+generated trampoline into the sandbox and back. Examples are the call that
+creates the decoder (`C2ApexOpusDec.cpp:360`) and the call that decodes a frame
+(`:478`):
 
 ```cpp
 // frameworks/av/media/module/libapexcodecs/C2ApexOpusDec.cpp:360, 478
@@ -10842,10 +10946,10 @@ mDecoder = LFI_CALL(opus_multistream_decoder_create, /* ...args... */);
 int numSamples = LFI_CALL(opus_multistream_decode, /* ...args... */);
 ```
 
-Because the decoder is reached only through `LFI_CALL` and only ever touches
-box-allocated, box-mapped memory, a corruption bug in `opus_multistream_decode`
-can scribble over the sandbox heap but cannot reach the host process's memory —
-and it cannot make a syscall, because the verifier guarantees the only way out is
+The decoder is reached only through `LFI_CALL`, and it only ever touches
+box-allocated, box-mapped memory. So a corruption bug in `opus_multistream_decode`
+can scribble over the sandbox heap but cannot reach the host process's memory.
+It also cannot make a syscall. This is because the verifier guarantees that the only way out is
 back through the runtime's host-call handler.
 
 The end-to-end runtime flow is below.
@@ -10880,10 +10984,12 @@ LFI changes the shape of the isolation problem rather than strictly improving it
 and the tradeoffs are worth being precise about.
 
 **What you gain.** The decoder runs in-process, so there is no Binder round trip
-and no cross-process buffer plumbing for every frame — lower latency and less
-overhead than the separate-process model. The memory-safety guarantee does not
-depend on trusting the decoder or even the compiler, because the verifier
-re-checks the finished binary and rejects anything unsafe; the trusted computing
+and no cross-process buffer plumbing for every frame. This gives lower latency
+and less overhead than the separate-process model.
+
+The memory-safety guarantee does not
+depend on trusting the decoder or even the compiler. This is because the verifier
+re-checks the finished binary and rejects anything unsafe. The trusted computing
 base for the guarantee is the small verifier plus the runtime, not the large
 untrusted library. And the boundary is fine-grained: each sandboxed library gets
 its own `LFIBox`.
@@ -10896,24 +11002,27 @@ enforced by verified code in the *same* address space. It does not by itself sto
 side-channel leakage, and its correctness rests on the verifier being right about
 every instruction form. That is precisely why the platform models the LFI codec as
 `SECURITY_MODEL_MEMORY_SAFE` and not as the same thing as
-`SECURITY_MODEL_SANDBOXED` (`frameworks/av/media/libmedia/MediaCodecInfo.cpp:199`):
-they are different guarantees, surfaced to callers as different models.
+`SECURITY_MODEL_SANDBOXED` (`frameworks/av/media/libmedia/MediaCodecInfo.cpp:199`).
+They are different guarantees, and the platform shows them to callers as
+different models.
 
 **Why the scope is deliberately small in 17.** Several signals in the source say
-"new and constrained": LFI is arm64-device-only in Soong
-(`build/soong/cc/lfi.go:79`), `system_lfi_defaults` is `apex_available` only to
-`com.android.media.swcodec` (`system/lfi/Android.bp:39-41`), the whole runtime path
+"new and constrained". LFI is arm64-device-only in Soong
+(`build/soong/cc/lfi.go:79`). `system_lfi_defaults` is `apex_available` only to
+`com.android.media.swcodec` (`system/lfi/Android.bp:39-41`). The whole runtime path
 is behind the `in_process_sw_codec_lfi` aconfig flag
-(`frameworks/av/media/aconfig/codec_fwk.aconfig:153`), and the weaker
+(`frameworks/av/media/aconfig/codec_fwk.aconfig:153`). The weaker
 stores-only and RLBox modes are parsed but rejected as "not supported yet"
-(`build/soong/cc/lfi.go:88-91`). The first consumer is a single audio decoder.
-This is the conservative way to introduce a new isolation primitive: prove it on
-one well-bounded, attacker-reachable component (a software codec, the historic
-source of media CVEs) before widening it.
+(`build/soong/cc/lfi.go:88-91`).
 
-The honest summary is that LFI is not a replacement for process isolation; it is a
-second, lighter tool that gives memory safety for untrusted native code where a
-whole extra process would be too expensive, with a small verified TCB carrying the
+The first consumer is a single audio decoder.
+This is the conservative way to introduce a new isolation primitive. First prove
+it on one well-bounded, attacker-reachable component (a software codec, the
+historic source of media CVEs). Widen it only after that.
+
+The honest summary is that LFI is not a replacement for process isolation. It is a
+second, lighter tool. It gives memory safety for untrusted native code where a
+whole extra process would be too expensive. A small verified TCB carries the
 guarantee.
 
 ## 43.6 Try It
@@ -10979,7 +11088,7 @@ checkout.
 
 - **LFI is software fault isolation for untrusted native code.** It confines a
   library's memory accesses and control flow to a reserved region of its host
-  process via verified machine code, giving a memory-safety boundary without a
+  process via verified machine code. This gives a memory-safety boundary without a
   separate process. Android 17 adds it as a second, lighter isolation primitive
   alongside the classic separate-process sandbox.
 - **The threat model is memory safety, not full process isolation.** The asset is
@@ -10988,25 +11097,26 @@ checkout.
   `SECURITY_MODEL_MEMORY_SAFE`, separate from the separate-process
   `SECURITY_MODEL_SANDBOXED`.
 - **Verifier, runtime, and binding split across two trees.** `external/lfi`
-  vendors the toolchain — `lfi-verifier` (the trusted root that rejects
-  unsafe instructions), `lfi-runtime`/`liblfi` (reserves/maps the box and handles
-  host calls), `lfi-bind` (generates init + `LFI_CALL` trampolines), `rlbox`/
+  vendors the toolchain. It has `lfi-verifier` (the trusted root that rejects
+  unsafe instructions) and `lfi-runtime`/`liblfi` (reserves/maps the box and
+  handles host calls). It also has `lfi-bind` (generates init + `LFI_CALL`
+  trampolines), `rlbox`/
   `rlbox-lfi` (a higher-level API, not yet used), and the `disarm`/`fadec`
   decoders. `system/lfi` adds the in-sandbox glue: `boxrt`, a spinlock
   `allocator`, and a static-PIE `relocator`.
 - **Soong has an LFI cross-toolchain.** An `aarch64_lfi` clang triple drives the
-  rewriting pass; modules opt in with `lfi_supported`/`lfi: { enabled }`; a
+  rewriting pass. Modules opt in with `lfi_supported`/`lfi: { enabled }`. A
   transition mutator recompiles the whole static-dependency closure (hence
-  `libc_lfi`/`libm_lfi`); and `system_lfi_defaults` packages the common settings,
+  `libc_lfi`/`libm_lfi`). `system_lfi_defaults` packages the common settings,
   scoped to the swcodec APEX and arm64.
 - **The first consumer is a sandboxed software Opus decoder.** `libapexcodecs`
-  is the C ABI boundary; `ApexCodec_GetMapFn`/`GetUnmapFn` map buffers inside the
-  box; `C2ApexOpusDec` initializes the sandbox once, allocates and maps from the
-  box, and calls `libopus` only through `LFI_CALL` trampolines — all gated by the
-  `in_process_sw_codec_lfi` flag.
+  is the C ABI boundary. `ApexCodec_GetMapFn`/`GetUnmapFn` map buffers inside the
+  box. `C2ApexOpusDec` initializes the sandbox once, allocates and maps from the
+  box, and calls `libopus` only through `LFI_CALL` trampolines. The
+  `in_process_sw_codec_lfi` flag gates all of this.
 - **The tradeoff is a narrower guarantee for much lower cost.** LFI buys
   in-process memory safety with a small verified TCB, but it is not a substitute
-  for the coarse, kernel-enforced barrier of a separate process; 17 keeps it
+  for the coarse, kernel-enforced barrier of a separate process. In 17 it stays
   deliberately scoped to one decoder behind a flag.
 
 ### Key Source Files Reference

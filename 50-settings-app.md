@@ -1,12 +1,13 @@
 # Chapter 50: Settings App
 
 The Settings app is the primary user-facing interface for configuring an Android
-device.  What appears to be a single monolithic application is in reality a
+device.  It looks like a single monolithic application.  In reality it is a
 carefully layered system of activities, fragments, preference controllers,
-content providers, and search indexers -- all working together to present hundreds
-of configurable options in a discoverable, searchable, and extensible manner.
+content providers, and search indexers.  These parts work together to present
+hundreds of configurable options in a discoverable, searchable, and extensible
+manner.
 This chapter dissects the architecture of `packages/apps/Settings/` and its
-companion service `frameworks/base/packages/SettingsProvider/`, tracing every
+companion service `frameworks/base/packages/SettingsProvider/`.  It traces every
 layer from the homepage dashboard down to the persistent key-value store that
 backs `Settings.System`, `Settings.Secure`, and `Settings.Global`.
 
@@ -31,7 +32,7 @@ packages/apps/Settings/
   proguard.flags          # R8 keep rules
 ```
 
-The `src/com/android/settings/` directory is organised into feature packages
+The `src/com/android/settings/` directory is organized into feature packages
 that mirror the top-level categories a user sees:
 
 | Package | Purpose |
@@ -63,10 +64,10 @@ that mirror the top-level categories a user sees:
 | `overlay/` | FeatureFactory for OEM customisation |
 | `spa/` | Settings Page Architecture (Compose-based UI, predates Catalyst) |
 
-In Android 17 a fourth presentation layer joins the activity/fragment, dashboard
-tile, and SPA Compose stacks: **Catalyst**, a declarative `*Screen.kt`
+In Android 17 a fourth presentation layer joins the activity/fragment,
+dashboard tile, and SPA Compose stacks.  It is **Catalyst**, a declarative `*Screen.kt`
 preference model annotated with `@ProvidePreferenceScreen`.  Roughly 230 screens
-have been migrated to it, and the same metadata also feeds the new AppFunctions
+have been migrated to it.  The same metadata also feeds the new AppFunctions
 "device state" surface that lets on-device agents read and drive Settings (§50.14).
 
 The total source tree contains well over 1,000 Java/Kotlin files -- making the
@@ -75,8 +76,8 @@ Settings app one of the largest applications in AOSP.
 ### 50.1.2 Class Hierarchy Overview
 
 The following diagram shows the inheritance chain from the Android framework's
-`FragmentActivity` all the way down to a concrete settings page such as
-`TopLevelSettings` (the homepage) or `DevelopmentSettingsDashboardFragment`
+`FragmentActivity` down to a concrete settings page.  Two examples are
+`TopLevelSettings` (the homepage) and `DevelopmentSettingsDashboardFragment`
 (Developer Options):
 
 ```mermaid
@@ -158,7 +159,7 @@ performs several critical setup tasks during `onCreate()`:
     super.setContentView(resId);
     ```
 
-3. **CategoryMixin**: Initialises `CategoryMixin`, which manages dashboard
+3. **CategoryMixin**: Initializes `CategoryMixin`, which manages dashboard
    category change notifications across the activity lifecycle.
 
 4. **Overlay protection**: Adds `HideNonSystemOverlayMixin` to the lifecycle
@@ -554,7 +555,7 @@ The top-level Settings screen is displayed by `TopLevelSettings`, which extends
 `DashboardFragment`.  Its XML layout is defined in
 `packages/apps/Settings/res/xml/top_level_settings.xml`.
 
-The homepage is organised into `PreferenceCategory` groups:
+The homepage is organized into `PreferenceCategory` groups:
 
 | Category | Tiles |
 |----------|-------|
@@ -719,7 +720,7 @@ public class DevelopmentSettingsDashboardFragment extends RestrictedDashboardFra
 ```
 
 The fragment manages a primary **master switch** (`SettingsMainSwitchBar`) at the
-top of the screen.  Toggling it on shows the enable-warning dialog;  toggling it
+top of the screen.  Toggling it on shows the enable-warning dialog.  Toggling it
 off either disables immediately or shows a reboot-required dialog if Bluetooth
 hardware offload settings have been changed.
 
@@ -729,7 +730,7 @@ The developer options page contains over 100 individual preferences, managed by
 dedicated `PreferenceController` classes in
 `packages/apps/Settings/src/com/android/settings/development/`.
 
-Here is a categorised overview of the most important options:
+Here is a categorized overview of the most important options:
 
 #### Debugging
 
@@ -891,13 +892,13 @@ Each writes to a `Settings.Global` development key:
 
 The two newer overrides do not use a plain on/off integer.  They store an
 `android.window.DesktopModeFlags.ToggleOverride` value -- `OVERRIDE_UNSET`,
-`OVERRIDE_OFF`, or `OVERRIDE_ON` -- so the toggle can express "leave the
+`OVERRIDE_OFF`, or `OVERRIDE_ON`.  So the toggle can express "leave the
 build default alone" as a distinct state from explicitly forcing the feature on
 or off.  `DesktopExperiencePreferenceController` reads `DesktopState` (from
 `com.android.wm.shell.shared.desktopmode`) to decide whether the toggle is even
-applicable, and because changing the desktop feature set requires reinitialising
-window-management state, it implements `RebootConfirmationDialogHost` and prompts
-for a reboot after the value changes.
+applicable.  A change to the desktop feature set requires reinitializing
+window-management state.  So the controller implements
+`RebootConfirmationDialogHost` and prompts for a reboot after the value changes.
 
 ---
 
@@ -907,7 +908,7 @@ for a reboot after the value changes.
 
 The `SettingsProvider` is a `ContentProvider` that serves as the persistent
 storage backend for all system settings.  It is one of the first providers
-initialised during boot and runs in the `system_server` process.
+initialized during boot and runs in the `system_server` process.
 
 **Source file**: `frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/SettingsProvider.java`
 
@@ -1095,7 +1096,7 @@ import android.provider.settings.validators.SystemSettingsValidators;
 import android.provider.settings.validators.Validator;
 ```
 
-For example, `SCREEN_BRIGHTNESS` is validated to ensure it falls within the
+For example, `SCREEN_BRIGHTNESS` is validated to make sure it falls within the
 hardware-supported range.  `Settings.Global` and `Settings.Secure` do not
 undergo validation because they are only writable by privileged callers.
 
@@ -1232,9 +1233,9 @@ public List<String> getNonIndexableKeys(Context context) {
 }
 ```
 
-The non-indexable key mechanism ensures that preferences which are currently
-unavailable (e.g., a USB debugging option when developer mode is off) are
-excluded from search results.  This is driven by each controller's
+The non-indexable key mechanism excludes preferences that are currently
+unavailable from search results. An example is a USB debugging option when
+developer mode is off.  This is driven by each controller's
 `getAvailabilityStatus()`:
 
 ```java
@@ -1366,13 +1367,13 @@ It provides:
 
 - `getSearchIndexableResources()` -- Returns the compile-time-generated registry
 - `getSettingsIntelligencePkgName()` -- Returns the package name of the search app
-- `initSearchToolbar()` -- Initialises the search bar on the homepage
+- `initSearchToolbar()` -- Initializes the search bar on the homepage
 - `buildSearchIntent()` -- Creates the intent to launch the search UI
 - `sendPreIndexIntent()` -- A hook the Settings app calls (for example after
-  enabling developer options) to let an OEM build kick off pre-indexing; the AOSP
+  enabling developer options) to let an OEM build start pre-indexing. The AOSP
   default implementation is an empty no-op
 
-The search toolbar is initialised on the homepage and triggers a transition to
+The search toolbar is initialized on the homepage and triggers a transition to
 the Settings Intelligence search activity:
 
 ```java
@@ -1424,8 +1425,8 @@ sequenceDiagram
 Everything above describes the Settings side of the contract: the annotations,
 the providers, and the keys Settings exports. The *consumer* is a separate APK,
 `packages/apps/SettingsIntelligence`, package name `com.android.settings.intelligence`.
-It owns the search UI, the search index database, and the suggestion backend, so
-the Settings app itself ships no search index and no suggestion ranking logic.
+It owns the search UI, the search index database, and the suggestion backend.
+So the Settings app itself ships no search index and no suggestion ranking logic.
 
 The app holds the `READ_SEARCH_INDEXABLES` permission and queries every provider
 that answers the `android.content.action.SEARCH_INDEXABLES_PROVIDER` intent, not
@@ -1464,10 +1465,11 @@ applies an incremental update.
 
 **Query path.** `SearchActivity` hosts `SearchFragment`, which dispatches each
 keystroke to a `SearchResultAggregator`. The aggregator fans the query out to
-several `SearchQueryTask` implementations in parallel: `DatabaseResultTask` runs
-the FTS4 match against `prefs_index`, while `InstalledAppResultTask`,
+several `SearchQueryTask` implementations in parallel. `DatabaseResultTask` runs
+the FTS4 match against `prefs_index`. `InstalledAppResultTask`,
 `InputDeviceResultTask`, and `AccessibilityServiceResultTask` add results that are
 not in the static index. Results merge, deduplicate, and rank before display.
+
 `SavedQueryController` records recent queries into the `saved_queries` table so the
 empty search screen can show recent searches.
 
@@ -1495,13 +1497,16 @@ Candidate suggestions come from `SuggestionParser` and are filtered by the
 runs them in order inside `initIsEligible()` (provider, connectivity, feature,
 account, already-dismissed, automotive) and caches the result; `isEligible()`
 simply returns that cached flag. Eligible candidates are then ordered by
-`SuggestionRanker`. The ranker turns each candidate into a feature vector
-via `SuggestionFeaturizer` and scores it with a fixed-weight linear function: a
-weighted sum (dot product) of features such as whether a suggestion was shown,
-dismissed, or clicked and how long ago. The weights are constants in a `WEIGHTS` map
-and the score is used directly as the sort key, with no sigmoid applied at runtime
-(the source comment notes the weights were fit offline by training a binary
-classifier). The features are persisted per-suggestion in `SuggestionEventStore`, and
+`SuggestionRanker`.
+
+The ranker turns each candidate into a feature vector
+via `SuggestionFeaturizer` and scores it with a fixed-weight linear function. The
+function is a weighted sum (dot product) of features such as whether a suggestion
+was shown, dismissed, or clicked and how long ago. The weights are constants in a
+`WEIGHTS` map. The score is used directly as the sort key. No sigmoid is applied at runtime. The
+source comment notes the weights were fit offline by training a binary classifier.
+
+The features are persisted per-suggestion in `SuggestionEventStore`, and
 dismissals and launches feed back through `onSuggestionDismissed` and
 `onSuggestionLaunched` so a dismissed suggestion stops resurfacing.
 
@@ -1515,8 +1520,8 @@ The Settings app has evolved through multiple design languages:
 
 - **Holo** (Android 4.x): Dark ActionBar with preference lists
 - **Material Design 1** (Android 5.x-8.x): White cards, CollapsingToolbar
-- **Material Design 2** (Android 9-11): Rounded corners, accent colours
-- **Material Design 3 / Material You** (Android 12+): Dynamic colour, large headlines
+- **Material Design 2** (Android 9-11): Rounded corners, accent colors
+- **Material Design 3 / Material You** (Android 12+): Dynamic color, large headlines
 - **Expressive Design** (Android 16+): New icon styles, enhanced typography
 
 The current theme is selected at runtime:
@@ -1559,8 +1564,8 @@ AndroidX `Preference` library:
 
 ### 50.6.3 Collapsing Toolbar
 
-Both the homepage and sub-pages use a collapsing toolbar that shows a large
-title when scrolled to the top and collapses into the action bar on scroll.
+Both the homepage and sub-pages use a collapsing toolbar. The toolbar shows a large
+title when scrolled to the top. It collapses into the action bar on scroll.
 
 The toolbar implementation lives in `settingslib`:
 
@@ -1571,7 +1576,7 @@ frameworks/base/packages/SettingsLib/CollapsingToolbarBaseActivity/
         FloatingToolbarHandler.kt
 ```
 
-The `SettingsBaseActivity` initialises the toolbar delegate in `onCreate()`:
+The `SettingsBaseActivity` initializes the toolbar delegate in `onCreate()`:
 
 ```java
 // SettingsBaseActivity.java
@@ -1584,8 +1589,8 @@ getToolbarDelegate().initCollapsingToolbar(mCollapsingToolbarLayout, mAppBarLayo
 ### 50.6.4 Two-Pane Layout for Large Screens
 
 On tablets and foldables, Settings uses **Activity Embedding** to show a
-two-pane layout: the homepage list on the left and the selected settings
-page on the right.
+two-pane layout. The homepage list is on the left and the selected settings
+page is on the right.
 
 The key classes for this are in `packages/apps/Settings/src/com/android/settings/activityembedding/`:
 
@@ -1622,14 +1627,14 @@ flowchart TD
     H --> I[User sees selected tile highlighted on left]
 ```
 
-When the activity is in two-pane mode, `SettingsActivity.shouldShowMultiPaneDeepLink()`
-detects deep link intents and redirects them through the homepage trampoline to
-ensure both panes are visible.
+In two-pane mode, `SettingsActivity.shouldShowMultiPaneDeepLink()`
+detects deep link intents and redirects them through the homepage trampoline.
+This makes sure both panes are visible.
 
 ### 50.6.5 Homepage Icon Colour Scheme
 
-In the expressive theme, homepage icons use a colour scheme system.  Each tile
-can declare an icon colour scheme in its metadata:
+In the expressive theme, homepage icons use a color scheme system.  Each tile
+can declare an icon color scheme in its metadata:
 
 ```java
 // DashboardFeatureProviderImpl.java
@@ -1649,7 +1654,7 @@ enum ColorScheme {
 ```
 
 The icon is rendered as an `AdaptiveIcon` with the foreground tinted and
-the background filled with the scheme's background colour.
+the background filled with the scheme's background color.
 
 ### 50.6.6 Setup Wizard Integration
 
@@ -1734,7 +1739,7 @@ Its core data structures:
 
 ### 50.7.2 Category Initialisation Flow
 
-Categories are lazily initialised on first access via `tryInitCategories()`:
+Categories are lazily initialized on first access via `tryInitCategories()`:
 
 ```java
 // CategoryManager.java
@@ -1895,9 +1900,9 @@ or an empty state message instead of the preference list.
 
 The `buildPreferenceControllers()` method in
 `DevelopmentSettingsDashboardFragment` creates over 100 controller instances.
-Here is a representative categorised sample of the controllers registered in
-the source (a handful of niche entries, such as `HdcpCheckingPreferenceController`
-and several `DefaultLaunchPreferenceController` instances, are omitted):
+Here is a representative categorized sample of the controllers registered in
+the source. (A handful of niche entries, such as `HdcpCheckingPreferenceController`
+and several `DefaultLaunchPreferenceController` instances, are omitted.)
 
 **Source file**: `packages/apps/Settings/src/com/android/settings/development/DevelopmentSettingsDashboardFragment.java` (lines 508-625)
 
@@ -1916,7 +1921,7 @@ and several `DefaultLaunchPreferenceController` instances, are omitted):
 
 #### Debug Tools
 - `AdbPreferenceController` -- USB debugging
-- `ClearAdbKeysPreferenceController` -- Revoke USB debug authorisations
+- `ClearAdbKeysPreferenceController` -- Revoke USB debug authorizations
 - `AdbWirelessDebuggingPreferenceController` -- Wireless debugging (ADB over Wi-Fi)
 - `AdbAuthorizationTimeoutPreferenceController` -- ADB auth timeout
 - `LocalTerminalPreferenceController` -- Enable local terminal app
@@ -1933,10 +1938,10 @@ and several `DefaultLaunchPreferenceController` instances, are omitted):
 - `ArtVerifierPreferenceController` -- ART bytecode verification
 
 #### Display and Rendering
-- `PictureColorModePreferenceController` -- Wide colour gamut
+- `PictureColorModePreferenceController` -- Wide color gamut
 - `WebViewAppPreferenceController` -- Choose WebView implementation
 - `WebViewDevUiPreferenceController` -- WebView developer tools
-- `CoolColorTemperaturePreferenceController` -- Cool colour temperature
+- `CoolColorTemperaturePreferenceController` -- Cool color temperature
 - `ForcePeakRefreshRatePreferenceController` -- Force highest refresh rate
 - `ShowTapsPreferenceController` -- Visual feedback for screen taps
 - `PointerLocationPreferenceController` -- Overlay with pointer coordinates
@@ -1959,12 +1964,12 @@ and several `DefaultLaunchPreferenceController` instances, are omitted):
 #### GPU Profiling
 - `GpuViewUpdatesPreferenceController` -- Flash views on GPU draw
 - `HardwareLayersUpdatesPreferenceController` -- Flash hardware layers
-- `DebugGpuOverdrawPreferenceController` -- Colour-code overdraw regions
+- `DebugGpuOverdrawPreferenceController` -- Color-code overdraw regions
 - `DebugNonRectClipOperationsPreferenceController` -- Non-rect clip debugging
 - `ForceDarkPreferenceController` -- Force dark mode on all apps
 - `ForceMSAAPreferenceController` -- Force 4x MSAA anti-aliasing
 - `HardwareOverlaysPreferenceController` -- Disable HW overlays
-- `SimulateColorSpacePreferenceController` -- Colour blindness simulation
+- `SimulateColorSpacePreferenceController` -- Color blindness simulation
 - `ProfileGpuRenderingPreferenceController` -- Profile GPU rendering bars
 - `GameDefaultFrameRatePreferenceController` -- Default game frame rate
 
@@ -1980,7 +1985,7 @@ and several `DefaultLaunchPreferenceController` instances, are omitted):
 #### Bluetooth
 
 Unlike the groups above, the Bluetooth developer controllers are *not* built by
-`DevelopmentSettingsDashboardFragment` -- its only Bluetooth entry is a
+`DevelopmentSettingsDashboardFragment`. Its only Bluetooth entry is a
 `DefaultLaunchPreferenceController` for the key `bluetooth_development_settings`,
 which launches a dedicated sub-page.  That sub-page's fragment,
 `BluetoothDevelopmentSettingsFragment`
@@ -2186,9 +2191,9 @@ app.  It is an abstract Kotlin class exposing a provider for each subsystem
 
 **Source file**: `packages/apps/Settings/src/com/android/settings/overlay/FeatureFactory.kt`
 
-OEMs override it by subclassing the application and returning a custom
-`FeatureFactory` from `getFeatureFactory()` -- there is no resource string or
-reflection involved (see 50.11.3).
+OEMs override it. They subclass the application and return a custom
+`FeatureFactory` from `getFeatureFactory()`. No resource string or
+reflection is involved (see 50.11.3).
 
 ### 50.11.2 Available Providers
 
@@ -2244,8 +2249,8 @@ protected FeatureFactory getFeatureFactory() {
 }
 ```
 
-To customise Settings, an OEM subclasses `SettingsApplication` and overrides
-`getFeatureFactory()` to return its own `FeatureFactoryImpl` subclass; the
+To customize Settings, an OEM subclasses `SettingsApplication` and overrides
+`getFeatureFactory()` to return its own `FeatureFactoryImpl` subclass. The
 chosen instance is what `FeatureFactory.getFeatureFactory()` returns everywhere
 else in the app.
 
@@ -2363,8 +2368,8 @@ This pattern means that:
 
 The Settings app's own top-level rows do *not* come from manifest tile
 injection -- they are declared statically in `res/xml/top_level_settings.xml`.
-The manifest-based tile mechanism is primarily how *other* apps inject entries,
-but Settings does use it for one of its own screens: the backup settings
+The manifest-based tile mechanism is primarily how *other* apps inject entries.
+Settings does use it for one of its own screens. The backup settings
 activity marks itself as a dynamic tile with the `IA_SETTINGS` action:
 
 ```xml
@@ -2393,19 +2398,22 @@ The `order` metadata controls the position within the category.
 
 AOSP is migrating Settings pages off the traditional `DashboardFragment` + XML
 approach onto a declarative architecture called **Catalyst**.  Catalyst is the
-successor to the earlier Compose-based SPA (Settings Page Architecture); both
-still ship, but in Android 17 Catalyst is where the active migration happens.
-The migration is gated by `com.android.settings.flags.catalyst` (the master
-switch checked in `SettingsApplication.onCreate()`) and a rolling per-quarter
-flag such as `catalystMigration26q2`, so a given screen renders through Catalyst
-only when its own feature flag is enabled.
+successor to the earlier Compose-based SPA (Settings Page Architecture). Both
+still ship, but in Android 17 the active migration happens in Catalyst.
 
-Instead of declaring a screen as an XML `PreferenceScreen` plus a set of
-imperative `BasePreferenceController` subclasses, Catalyst declares the screen as
-a single Kotlin class annotated with `@ProvidePreferenceScreen` that *describes*
-its preference hierarchy and implements small provider interfaces for the
-behaviours it needs (availability, summary, indexing, lifecycle).  By Android 17
-roughly 230 of these `*Screen.kt` classes exist across the tree.  The model buys:
+The migration is gated by two flags. The first is
+`com.android.settings.flags.catalyst` (the master
+switch checked in `SettingsApplication.onCreate()`). The second is a rolling
+per-quarter flag such as `catalystMigration26q2`. A given screen renders through
+Catalyst only when its own feature flag is enabled.
+
+Old screens use an XML `PreferenceScreen` plus a set of
+imperative `BasePreferenceController` subclasses. Catalyst instead declares the
+screen as a single Kotlin class annotated with `@ProvidePreferenceScreen`. The
+class *describes* its preference hierarchy. It also implements small provider
+interfaces for the behaviors it needs (availability, summary, indexing,
+lifecycle).  By Android 17 roughly 230 of these `*Screen.kt` classes exist
+across the tree.  The model buys:
 
 - Type-safe preference definitions instead of string-keyed XML
 - A single declarative source of truth for UI, search index, and the
@@ -2503,8 +2511,8 @@ open class CatalystFragment : DashboardFragment() {
 A screen rarely flips to Catalyst all at once.  In **hybrid mode** the preference
 hierarchy is still inflated from XML, but the preference *metadata* (titles,
 summaries, indexing) comes from the Catalyst `Screen`.  `DashboardFragment` keys
-this off `isCatalystEnabled()` and, when hybrid, drops any legacy controller
-whose key is already owned by the Catalyst hierarchy so the two layers do not
+this off `isCatalystEnabled()`. In hybrid mode it drops any legacy controller
+whose key the Catalyst hierarchy already owns. This way the two layers do not
 both try to drive the same preference:
 
 ```java
@@ -2572,8 +2580,9 @@ Several things are worth calling out:
   screens compose the same way, so the whole page tree is one expression.
 - **Provider interfaces are opt-in.**  A screen that needs to react to data
   changes adds `PreferenceLifecycleProvider` and implements `onCreate` /
-  `onStart` / `onResume`, receiving a `PreferenceLifecycleContext` it can use to
-  call `notifyPreferenceChange(key)` and re-render just the affected rows.
+  `onStart` / `onResume`. It receives a `PreferenceLifecycleContext`. The screen
+  can use that context to call `notifyPreferenceChange(key)` and re-render just
+  the affected rows.
   `PreferenceAvailabilityProvider`, `PreferenceSummaryProvider`, and
   `PreferenceIndexableProvider` similarly fold what used to be controller methods
   (`isAvailable`, `getSummary`, search indexing) into the screen class.
@@ -2585,8 +2594,9 @@ Several things are worth calling out:
 `@ProvidePreferenceScreen` has `SOURCE` retention, so it never reaches the APK as
 metadata.  Instead an annotation processor under
 `frameworks/base/packages/SettingsLib/Metadata/processor/` scans every annotated
-class at build time and generates a *collector* whose name is configured by the
-`@ProvidePreferenceScreenOptions` annotation on `SettingsApplication`:
+class at build time. It generates a *collector*. The
+`@ProvidePreferenceScreenOptions` annotation on `SettingsApplication`
+configures the name of the collector:
 
 ```java
 // SettingsApplication.java
@@ -2614,12 +2624,13 @@ if (Flags.catalyst()) {
 holding `preferenceScreenMetadataFactories: FixedArrayMap<String,
 PreferenceScreenMetadataFactory>`, keyed by screen key.  When
 `CatalystSettingsActivity` is launched with a `bindingScreenKey`, the fragment
-looks the factory up in the registry, builds the `PreferenceScreenMetadata`, and
-materialises the `preferenceHierarchy` into live `Preference` widgets.  The same
-registry also answers whether a screen is *parameterized* -- screens whose
-content depends on arguments (a specific SIM, app, or account) declare
-`parameterized = true` and expose a `parameters(...)` flow that the registry
-enumerates.
+looks the factory up in the registry and builds the `PreferenceScreenMetadata`.
+Then it materializes the `preferenceHierarchy` into live `Preference` widgets.
+
+The same registry also answers whether a screen is *parameterized*. The content
+of such a screen depends on arguments (a specific SIM, app, or account). The
+screen declares `parameterized = true` and exposes a `parameters(...)` flow.
+The registry enumerates that flow.
 
 This is the end-to-end Catalyst chain:
 
@@ -2655,43 +2666,50 @@ open class SupervisionDashboardScreen :
     OnRoleHoldersChangedListener {
 ```
 
-The screen pulls together three groups: a primary switch to toggle supervision
-on or off, a list of supervision features (web content filters, app-store
-filters, and features dynamically injected by the device's supervising app), and
-an entry point into PIN management
+The screen pulls together three groups. The first is a primary switch to toggle
+supervision on or off. The second is a list of supervision features (web content
+filters, app-store filters, and features that the device's supervising app
+injects dynamically). The third is an entry point into PIN management
 (`supervision/credentialmanagement/SupervisionPinManagementScreen.kt`).  It
 talks to the framework through `android.app.supervision.SupervisionManager` and
 watches `RoleManager.ROLE_SUPERVISION` so that when the supervising app changes,
-`onRoleHoldersChanged()` rebuilds the injected feature list.  The whole feature
-is flag-gated: the activity in `AndroidManifest.xml` carries
-`android:featureFlag="android.app.supervision.flags.enable_supervision_settings_screen"`,
-and the screen branches on `Flags.enableSupervisionSettingsUiUpdates()` to choose
-between the older main-switch layout and the newer set-up-PIN flow.  This screen
-is a good template for how a brand-new dashboard is built in the Catalyst era:
-no preference XML and no bespoke controller stack -- just a declarative `Screen`
-class plus a thin `CatalystFragment` subclass (`SupervisionDashboardFragment`)
-and a `CatalystSettingsActivity` in the manifest.
+`onRoleHoldersChanged()` rebuilds the injected feature list.
+
+A flag gates the
+whole feature. The activity in `AndroidManifest.xml` carries
+`android:featureFlag="android.app.supervision.flags.enable_supervision_settings_screen"`.
+The screen branches on `Flags.enableSupervisionSettingsUiUpdates()`
+to choose between the older main-switch layout and the newer set-up-PIN flow.
+This screen is a good template for how to build a brand-new dashboard in the
+Catalyst era. It has no preference XML and no bespoke controller stack. It has
+only a declarative `Screen` class, a thin `CatalystFragment` subclass
+(`SupervisionDashboardFragment`), and a `CatalystSettingsActivity` in the
+manifest.
 
 ### 50.14.8 API-First: Exposing Settings to On-Device Agents
 
-The declarative metadata is not only used to draw pixels -- it is the source of
+The declarative metadata does more than draw pixels. It is the source of
 truth for a new **API-First / AppFunctions** surface that lets on-device agents
 read and drive Settings.  The plumbing lives under
-`packages/apps/Settings/src/com/android/settings/appfunctions/`, where
+`packages/apps/Settings/src/com/android/settings/appfunctions/`. There,
 "device state" services aggregate every Catalyst screen's metadata, current
-values, and writability into a structured document an agent can query and act on.
+values, and writability into a structured document. An agent can query and act
+on this document.
 
-Because the screen already declares its title, summary, availability, indexable
-status, and (via `PersistentPreference` / read-write permits in the registry)
-whether a value may be changed by an external caller, the AppFunctions layer can
-expose a setting without any per-setting glue code.  A screen opts a preference
-out by leaving it non-writable; high-sensitivity preferences are reported with
-`writable = false` so agents are told up front they cannot change them.  The
-registry carries `defaultReadPermit` / `defaultWritePermit` (`ReadWritePermit`)
-to set the baseline policy -- read is allowed by default, write is disallowed by
-default -- which the per-preference declarations then refine.
+The screen already declares its title, summary, availability, and indexable
+status. It also declares (via `PersistentPreference` / read-write permits in the
+registry) whether an external caller may change a value. So the AppFunctions
+layer can expose a setting without any per-setting glue code.
 
-This is why the Catalyst migration matters beyond UI cleanliness: each migrated
+A screen opts a
+preference out by leaving it non-writable. High-sensitivity preferences are
+reported with `writable = false`, so agents are told up front they cannot change
+them.  The registry carries `defaultReadPermit` / `defaultWritePermit`
+(`ReadWritePermit`) to set the baseline policy. Read is allowed by default.
+Write is disallowed by default. The per-preference declarations then refine this
+policy.
+
+This is why the Catalyst migration matters beyond UI cleanliness. Each migrated
 `*Screen.kt` simultaneously yields a rendered page, a search-index entry, and an
 agent-addressable capability from one declaration.  Chapter 51 picks up the
 AppFunctions and on-device-agent story in depth.
@@ -3048,15 +3066,15 @@ adb shell dumpsys settings
 Section 50.6.6 showed Settings noticing that it had been launched inside the
 setup flow and re-theming itself accordingly. That check is the visible end of
 a contract, and the contract has a library behind it. During out-of-box setup
-the device is not running one app that does everything; it is running a
+the device does not run one app that does everything. It runs a
 *script* of activities — choose a language, join a network, restore a backup,
-sign in, set a screen lock — and many of those steps live in ordinary system
+sign in, set a screen lock. Many of those steps live in ordinary system
 apps such as Settings. Something has to make a dozen separately-owned screens
 look like one product and agree on what "next" means.
 
 That something is a small stack of libraries in the tree. This section covers
-what they provide, and — because there are three of them and the names are
-confusingly similar — which one a given app actually links against.
+what they provide. There are three of them and the names are confusingly
+similar, so it also shows which one a given app actually links against.
 
 ### 50.19.1 Three Libraries, One Lineage
 
@@ -3077,18 +3095,21 @@ library; the modern stack lives under `external/` and carries a
 pair — its sources import `com.google.android.setupcompat.util.WizardManagerHelper`,
 `com.google.android.setupcompat.template.FooterBarMixin` and
 `com.google.android.setupdesign.DividerItemDecoration`, not the
-`com.android.setupwizardlib` equivalents. In the current tree the legacy
-library retains only two in-tree consumers: `frameworks/base/packages/SimAppDialog`,
-and the automotive library `frameworks/opt/car/setupwizard`, whose
-`CarWizardManagerHelper` is documented in its own header as "Derived from
+`com.android.setupwizardlib` equivalents.
+
+In the current tree the legacy
+library retains only two in-tree consumers.
+One is `frameworks/base/packages/SimAppDialog`. The other is the automotive
+library `frameworks/opt/car/setupwizard`. Its own header describes
+`CarWizardManagerHelper` as "Derived from
 `com.android.setupwizardlib/WizardManagerHelper.java`"
 (`frameworks/opt/car/setupwizard/library/main/src/com/android/car/setupwizardlib/util/CarWizardManagerHelper.java:23`).
 Chapter 62 covers the automotive setup flow that library serves.
 
-The three share a design, so reading the old one is not wasted effort — the
-template-and-mixin mechanism below appears in both, and `GlifLayout`,
+The three share a design, so reading the old one is not wasted effort. The
+template-and-mixin mechanism below appears in both. `GlifLayout`,
 `GlifListLayout`, `GlifPatternDrawable` and the `items/` hierarchy exist under
-both package names. When following a stack trace, the package prefix is what
+both package names. When you follow a stack trace, the package prefix is what
 tells you which generation you are in.
 
 ### 50.19.2 The Wizard-Manager Intent Contract
@@ -3104,22 +3125,21 @@ public static final String ACTION_NEXT = "com.android.wizard.NEXT";   // :54
 public static Intent getNextIntent(Intent originalIntent, int resultCode) {  // :112
 ```
 
-`getNextIntent` builds an `ACTION_NEXT` intent carrying the original's
-wizard-manager extras plus the result code, and the setup wizard — which is
-listening for that action — consults its script and launches whatever is
-supposed to follow. The step's only influence over the route is the result
-code, and `ResultCodes`
+`getNextIntent` builds an `ACTION_NEXT` intent that carries the original's
+wizard-manager extras plus the result code. The setup wizard listens for that
+action. It consults its script and launches whatever step comes next. The
+step's only influence over the route is the result code. `ResultCodes`
 (`external/setupcompat/main/java/com/google/android/setupcompat/util/ResultCodes.java:24`)
 gives it a small vocabulary beyond the usual OK and CANCELED: `RESULT_SKIP`,
 `RESULT_RETRY`, `RESULT_ACTIVITY_NOT_FOUND`, `RESULT_LIFECYCLE_NOT_MATCHED`,
 `RESULT_FLOW_NOT_MATCHED`.
 
-The extras that ride along are how a step learns what kind of run it is in:
-`EXTRA_WIZARD_BUNDLE` (:56), `EXTRA_IS_FIRST_RUN` (:62), `EXTRA_IS_DEFERRED_SETUP`
+The extras that ride along tell a step what kind of run it is in.
+They are `EXTRA_WIZARD_BUNDLE` (:56), `EXTRA_IS_FIRST_RUN` (:62), `EXTRA_IS_DEFERRED_SETUP`
 (:65), `EXTRA_IS_PRE_DEFERRED_SETUP` (:68), `EXTRA_IS_PORTAL_SETUP` (:71),
 `EXTRA_THEME` (:96) and `EXTRA_USE_IMMERSIVE_MODE` (:97). An activity that
-launches another activity within the flow is expected to forward them with
-`copyWizardManagerExtras` (:146) — drop them and the next screen loses its
+launches another activity within the flow should forward them with
+`copyWizardManagerExtras` (:146). If they are dropped, the next screen loses its
 theme and its sense of where it is.
 
 Two of the helper's predicates answer a question that reaches well beyond
@@ -3132,22 +3152,22 @@ public static boolean isDeviceProvisioned(Context context)   // :203
 
 These read `Settings.Secure.user_setup_complete` and
 `Settings.Global.device_provisioned` (:99-100). The rest of the platform keys
-an enormous amount of behaviour off those two flags, which is why Section 50.6.6
-guards initialization with `isUserSetupComplete` — a system app that starts
-doing its normal job in the middle of out-of-box setup is a bug, not a feature.
+a large amount of behavior off those two flags. This is why Section 50.6.6
+guards initialization with `isUserSetupComplete`. A system app that starts its
+normal job in the middle of out-of-box setup is a bug, not a feature.
 
-The predicate Settings actually calls to decide on its theme is
-`isAnySetupWizard` (:264), which is broader than `isSetupWizardIntent` (:175):
-it is true for the deferred and pre-deferred variants as well as the first-run
-flow, so a screen reached from "finish setting up your device" weeks later
-still dresses correctly.
+Settings actually calls `isAnySetupWizard` (:264) to decide on its theme. This
+predicate is broader than `isSetupWizardIntent` (:175). It is true for the
+deferred and pre-deferred variants as well as the first-run flow. So a screen
+reached from "finish setting up your device" weeks later still dresses
+correctly.
 
 ### 50.19.3 Templates and Mixins
 
-The layout side solves a different problem: the steps are written by different
-teams, and they must share a header, an icon, a progress indicator and a
-footer button bar without sharing a base activity class. The libraries solve it
-with composition rather than inheritance.
+The layout side solves a different problem. Different teams write the steps.
+The steps must share a header, an icon, a progress indicator and a footer
+button bar. They must do this without sharing a base activity class. The
+libraries solve it with composition rather than inheritance.
 
 `TemplateLayout`
 (`external/setupcompat/main/java/com/google/android/setupcompat/internal/TemplateLayout.java:45`)
@@ -3162,51 +3182,53 @@ public void addView(View child, int index, ViewGroup.LayoutParams params) {  // 
 ```
 
 So an activity writes its own content as if it were the whole screen, and the
-template wraps it in the shared chrome. The chrome's behaviour is supplied by
-**mixins**, registered by class marker and retrieved the same way:
+template wraps it in the shared chrome. **Mixins** supply the chrome's
+behavior. They are registered by class marker and retrieved the same way:
 
 ```java
 protected <M extends Mixin> void registerMixin(Class<M> cls, M mixin)   // :98
 public <M extends Mixin> M getMixin(Class<M> cls)                       // :126
 ```
 
-`Mixin` itself is a marker interface with no methods. The point of keying the
-map by a `Class` marker rather than the concrete type is substitution: a
-template can register a subclass under the base marker, and callers asking for
-the base get the specialised behaviour without knowing it exists.
+`Mixin` itself is a marker interface with no methods. The map uses a `Class`
+marker as the key, rather than the concrete type, so that substitution works.
+A template can register a subclass under the base marker. Callers that ask for
+the base get the specialized behavior. They do not know that it exists.
 
 The layout hierarchy an app sees is
 `GlifLayout` → `PartnerCustomizationLayout` → `TemplateLayout`
 (`external/setupdesign/main/src/com/google/android/setupdesign/GlifLayout.java:111`,
 `external/setupcompat/main/java/com/google/android/setupcompat/PartnerCustomizationLayout.java:62`),
-which is also the division of labour: design, OEM customization, mechanism.
+which is also the division of labor: design, OEM customization, mechanism.
 `GlifLayout`'s constructor registers the set a setup screen can expect
 (`GlifLayout.java:174-188`) — `HeaderMixin`, `DescriptionMixin`, `IconMixin`,
 `ProfileMixin`, `ProgressBarMixin`, `IllustrationProgressMixin` and
 `RequireScrollMixin`, among others.
 
-Two mixins are worth calling out. `FooterBarMixin`
+Two mixins need a closer look. `FooterBarMixin`
 (`external/setupcompat/main/java/com/google/android/setupcompat/template/FooterBarMixin.java:83`)
 owns the primary and secondary buttons at the bottom of every setup screen
-(`setPrimaryButton` at :559, `setSecondaryButton` at :667) — this is why "Next"
-and "Skip" sit in the same place, styled the same way, on screens owned by
-different apps.
+(`setPrimaryButton` at :559, `setSecondaryButton` at :667). This is why "Next"
+and "Skip" sit in the same place on screens that different apps own. They also
+have the same style on every screen.
 
 `RequireScrollMixin`
 (`external/setupdesign/main/src/com/google/android/setupdesign/template/RequireScrollMixin.java:47`)
 is the more interesting one, because it encodes a requirement rather than a
-style. Its own documentation describes it as requiring "a scrollable container
+style. Its own documentation says that it requires "a scrollable container
 ... to be scrolled to bottom, making sure that the user sees all content above
-and below the fold", and `requireScrollWithButton` (:191) implements that by
-turning the footer's primary button into a "More" affordance until the content
-has been scrolled through. Consent and legal screens are the reason this
-exists: it is the difference between a user having been shown terms and having
-had the opportunity to read them.
+and below the fold". `requireScrollWithButton` (:191) implements that. It turns
+the footer's primary button into a "More" affordance until the user scrolls
+through the content.
+
+Consent and legal screens are the reason this exists. It
+is the difference between a user who was shown terms and a user who had the
+opportunity to read them.
 
 ### 50.19.4 Partner Configuration
 
-OEMs need setup to carry their branding, and forking the libraries per device
-would be unmaintainable. `PartnerConfigHelper`
+OEMs need setup to carry their branding. A fork of the libraries for each
+device would be unmaintainable. `PartnerConfigHelper`
 (`external/setupcompat/partnerconfig/java/com/google/android/setupcompat/partnerconfig/PartnerConfigHelper.java:54`)
 inverts the dependency instead: the setup wizard on the device exposes a
 content provider, and the library queries it.
@@ -3217,29 +3239,28 @@ static final String SUW_GET_PARTNER_CONFIG_METHOD = "getOverlayConfig";         
 ```
 
 The helper calls that method through `ContentResolver.call` and caches the
-returned bundle. Individual knobs are named by the `PartnerConfig` enum —
+returned bundle. The `PartnerConfig` enum names the individual knobs:
 `CONFIG_STATUS_BAR_BACKGROUND`, `CONFIG_LIGHT_STATUS_BAR`,
 `CONFIG_NAVIGATION_BAR_BG_COLOR`, `CONFIG_FOOTER_BAR_BG_COLOR`,
-`CONFIG_FOOTER_BAR_MIN_HEIGHT` and so on — so a partner adjusts the chrome by
-publishing values, not by patching layouts. `PartnerCustomizationLayout` sitting
-between `GlifLayout` and `TemplateLayout` is where those values are applied.
+`CONFIG_FOOTER_BAR_MIN_HEIGHT` and so on. So a partner adjusts the chrome by
+publishing values, not by patching layouts. `PartnerCustomizationLayout` sits
+between `GlifLayout` and `TemplateLayout`. That is where those values are
+applied.
 
 ### 50.19.5 What This Means for Settings
 
-Putting the two halves together explains the code in Section 50.6.6. When
-Settings is launched as a setup step it is a guest in someone else's flow: it
-must look like the surrounding screens (hence `ThemeHelper.trySetSuwTheme` and
-the `SetupWizard` theme variants), it must not show its own toolbar or
-navigation affordances (hence the `isAnySetupWizard` guards around toolbar
-setup and Up navigation), and it must hand control back through
-`getNextIntent` rather than simply finishing.
+The two halves together explain the code in Section 50.6.6. When Settings runs
+as a setup step, it is a guest in someone else's flow. It must look like the
+surrounding screens (hence `ThemeHelper.trySetSuwTheme` and the `SetupWizard`
+theme variants). It must not show its own toolbar or navigation affordances
+(hence the `isAnySetupWizard` guards around toolbar setup and Up navigation).
+It must hand control back through `getNextIntent`. It must not simply finish.
 
-It also explains a constraint that catches people adding features to Settings:
-any code that runs at startup has to ask whether setup has completed before
-doing anything user-visible. The `isUserSetupComplete` check quoted in
-Section 50.6.6 is not defensive programming, it is the flow contract — during
-setup, the only screen the user is supposed to be looking at is the one the
-wizard put there.
+It also explains a constraint that catches people who add features to
+Settings. Any code that runs at startup has to ask whether setup has completed
+before it does anything user-visible. The `isUserSetupComplete` check quoted in
+Section 50.6.6 is not defensive programming. It is the flow contract. During
+setup, the user should see only the screen that the wizard put there.
 
 ---
 
@@ -3292,8 +3313,8 @@ discussed in this chapter:
 
 ## 50.21 Try It: Add a Custom Settings Page
 
-This section walks through adding a complete custom settings page to the
-Settings app, from XML definition through preference controller to search
+This section walks through a complete custom settings page for the Settings
+app. It goes from XML definition through preference controller to search
 integration.
 
 ### 50.21.1 Step 1: Define the Preference XML
@@ -3476,7 +3497,7 @@ To make the new page accessible, add a preference to an existing XML screen
 ### 50.21.8 Step 8: Make It Searchable
 
 The `@SearchIndexable` annotation and the `SEARCH_INDEX_DATA_PROVIDER` field
-we added in Step 2 are sufficient.  The compile-time annotation processor
+we added in Step 2 are enough.  The compile-time annotation processor
 will include the fragment in the search index.
 
 To verify, you can query the index:
@@ -3529,13 +3550,13 @@ adb shell am start -a android.settings.CUSTOM_LAB_SETTINGS
 adb shell settings get system custom_lab_feature_enabled
 ```
 
-You can also test the search integration by opening Settings, tapping the
-search bar, and typing "Lab".  The custom preferences should appear in the
+You can also test the search integration. Open Settings, tap the search bar,
+and type "Lab".  The custom preferences should appear in the
 results if the search index has been refreshed.
 
 ### 50.21.11 Advanced: Adding a Tile to the Homepage
 
-To inject your page as a tile on the homepage, you would modify
+To inject your page as a tile on the homepage, modify
 `res/xml/top_level_settings.xml` to add a `HomepagePreference`:
 
 ```xml
@@ -3559,7 +3580,7 @@ PARENT_TO_CATEGORY_KEY_MAP.put(
 
 ### 50.21.12 Advanced: OEM Customisation via FeatureFactory
 
-OEMs can customise the Settings app without forking by supplying
+OEMs can customize the Settings app without a fork. They supply
 a custom `FeatureFactory`.  The factory provides feature-specific providers:
 
 ```
@@ -3577,9 +3598,10 @@ Key extension points include:
 | `SupportFeatureProvider` | Custom support/help integration |
 | `EnterprisePrivacyFeatureProvider` | MDM integration |
 
-OEMs install their custom factory by subclassing `SettingsApplication` and
-overriding `getFeatureFactory()` to return a custom `FeatureFactoryImpl`; the
-app then calls `FeatureFactory.setFactory(this, getFeatureFactory())` during
+OEMs install their custom factory with a subclass of `SettingsApplication`.
+The subclass overrides `getFeatureFactory()` to return a custom
+`FeatureFactoryImpl`. The app then calls
+`FeatureFactory.setFactory(this, getFeatureFactory())` during
 `attachBaseContext`:
 
 ```java
@@ -3595,11 +3617,11 @@ protected FeatureFactory getFeatureFactory() {
 ## Summary
 
 The Settings app is one of the most architecturally rich applications in
-AOSP.  Its layered design -- from the `SettingsBaseActivity` foundation
+AOSP.  Its layered design runs from the `SettingsBaseActivity` foundation
 through the `DashboardFragment` tile-injection system to the
-`SettingsProvider` key-value store -- demonstrates how a complex user interface
-can be built on top of Android's component model while remaining extensible
-to OEMs and third-party developers.
+`SettingsProvider` key-value store. The design demonstrates how a complex user
+interface can be built on top of Android's component model. Such an interface
+stays extensible to OEMs and third-party developers.
 
 Key takeaways:
 
@@ -3608,7 +3630,7 @@ Key takeaways:
    `SettingsGateway`.
 
 2. **DashboardFragment** merges static XML preferences with dynamically
-   injected tiles from the `CategoryManager`, enabling third-party and OEM
+   injected tiles from the `CategoryManager`. This enables third-party and OEM
    settings integration.
 
 3. **PreferenceControllers** encapsulate the logic for each setting --
@@ -3624,33 +3646,33 @@ Key takeaways:
    preference discoverable through Settings Intelligence.
 
 6. **Two-pane layout** via Activity Embedding allows the Settings app to
-   provide a tablet-optimised experience using `SplitPairRule` from the
+   provide a tablet-optimized experience using `SplitPairRule` from the
    Jetpack WindowManager library.
 
 7. **Developer Options** is gated behind the 7-tap build-number easter egg,
-   credential verification, and an optional biometric identity check -- a
-   layered security model for exposing powerful debugging tools.
+   credential verification, and an optional biometric identity check. This is
+   a layered security model for exposing powerful debugging tools.
 
-8. **CategoryManager** is the authoritative singleton for tile data, applying
-   backward-compatible key mapping, security/privacy merging, sorting, and
-   deduplication before tiles reach the UI.
+8. **CategoryManager** is the authoritative singleton for tile data. It
+   applies backward-compatible key mapping, security/privacy merging, sorting,
+   and deduplication before tiles reach the UI.
 
-9. **FeatureFactory** provides a clean OEM extension mechanism, allowing
-   vendors to customise search, metrics, support, and security providers
-   without forking the Settings source tree.
+9. **FeatureFactory** provides a clean OEM extension mechanism. Vendors can
+   customize search, metrics, support, and security providers without a fork
+   of the Settings source tree.
 
 10. **Slices** expose individual settings as remotely embeddable UI
-    components, enabling system surfaces like Quick Settings and the Google
-    app to inline setting controls.
+    components. This lets system surfaces like Quick Settings and the Google
+    app inline setting controls.
 
-11. **Catalyst** is the Android 17 declarative successor to XML + controllers:
-    a screen is a single `@ProvidePreferenceScreen`-annotated `*Screen.kt`
-    class whose `preferenceHierarchy { }` declaration feeds the UI, the search
+11. **Catalyst** is the Android 17 declarative successor to XML + controllers.
+    A screen is a single `@ProvidePreferenceScreen`-annotated `*Screen.kt`
+    class. Its `preferenceHierarchy { }` declaration feeds the UI, the search
     index, and the AppFunctions agent surface at once.  A build-time annotation
-    processor collects the screens into `PreferenceScreenRegistry`, gated per
-    screen behind migration flags, with new dashboards such as Supervision built
+    processor collects the screens into `PreferenceScreenRegistry`. Each screen
+    is gated behind migration flags. New dashboards such as Supervision are built
     natively on it.
 
-The next chapter examines AI, AppFunctions, and Computer Control -- how
-Android exposes app capabilities to on-device AI and lets agents drive
-the system on the user's behalf.
+The next chapter examines AI, AppFunctions, and Computer Control.
+It shows how Android exposes app capabilities to on-device AI. It also shows
+how Android lets agents drive the system on the user's behalf.
