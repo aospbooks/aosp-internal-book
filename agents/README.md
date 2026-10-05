@@ -76,7 +76,7 @@ chapter at the repo root in a way that changes its scope, structure, or
 heading, regenerate them:
 
     python3 agents/build.py
-    git add agents/claude agents/gemini agents/codex agents/copilot
+    git add agents/
     git commit -m "agents: regenerate after <chapter> edits"
 
 CI runs `agents/build.py --check` on every push and PR; a stale

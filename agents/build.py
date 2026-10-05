@@ -650,7 +650,7 @@ def main(argv: list[str] | None = None) -> int:
     written = _build_into(SCRIPT_DIR, manifest, skills)
     for plat, target in written.items():
         print(f"  -> {target.relative_to(REPO_ROOT)}")
-    print(f"Built {len(written)} platform packages from {len(manifest.parts)} Parts "
+    print(f"Built {len(PLATFORMS)} platform packages from {len(manifest.parts)} Parts "
           f"({sum(len(p.chapters) for p in manifest.parts)} chapters).")
     return 0
 
