@@ -7796,11 +7796,12 @@ details matter for the rest of this chapter:
   tests (`bionic/tests/malloc_iterate_test.cpp`, which brackets the call exactly that way) and
   libprocinfo's own `process_map_test.cpp`.
 
-  Crash tooling has a different shape. `debuggerd`
-  and its `crash_dump` helper (Chapter 58) are a *separate* process that `PTRACE_SEIZE`s the target
-  and reads its `maps` from the outside. `libunwindstack`
-  (`system/unwinding/libunwindstack/Maps.cpp`) reads through the *allocating* `ReadMapFile()` /
-  `ReadMapFileContent()` path. Both still build on `libprocinfo`, just not on the async-safe variant.
+    Crash tooling has a different shape. `debuggerd`
+    and its `crash_dump` helper (Chapter 58) are a *separate* process that `PTRACE_SEIZE`s the target
+    and reads its `maps` from the outside. `libunwindstack`
+    (`system/unwinding/libunwindstack/Maps.cpp`) reads through the *allocating* `ReadMapFile()` /
+    `ReadMapFileContent()` path. Both still build on `libprocinfo`, just not on the async-safe variant.
+
 - **`MappedFileSize()`** returns how much of a mapping is actually backed by its file. The
   header notes this for builds with a page size larger than 4 KB. There, the old assumption that
   a file mapping is fully file-backed is more often false. Accounting tools must therefore clamp to the real file size
@@ -16699,14 +16700,14 @@ very different contracts:
   detects the overwrite and resets its counter (the queue logs and the read
   returns the loss).
 
-  Those read counters live in each reader's own process
-  memory, so the shared read-counter slot is free.  This flavor reuses grantor
-  slot 0 (`WRITEREGIONENDPTRPOS`, defined as the same index as `READPTRPOS`)
-  to publish the end of an in-progress write region.  The grantor count is
-  unchanged, not increased.
-  libfmq even warns at runtime if an unsynchronized writer tries to overwrite
-  the entire buffer in a single call, because that defeats the overflow
-  detection.
+    Those read counters live in each reader's own process
+    memory, so the shared read-counter slot is free.  This flavor reuses grantor
+    slot 0 (`WRITEREGIONENDPTRPOS`, defined as the same index as `READPTRPOS`)
+    to publish the end of an in-progress write region.  The grantor count is
+    unchanged, not increased.
+    libfmq even warns at runtime if an unsynchronized writer tries to overwrite
+    the entire buffer in a single call, because that defeats the overflow
+    detection.
 
 The flavor is carried in the AIDL type system as the second template parameter
 of `MQDescriptor<T, Flavor>`, either `SynchronizedReadWrite` or

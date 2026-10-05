@@ -2366,14 +2366,14 @@ very different contracts:
   detects the overwrite and resets its counter (the queue logs and the read
   returns the loss).
 
-  Those read counters live in each reader's own process
-  memory, so the shared read-counter slot is free.  This flavor reuses grantor
-  slot 0 (`WRITEREGIONENDPTRPOS`, defined as the same index as `READPTRPOS`)
-  to publish the end of an in-progress write region.  The grantor count is
-  unchanged, not increased.
-  libfmq even warns at runtime if an unsynchronized writer tries to overwrite
-  the entire buffer in a single call, because that defeats the overflow
-  detection.
+    Those read counters live in each reader's own process
+    memory, so the shared read-counter slot is free.  This flavor reuses grantor
+    slot 0 (`WRITEREGIONENDPTRPOS`, defined as the same index as `READPTRPOS`)
+    to publish the end of an in-progress write region.  The grantor count is
+    unchanged, not increased.
+    libfmq even warns at runtime if an unsynchronized writer tries to overwrite
+    the entire buffer in a single call, because that defeats the overflow
+    detection.
 
 The flavor is carried in the AIDL type system as the second template parameter
 of `MQDescriptor<T, Flavor>`, either `SynchronizedReadWrite` or
