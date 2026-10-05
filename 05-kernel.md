@@ -1,27 +1,30 @@
 # Chapter 5: Kernel
 
 The Linux kernel is the foundation of every Android device. It manages hardware,
-enforces security boundaries, schedules processes, and provides the low-level
-primitives -- such as Binder IPC and shared memory -- on which the entire Android
-framework is built. Yet the kernel running on an Android device is not a stock
-upstream Linux kernel. Over more than fifteen years, Android has accumulated a
-set of kernel modifications, out-of-tree drivers, and configuration requirements
-that distinguish it from any desktop or server Linux distribution.
+enforces security boundaries, and schedules processes. It also provides the
+low-level primitives, such as Binder IPC and shared memory, on which the entire
+Android framework is built. Yet the kernel running on an Android device is not a stock
+upstream Linux kernel. Over more than fifteen years, Android has collected a
+set of kernel modifications, out-of-tree drivers, and configuration requirements.
+These make it different from any desktop or server Linux distribution.
 
-This chapter examines the Android kernel in depth: what Android adds to upstream
-Linux, how the Generic Kernel Image (GKI) architecture reduces fragmentation,
-how individual Android-specific subsystems work at the driver level, how device
-trees describe hardware, how kernel configuration is managed across releases, how
-the kernel integrates into the AOSP build system, and how to debug kernel-level
-problems on real and emulated devices.
+This chapter examines the Android kernel in depth. It covers these topics:
+
+- What Android adds to upstream Linux.
+- How the Generic Kernel Image (GKI) architecture reduces fragmentation.
+- How individual Android-specific subsystems work at the driver level.
+- How device trees describe hardware.
+- How kernel configuration is managed across releases.
+- How the kernel integrates into the AOSP build system.
+- How to debug kernel-level problems on real and emulated devices.
 
 Throughout this chapter, we reference real files in the AOSP source tree. Every
 path, config fragment, and module name cited here can be found in that tree. The
 chapter is current as of Android 17, whose Android Common Kernel branch is
 `android17-6.18` (upstream LTS 6.18). Section 5.8 collects the kernel-layer
-changes that landed with Android 17, including the new GKI branch, the maturing
-16 KB page size story, and the relocation of `fs_mgr` and its sibling libraries
-out of `system/core` into the new `system/fs/` tree.
+changes that landed with Android 17. These include the new GKI branch and the
+maturing 16 KB page size story. They also include the relocation of `fs_mgr` and
+its sibling libraries out of `system/core` into the new `system/fs/` tree.
 
 ---
 
@@ -48,7 +51,7 @@ categories:
 5. **Test and debug infrastructure** integrated with Android's testing pipeline
 
 The goal is to minimize the delta from upstream. Many patches that originated in
-the Android tree have been upstreamed over the years -- wakelocks (now
+the Android tree have been upstreamed over the years. Wakelocks (now
 `PM_WAKELOCKS`), the low memory killer (replaced by PSI-based userspace lmkd),
 and `ashmem` (being superseded by `memfd`) are all examples of this convergence.
 
@@ -156,9 +159,9 @@ base config fragments. In the Android 16 (branch `b`) config for kernel 6.12:
 
 **Source**: `kernel/configs/b/android-6.12/android-base.config`, line 2.
 
-This single line tells the story of a multi-year migration: the kernel's
-in-process OOM killer has been replaced by a sophisticated userspace daemon that
-uses PSI events for more intelligent memory management decisions.
+This single line tells the story of a multi-year migration. The kernel's in-process OOM killer
+has been replaced by a sophisticated userspace daemon. The daemon uses
+PSI events for more intelligent memory management decisions.
 
 ---
 
@@ -167,9 +170,9 @@ uses PSI events for more intelligent memory management decisions.
 ### 5.2.1 The Fragmentation Problem
 
 Before GKI, every Android device shipped a unique kernel. SoC vendors (Qualcomm,
-MediaTek, Samsung LSI, etc.) would take an Android Common Kernel branch, apply
-hundreds of patches for their SoC, and pass it to device OEMs who would apply
-yet more patches for their specific hardware. The result was a deeply fragmented
+MediaTek, Samsung LSI, etc.) would take an Android Common Kernel branch and apply
+hundreds of patches for their SoC. They would then pass it to device OEMs, who
+would apply more patches for their specific hardware. The result was a deeply fragmented
 ecosystem:
 
 - Security patches could not be delivered to kernels without vendor cooperation
@@ -277,8 +280,8 @@ consists of:
 
 1. **A symbol list** -- the set of kernel functions and variables that vendor
    modules are allowed to call. The size of this list varies by branch as the
-   KMI is curated; for kernel 6.6 it contains approximately 38,840 entries, while
-   the newer 6.18 branch ships a tighter list of roughly 22,961 entries.
+   KMI is curated. For kernel 6.6 it contains about 38,840 entries. The newer
+   6.18 branch ships a tighter list of roughly 22,961 entries.
 
     **Source**: `kernel/prebuilts/6.6/arm64/abi_symbollist`,
     `kernel/prebuilts/6.18/arm64/abi_symbollist`
@@ -320,10 +323,10 @@ independently of kernel updates, and vice versa.
 
 ### 5.2.4 KMI Symbol Stability Guarantees
 
-The config option `CONFIG_MODVERSIONS=y` (present in every non-empty Android
-base config fragment through `b/android-6.12`; the Android 17 fragments under
-`c/` and `d/` are deliberately empty -- see Section 5.5.2)
-enables compile-time CRC generation for every exported symbol. When a module is
+The config option `CONFIG_MODVERSIONS=y` enables compile-time CRC generation
+for every exported symbol. It is present in every non-empty Android base config
+fragment through `b/android-6.12`. The Android 17 fragments under `c/` and `d/`
+are deliberately empty (see Section 5.5.2). When a module is
 loaded, the kernel checks that the CRCs in the module match the CRCs in the
 running kernel. If they do not match, the module load fails with an error like:
 
@@ -344,8 +347,8 @@ hooks** -- lightweight tracepoints that vendors can register callbacks for:
   can be attached and detached at runtime, but must not be called from atomic
   context.
 - **`android_rvh_*`** (restricted vendor hooks) -- hooks placed in
-  performance-critical or atomic paths (scheduler, IRQ handling) that can only
-  be registered once at boot and can never be detached.
+  performance-critical or atomic paths (scheduler, IRQ handling). They can
+  be registered only once at boot, and can never be detached.
 
 The KMI symbol list includes vendor hook registration functions:
 
@@ -440,7 +443,7 @@ BOARD_KERNEL_VERSION := 6.18.16-android17-1-gb61cd7ae4209-ab15097451
 **Source**: `kernel/prebuilts/6.18/arm64/16k/kernel_version.mk`
 
 For comparison, the older Android 15 / kernel 6.6 prebuilt reads
-`6.6.119-android15-8-gf79a8f9ddb6e-ab14880967-4k`, which decodes the same way
+`6.6.119-android15-8-gf79a8f9ddb6e-ab14880967-4k`. This decodes the same way
 (LTS 6.6 patch level 119, Android 15 ACK branch, eighth release).
 
 **Source**: `kernel/prebuilts/6.6/arm64/kernel_version.mk`
@@ -498,10 +501,10 @@ The complete lineage of supported kernel versions:
 | android17-6.18 | 6.18 | 17 | 2025-11 | 2030-07 |
 
 The `android17-6.18` branch is the newest entry. At the time the Android 17
-source tree was cut it was still in its pre-release phase: its entry carries a
+source tree was cut it was still in its pre-release phase. Its entry carries a
 `<no-releases reason="branch in pre-release phase"/>` marker rather than a list
-of individual LTS releases, because no quarterly GKI release had been published
-for it yet. Note also that the Android 11 (`r/`) kernel config fragments were
+of individual LTS releases. This is because no quarterly GKI release had been
+published for it yet. Note also that the Android 11 (`r/`) kernel config fragments were
 removed in this cycle, retiring the oldest still-tracked config directory.
 
 ### 5.2.8 How Vendors Extend Without Forking
@@ -594,9 +597,8 @@ Key aspects of the transaction model:
    shared memory region in the server process's address space. When a client
    sends a transaction, the driver copies data directly from the client's
    user-space buffer into the server's mmap'ed region. This means data is
-   copied only once (client user-space to server kernel-mapped buffer), rather
-   than the two copies required by traditional IPC mechanisms (client to kernel,
-   kernel to server).
+   copied only once (client user-space to server kernel-mapped buffer). Traditional
+   IPC mechanisms require two copies (client to kernel, kernel to server).
 
 2. **Object translation**: Binder handles (references to remote objects) are
    translated by the driver as transactions cross process boundaries. The driver
@@ -687,8 +689,8 @@ own isolated Binder namespaces.
 #### From ION to DMA-BUF Heaps
 
 The ION memory allocator was Android's original solution for allocating
-physically contiguous or otherwise specially-constrained memory buffers for use
-by GPUs, cameras, video codecs, and display hardware. ION was an
+physically contiguous or otherwise specially-constrained memory buffers. GPUs,
+cameras, video codecs, and display hardware used these buffers. ION was an
 Android-specific driver carried in the mainline kernel's staging area
 (`drivers/staging/android/ion`); it was never promoted out of staging before
 being removed.
@@ -805,16 +807,16 @@ graph TB
 
 #### How FUSE Passthrough Works
 
-FUSE passthrough allows the FUSE daemon (MediaProvider) to indicate that certain
-file operations should be handled directly by the kernel, bypassing the FUSE
+FUSE passthrough lets the FUSE daemon (MediaProvider) indicate that certain file
+operations should be handled directly by the kernel. These operations bypass the FUSE
 userspace daemon for data transfer:
 
 1. The app opens a file through the FUSE mount (e.g.,
    `/storage/emulated/0/Download/photo.jpg`).
 2. The FUSE kernel module sends an `OPEN` request to MediaProvider.
-3. MediaProvider checks permissions and, if authorized, opens the underlying file
-   on the real filesystem and tells the FUSE kernel module to use passthrough for
-   this file.
+3. MediaProvider checks permissions. If the app is authorized, MediaProvider
+   opens the underlying file on the real filesystem. It then tells the FUSE
+   kernel module to use passthrough for this file.
 4. Subsequent `read()` and `write()` calls from the app go directly from the
    FUSE kernel module to the lower filesystem, bypassing MediaProvider entirely.
 
@@ -889,7 +891,7 @@ Key design characteristics:
    can be independently present or absent.
 
 2. **Demand paging**: When a process reads a block that has not yet been
-   delivered, the kernel blocks the read and signals the userspace data loader
+   delivered, the kernel blocks the read. It signals the userspace data loader
    (via the `.pending_reads` special file) to fetch that block.
 
 3. **Compression support**: Blocks can be stored compressed using LZ4 or Zstd:
@@ -952,13 +954,13 @@ Ashmem differs from standard POSIX shared memory (`shm_open`) in several ways:
   pages under memory pressure
 - Regions are reference-counted by file descriptors -- when the last fd is
   closed, the memory is freed
-- A region's protection can only ever be narrowed via the
-  `ASHMEM_SET_PROT_MASK` ioctl (true file seals with `F_ADD_SEALS` exist only
-  on the `memfd` replacement path in `system/core/libcutils/ashmem-dev.cpp`)
+- A region's protection can only ever be narrowed, through the
+  `ASHMEM_SET_PROT_MASK` ioctl. True file seals with `F_ADD_SEALS` exist only
+  on the `memfd` replacement path in `system/core/libcutils/ashmem-dev.cpp`.
 
-While ashmem remains required for backward compatibility, new code is encouraged
-to use `memfd_create()`, which is the upstream Linux equivalent and provides
-similar functionality through the standard kernel API.
+Ashmem remains required for backward compatibility. New code is encouraged to use
+`memfd_create()`. It is the upstream Linux equivalent and provides similar
+functionality through the standard kernel API.
 
 ### 5.3.6 Wakelocks and Power Management
 
@@ -989,8 +991,8 @@ The wakelock interface is exposed through:
 - `/sys/power/wake_unlock` -- write a wakelock name to release
 
 The userspace PowerManager service (in system_server) uses these interfaces to
-implement Android's opportunistic suspend model, where the system aggressively
-tries to enter suspend unless something holds a wakelock.
+implement Android's opportunistic suspend model. In this model the system
+aggressively tries to enter suspend unless something holds a wakelock.
 
 ### 5.3.7 Low Memory Killer Daemon (lmkd)
 
@@ -1188,8 +1190,8 @@ mapped to the kernel's dm-verity error-handling modes by
 - **Logging** (`ignore_corruption`): verification failures are logged but
   reads succeed. Used during development.
 - **EIO** (`androidboot.veritymode=eio`): no dm-verity error-mode argument is
-  passed, so the kernel's default behavior applies -- the read of a corrupted
-  block returns `EIO`, and the device continues operating. Note that when
+  passed, so the kernel's default behavior applies. The read of a corrupted
+  block returns `EIO`, and the device continues to run. Note that when
   `androidboot.veritymode` is absent entirely, `fs_mgr` defaults to
   *enforcing* (`restart_on_corruption`), not EIO.
 
@@ -1223,9 +1225,9 @@ CONFIG_BLK_INLINE_ENCRYPTION=y   # Block-level inline encryption
 #### File-Based Encryption (FBE)
 
 Android uses file-based encryption rather than full-disk encryption. This allows
-different files to be encrypted with different keys, enabling features like
-Direct Boot (where the device can show the lock screen and receive phone calls
-before the user unlocks the device).
+different files to be encrypted with different keys. This makes features like
+Direct Boot possible. With Direct Boot, the device can show the lock screen and
+receive phone calls before the user unlocks the device.
 
 The encryption configuration is visible in the emulator's fstab:
 
@@ -1325,19 +1327,19 @@ graph TB
 ```
 
 The BPF loader (`bpfloader`) is one of the first services started during boot.
-It loads a fixed list of `.bpf` ELF objects from `/system/etc/bpf/` (the list is
-hard-coded in `system/bpf/loader/bpfloader.rs` -- entries like
-`/system/etc/bpf/gpuMem.bpf` and `/system/etc/bpf/cputimeinstate/timeInState.bpf`)
-and additionally scans `/vendor/etc/bpf/` for vendor-supplied `.o` files
-(`loadAllElfObjects()` in `system/bpf/loader/Loader.cpp`), pinning the results
+It loads a fixed list of `.bpf` ELF objects from `/system/etc/bpf/`. The list is
+hard-coded in `system/bpf/loader/bpfloader.rs`, with entries like
+`/system/etc/bpf/gpuMem.bpf` and `/system/etc/bpf/cputimeinstate/timeInState.bpf`.
+It also scans `/vendor/etc/bpf/` for vendor-supplied `.o` files
+(`loadAllElfObjects()` in `system/bpf/loader/Loader.cpp`). It pins the results
 into the BPF filesystem at `/sys/fs/bpf/`. Other services like `netd` and the
 tethering service then attach to these pinned programs.
 
 Key eBPF use cases on Android:
 
 1. **Per-UID traffic accounting**: BPF programs attached to cgroup socket hooks
-   count bytes sent and received per UID, enabling the Settings app's data usage
-   display and per-app data limits.
+   count bytes sent and received per UID. This supports the Settings app's data
+   usage display and per-app data limits.
 
 2. **Network firewall**: BPF programs implement the iptables replacement for
    per-app network access control, providing both better performance and more
@@ -1366,7 +1368,7 @@ CONFIG_DEFAULT_SECURITY_SELINUX=y
 **Source**: `kernel/configs/b/android-6.12/android-base.config`, lines 224-226, 57
 
 Android runs SELinux in enforcing mode on production devices. Every process,
-file, socket, and kernel object is assigned a security label, and the SELinux
+file, socket, and kernel object is assigned a security label. The SELinux
 policy (compiled from `.te` files in the AOSP tree) defines which operations are
 allowed between labeled objects.
 
@@ -1399,10 +1401,10 @@ process is killed with SIGSYS. This provides defense in depth: even if an
 attacker escapes the SELinux sandbox, they still cannot invoke dangerous system
 calls.
 
-Android's seccomp policies are defined per-architecture and are installed in
-the forked child during process specialization: `SpecializeCommon()` in
+Android's seccomp policies are defined per-architecture. They are installed in
+the forked child during process specialization. `SpecializeCommon()` in
 `frameworks/base/core/jni/com_android_internal_os_Zygote.cpp` calls
-`SetUpSeccompFilter()` after the fork, choosing the app, app-zygote, or system
+`SetUpSeccompFilter()` after the fork. It chooses the app, app-zygote, or system
 filter based on the new process's UID.
 
 ### 5.3.12 Cgroups and Resource Control
@@ -1458,9 +1460,9 @@ The device tree is a data structure that describes the hardware topology of a
 system. On ARM and RISC-V platforms, the bootloader passes a device tree blob
 (DTB) to the kernel, which uses it to discover and configure hardware devices.
 
-The device tree is necessary because, unlike x86 systems (which use ACPI for
-hardware discovery), ARM and RISC-V systems do not have a standard mechanism for
-the kernel to probe hardware. The device tree fills this gap.
+The device tree is necessary because ARM and RISC-V systems do not have a
+standard mechanism for the kernel to probe hardware. x86 systems are different,
+because they use ACPI for hardware discovery. The device tree fills this gap.
 
 The Android base config enforces that at least one hardware description mechanism
 is present:
@@ -1562,17 +1564,17 @@ graph TB
 ```
 
 The DTBO partition is a standard Android partition that contains one or more
-overlays. During boot, the bootloader reads the base DTB (typically compiled into
-the kernel image or stored in a separate partition), reads the overlays from the
-DTBO partition, applies them using the libufdt library, and passes the merged
-result to the kernel.
+overlays. During boot, the bootloader reads the base DTB. The base DTB is
+typically compiled into the kernel image or stored in a separate partition. The
+bootloader reads the overlays from the DTBO partition and applies them with the
+libufdt library. Then it passes the merged result to the kernel.
 
 ### 5.4.4 Emulator (Goldfish) Device Tree
 
 The Android emulator uses device tree to describe its virtual hardware, but it
 does not carry a checked-in DTB of its own. The one precompiled DTB shipped
-alongside the virtual-device common modules belongs to a different target: it
-is the device tree for Arm's Fixed Virtual Platform (FVP) Base RevC model,
+alongside the virtual-device common modules belongs to a different target. It
+is the device tree for Arm's Fixed Virtual Platform (FVP) Base RevC model. It is
 distributed together with FVP-specific modules such as `vexpress-config.ko` and
 `pl111_drm.ko`:
 
@@ -1709,7 +1711,7 @@ sequenceDiagram
 
 For example, the virtio MMIO transport driver matches the `"virtio,mmio"`
 compatible string. When the device tree contains a `virtio_mmio` node, the
-kernel automatically loads and probes the virtio MMIO driver, which then
+kernel automatically loads and probes the virtio MMIO driver. This driver then
 discovers individual virtio devices (network, block, GPU, etc.) through the
 virtio device negotiation protocol.
 
@@ -1884,21 +1886,24 @@ kernel/configs/
 
 **Source**: `kernel/configs/`
 
-The directory naming convention uses successive release letters, roughly
-tracking the first letter of the Android dessert codename: `v` for Vanilla Ice
-Cream (Android 15), `b` for Baklava (Android 16), and `c` for Android 17
-(kernel 6.18); `d/android-6.18` is a placeholder for the next release letter,
-pre-created by `tools/bump.py`. In both directories the `android-base.config`
-fragment is empty -- deliberately so, not as pending work: for the 6.18 branch
-AOSP declares no config requirements (the GKI tests already enforce that a GKI
-kernel is running on the device), and the TV-specific requirements were later
-explicitly removed as well. Only the conditional fragment's
-`<kernel minlts="6.18.0" />` pin remains, so the VTS tests and the framework
-compatibility matrix, which consume these same fragments, enforce no 6.18
-config-option requirements (see Section 5.8.1). At
-the same time the oldest tracked directory, `r/` (the Android 11 fragments),
-was removed in this cycle, so the tree no longer carries pre-android12 config
-sets.
+The directory naming convention uses successive release letters. They roughly
+follow the first letter of the Android dessert codename. `v` is for Vanilla Ice
+Cream (Android 15), `b` is for Baklava (Android 16), and `c` is for Android 17
+(kernel 6.18). `d/android-6.18` is a placeholder for the next release letter,
+pre-created by `tools/bump.py`.
+
+In both directories the `android-base.config` fragment is empty. This is
+deliberate, not pending work. For the 6.18 branch AOSP declares no config
+requirements, because the GKI tests already enforce that a GKI kernel is running
+on the device. The TV-specific requirements were later explicitly removed as
+well.
+
+Only the conditional fragment's `<kernel minlts="6.18.0" />` pin remains.
+As a result, the VTS tests and the framework compatibility matrix enforce no
+6.18 config-option requirements (see Section 5.8.1). They consume these same
+fragments. At the same time the oldest tracked directory, `r/` (the Android 11
+fragments), was removed in this cycle. So the tree no longer carries pre-android12
+config sets.
 
 ### 5.5.3 Base Configuration Fragment
 
@@ -2013,8 +2018,8 @@ Spectre (Retpoline).
 
 ### 5.5.5 Configuration Differences Across Kernel Versions
 
-Comparing the Android 15 (v) config for kernel 6.6 with the Android 16 (b)
-config for kernel 6.12 reveals the evolution of Android's kernel requirements:
+The Android 15 (v) config for kernel 6.6 differs from the Android 16 (b) config
+for kernel 6.12. The differences show how Android's kernel requirements changed:
 
 | Config Option | 6.6 (Android 15) | 6.12 (Android 16) | Notes |
 |--------------|-------------------|---------------------|-------|
@@ -2104,10 +2109,10 @@ kernel/configs/b/android-6.12/
 
 The TV base config is nearly identical to the standard base config, reflecting
 Android TV's convergence with the mainline Android platform. The actual
-differences are small: the TV base config omits the unconditional
-`CONFIG_SCHED_DEBUG=y` line (its conditional XML instead requires
-`CONFIG_SCHED_DEBUG=y` only when `CONFIG_DEBUG_FS=y`), and the TV conditional
-XML drops the ARM64 `CONFIG_SHADOW_CALL_STACK` requirement that the standard
+differences are small. The TV base config omits the unconditional
+`CONFIG_SCHED_DEBUG=y` line. Its conditional XML instead requires
+`CONFIG_SCHED_DEBUG=y` only when `CONFIG_DEBUG_FS=y`. The TV conditional
+XML also drops the ARM64 `CONFIG_SHADOW_CALL_STACK` requirement that the standard
 `android-base-conditional.xml` imposes.
 
 ### 5.5.9 Configuration Validation
@@ -2134,10 +2139,10 @@ The build rules are generated from the config fragments through
 
 The `kernel/configs/tools/check_fragments.sh` script checks that the config
 fragments are consistent with the Kconfig files of an Android Common Kernel
-checkout (supplied via `-k path-to-kernel`): for each architecture it runs
-`make allnoconfig`, merges the fragments in with `scripts/kconfig/merge_config.sh`,
-and verifies that every option from each fragment survives in the resulting
-`.config`. It does not check the conditional XML fragments.
+checkout. The checkout is supplied with `-k path-to-kernel`. For each
+architecture the script runs `make allnoconfig`. Then it merges the fragments in
+with `scripts/kconfig/merge_config.sh`. Last, it verifies that every option from
+each fragment survives in the resulting `.config`. It does not check the conditional XML fragments.
 
 **Source**: `kernel/configs/tools/check_fragments.sh`
 
@@ -2197,8 +2202,8 @@ EMULATOR_KERNEL_FILE := $(KERNEL_ARTIFACTS_PATH)/kernel-$(TARGET_KERNEL_USE)-gz
 Note the `?=` assignment: `TARGET_KERNEL_USE` defaults to 6.12 and can in
 principle be overridden on the command line to select a different kernel
 version. In practice, `prebuilts/qemu-kernel/arm64/` (like its `x86_64` and
-`arm64_16k` siblings) currently contains only `6.12`, so the override only
-becomes useful once another version is checked into that prebuilt tree.
+`arm64_16k` siblings) currently contains only `6.12`. So the override becomes
+useful only once another version is checked into that prebuilt tree.
 
 #### Building from Source with Kleaf
 
@@ -2279,9 +2284,10 @@ graph TB
 ```
 
 The emulator's arm64 board config defines this categorization explicitly. Both
-ramdisk lists ship in the vendor ramdisk and are loaded during first-stage init
-so that boot can reach second-stage init; they differ only in where the `.ko`
-files come from (the goldfish device modules vs the GKI modules directory):
+ramdisk lists ship in the vendor ramdisk. They are loaded during first-stage
+init, so that boot can reach second-stage init. The two lists differ only in
+where the `.ko` files come from (the goldfish device modules or the GKI modules
+directory):
 
 ```makefile
 # Boot-critical modules taken from the goldfish device modules directory
@@ -2350,7 +2356,7 @@ BOARD_RAMDISK_USE_LZ4 := true
 
 **Source**: `device/generic/goldfish/board/BoardConfigCommon.mk`, lines 76-80
 
-Boot image version 4 is the latest format, supporting:
+Boot image version 4 is the latest format. It supports:
 
 - Separate vendor boot image (`vendor_boot.img`)
 - Generic ramdisk in `boot.img`
@@ -2694,7 +2700,7 @@ recompiling the kernel. They work by inserting a breakpoint instruction at the
 target address and executing a handler when it is hit.
 
 kprobes require `CONFIG_KPROBES=y`, which the Android base config does not
-mandate -- whether a given GKI kernel enables it is a defconfig decision, not a
+mandate. Whether a given GKI kernel enables it is a defconfig decision, not a
 compliance requirement. When available and combined with eBPF
 (`CONFIG_BPF_SYSCALL=y`, `CONFIG_BPF_JIT=y`), kprobes become a powerful tool
 for custom kernel instrumentation.
@@ -2720,8 +2726,8 @@ eBPF programs loaded at boot from `/system/etc/bpf/` provide:
 ### 5.7.6 Kernel Crash Analysis with debuggerd
 
 When a process crashes on Android, `debuggerd` (specifically `crash_dump`)
-captures a tombstone -- a detailed crash report containing register state, stack
-traces, memory maps, and signal information.
+captures a tombstone. A tombstone is a detailed crash report that contains
+register state, stack traces, memory maps, and signal information.
 
 The crash dump mechanism is implemented at:
 
@@ -2994,12 +3000,12 @@ Several kernel features assist with memory debugging:
 ## 5.8 Android 17 Kernel Changes
 
 Android 17 carries several changes that touch the kernel layer directly. The most
-visible is a new Generic Kernel Image branch built on a newer upstream LTS; the
+visible is a new Generic Kernel Image branch built on a newer upstream LTS. The
 most structural is the relocation of the filesystem-management libraries
 (`fs_mgr`, `liblp`, `libsnapshot`, `libdm`, and friends) out of `system/core`
 into a dedicated `system/fs/` tree. This section gathers those changes in one
-place so the rest of the chapter can keep using the stable Android 16 / kernel
-6.12 fragments as worked examples while remaining accurate for Android 17.
+place. So the rest of the chapter can keep the stable Android 16 / kernel 6.12
+fragments as worked examples. Those examples stay accurate for Android 17.
 
 ### 5.8.1 The android17-6.18 GKI Branch
 
@@ -3023,9 +3029,9 @@ Two details are worth calling out:
 
 1. **Pre-release status.** Unlike the older branches, `android17-6.18` carries a
    `<no-releases reason="branch in pre-release phase"/>` marker instead of a list
-   of quarterly LTS releases. At the point the Android 17 tree was cut, no
-   stabilized GKI release had been published for the branch yet, so there were no
-   per-release launch and EOL dates to track.
+   of quarterly LTS releases. When the Android 17 tree was cut, the
+   branch had no stabilized GKI release yet. So there were no per-release launch
+   and EOL dates to track.
 
 2. **Minimum LTS.** The matching conditional fragment pins the minimum LTS
    version for the branch:
@@ -3047,12 +3053,12 @@ BOARD_KERNEL_VERSION := 6.18.16-android17-1-gb61cd7ae4209-ab15097451-4k
 
 **Source**: `kernel/prebuilts/6.18/arm64/kernel_version.mk`
 
-This is upstream LTS 6.18 patch level 16, the Android 17 ACK branch, the first
-release from that branch, a git commit hash, an Android build ID, and the 4 KB
-page size variant. The 6.18 prebuilt ships roughly 104 GKI `.ko` modules and a
-trimmed KMI: its `abi_symbollist` holds about 22,961 entries, noticeably smaller
-than the ~38,840 of the 6.6 branch, reflecting Google's continued curation of
-the stable symbol surface.
+This is upstream LTS 6.18 patch level 16 on the Android 17 ACK branch. It is
+the first release from that branch. The string also includes a git commit hash,
+an Android build ID, and the 4 KB page size variant. The 6.18 prebuilt ships
+roughly 104 GKI `.ko` modules and a trimmed KMI. Its `abi_symbollist` holds
+about 22,961 entries, noticeably smaller than the ~38,840 of the 6.6 branch.
+This reflects Google's continued curation of the stable symbol surface.
 
 **Source**: `kernel/prebuilts/6.18/arm64/abi_symbollist`,
 `kernel/prebuilts/6.18/arm64/abi.stg`
@@ -3073,39 +3079,42 @@ kernel/configs/
 **Source**: `kernel/configs/d/android-6.18/`, `kernel/configs/c/android-6.18/`
 
 The `android-base.config` files under `c/android-6.18` and `d/android-6.18`
-are empty by design: AOSP declares no config-option requirements for the 6.18
-branch (the GKI tests already enforce that a GKI kernel is running), and the
-TV requirements were explicitly removed as well, leaving only the conditional
+are empty by design. AOSP declares no config-option requirements for the 6.18
+branch (the GKI tests already enforce that a GKI kernel is running). The TV
+requirements were explicitly removed as well, which leaves only the conditional
 XML's `minlts="6.18.0"` declaration. Because of that, the substantive config
-citations in this
-chapter continue to use the fully populated Android 16 / kernel 6.12 fragments
-under `kernel/configs/b/android-6.12/`, which remain in the tree and unchanged.
+citations in this chapter continue to use the fully populated Android 16 /
+kernel 6.12 fragments under `kernel/configs/b/android-6.12/`. Those fragments
+remain in the tree and are unchanged.
+
 In the same cycle the Android 11 fragments under `kernel/configs/r/` were
-removed, retiring the oldest tracked config set.
+removed. This retired the oldest tracked config set.
 
 **Source**: `kernel/configs/d/android-6.18/Android.bp`
 
 The `Android.bp` for the new directory wires the fragments into Soong with the
-`kernel_config_d_6.18` rule, and (like the other directories) supports a Google
-TV variant selected by the `using_tv_gki` Soong config variable.
+`kernel_config_d_6.18` rule. Like the other directories, it supports a Google TV
+variant. The `using_tv_gki` Soong config variable selects that variant.
 
 The build-system order that pairs the emulator with a kernel version is
 unchanged for Android 17. The goldfish emulator still defaults to the kernel 6.12
 prebuilts under `prebuilts/qemu-kernel/` (`TARGET_KERNEL_USE ?= 6.12` in
-`device/generic/goldfish/board/kernel/arm64.mk`); the 6.18 image lives in the
-GKI prebuilt tree (`kernel/prebuilts/6.18/`) ahead of the emulator switching to
+`device/generic/goldfish/board/kernel/arm64.mk`). The 6.18 image lives in the
+GKI prebuilt tree (`kernel/prebuilts/6.18/`) before the emulator switches to
 it. The mechanics in Section 5.6 therefore apply unchanged.
 
 ### 5.8.2 16 KB Page Size Matures
 
-Section 5.6.6 introduced 16 KB page size kernels. The GKI prebuilts have
-shipped complete 16 KB variants next to the 4 KB ones for several releases:
-`kernel/prebuilts/6.6/arm64/16k/` and `kernel/prebuilts/6.12/arm64/16k/` each
-already contain a full parallel module set (roughly 100 `.ko` files) with its
-own `kernel_version.mk`. The 6.18 GKI prebuilt continues that pattern. Under
-`kernel/prebuilts/6.18/arm64/` there is a `16k/` subtree containing its own
-kernel image and a full set of `.ko` modules, distinct from the 4 KB modules in
-the parent directory.
+Section 5.6.6 introduced 16 KB page size kernels. Several releases
+ago, the GKI prebuilts started to ship complete 16 KB variants next to the 4 KB
+ones. `kernel/prebuilts/6.6/arm64/16k/` and `kernel/prebuilts/6.12/arm64/16k/`
+each already contain a full parallel module set (roughly 100 `.ko` files) with
+its own `kernel_version.mk`. The 6.18 GKI prebuilt continues that pattern.
+
+Under
+`kernel/prebuilts/6.18/arm64/` there is a `16k/` subtree. The subtree holds its
+own kernel image and a full set of `.ko` modules. These are distinct from the
+4 KB modules in the parent directory.
 
 ```
 kernel/prebuilts/6.18/arm64/
@@ -3129,21 +3138,21 @@ The version strings differ only in the page size suffix. The 4 KB build appends
 **Source**: `kernel/prebuilts/6.18/arm64/16k/kernel_version.mk`
 
 On the emulator side, the page size variants remain selected by separate board
-makefiles, but only `arm64_16k.mk` points at a dedicated `*_16k` prebuilt path
-(`prebuilts/qemu-kernel/arm64_16k/`), as described in Section 5.6.6;
+makefiles. However, only `arm64_16k.mk` points at a dedicated `*_16k` prebuilt
+path (`prebuilts/qemu-kernel/arm64_16k/`), as described in Section 5.6.6.
 `x86_64_16k.mk` still uses the ordinary `prebuilts/qemu-kernel/x86_64/` tree,
-and no `x86_64_16k` prebuilt directory exists. A device or emulator running the
-16 KB kernel needs all of its loadable modules compiled for 16 KB pages, which is
-why the 6.18 prebuilt ships a parallel `16k/` module set rather than reusing the
+and no `x86_64_16k` prebuilt directory exists. A device or emulator that runs the
+16 KB kernel needs all of its loadable modules compiled for 16 KB pages. This is
+why the 6.18 prebuilt ships a parallel `16k/` module set and does not reuse the
 4 KB `.ko` files.
 
 ### 5.8.3 fs_mgr Moves to system/fs
 
 Historically the partition- and filesystem-management code lived under
-`system/core`: `fs_mgr` (mounting and fstab handling), `liblp` (logical/dynamic
-partition metadata), `libsnapshot` (snapshot-based, "virtual A/B" OTA),
-`libdm` (a device-mapper wrapper), and supporting libraries such as `libfiemap`,
-`libfs_avb`, `libfstab`, and `libvbmeta`. Android 17 relocates this entire family
+`system/core`. It included `fs_mgr` (mounting and fstab handling), `liblp`
+(logical/dynamic partition metadata), `libsnapshot` (snapshot-based, "virtual
+A/B" OTA), and `libdm` (a device-mapper wrapper). Supporting libraries such as
+`libfiemap`, `libfs_avb`, `libfstab`, and `libvbmeta` lived there too. Android 17 relocates this entire family
 into a new top-level tree, `system/fs/`.
 
 ```
@@ -3167,11 +3176,11 @@ system/fs/
 
 The corresponding directories under `system/core` (`system/core/fs_mgr`,
 `system/core/liblp`, `system/core/libsnapshot`, `system/core/libdm`) no longer
-exist in the Android 17 tree. This is a relocation, not a rewrite: the
+exist in the Android 17 tree. This is a relocation, not a rewrite. The
 `Android.bp` under `system/fs/fs_mgr` still carries the original 2017 copyright
-header and the `system_core_fs_mgr_license` name, and the module names
-(`libfs_mgr`, `liblp`, `libsnapshot`, `libdm`) are unchanged, so consumers that
-depend on those Soong modules build without modification.
+header and the `system_core_fs_mgr_license` name. The module names (`libfs_mgr`,
+`liblp`, `libsnapshot`, `libdm`) are unchanged, so consumers that depend on those
+Soong modules build without modification.
 
 **Source**: `system/fs/fs_mgr/Android.bp`
 
@@ -3189,10 +3198,11 @@ directly on top of the kernel's storage stack:
   all of the above rely on.
 
 So the device-mapper and dynamic-partition machinery described throughout this
-chapter is now driven by code under `system/fs/` rather than `system/core/`. When
-following a verified-boot or OTA code path in the Android 17 source, look for it
-under `system/fs/fs_mgr/` (for example, `system/fs/fs_mgr/libsnapshot/` for the
-snapshot/OTA logic and `system/fs/fs_mgr/liblp/` for super-partition metadata).
+chapter is now driven by code under `system/fs/` rather than `system/core/`. To
+follow a verified-boot or OTA code path in the Android 17 source, look for it
+under `system/fs/fs_mgr/`. For example, use `system/fs/fs_mgr/libsnapshot/` for
+the snapshot/OTA logic and `system/fs/fs_mgr/liblp/` for super-partition
+metadata.
 
 ### 5.8.4 mmd: Centralized ZRAM and Memory Tuning
 
@@ -3213,12 +3223,12 @@ mmd takes over two responsibilities that touch the kernel directly:
    **Source**: `system/memory/mmd/mmd.rc`
 
 2. **ZRAM maintenance.** Once running, mmd performs ZRAM writeback and
-   recompression on its own schedule, accepting Binder requests from
-   `system_server` via an `IMmd` AIDL interface rather than having
-   `system_server` poke the kernel's zram sysfs files directly.
+   recompression on its own schedule. It accepts Binder requests from
+   `system_server` via an `IMmd` AIDL interface. `system_server` does not poke
+   the kernel's zram sysfs files directly.
 
-The handoff is visible in the relocated `fs_mgr`: the legacy `swapon_all` path is
-now explicitly deprecated in favor of mmd, and it skips zram setup when mmd is
+The handoff is visible in the relocated `fs_mgr`. The legacy `swapon_all` path
+is now explicitly deprecated in favor of mmd. It skips zram setup when mmd is
 configured to own it.
 
 ```cpp
@@ -3229,9 +3239,9 @@ configured to own it.
 
 **Source**: `system/fs/fs_mgr/fs_mgr.cpp` (swapon_all handling)
 
-For the emulator, the older flow still applies: `init.ranchu.rc` loads `zram.ko`
+For the emulator, the older flow still applies. `init.ranchu.rc` loads `zram.ko`
 via `modprobe` during early init and writes the zram compression algorithm
-directly (the Section 5.9 exercises reference these lines), so the emulator does
+directly (the Section 5.9 exercises reference these lines). So the emulator does
 not yet depend on mmd to bring up swap.
 
 ### 5.8.5 casefolding_remover: A New system/fs Tool
@@ -3243,9 +3253,9 @@ configuration changes.
 
 **Source**: `system/fs/casefolding_remover/src/main.rs`
 
-Case folding is a kernel ext4/f2fs feature (the `FS_CASEFOLD_FL` inode flag) that
-makes a directory perform case-insensitive name lookups, which Android can use
-for external-storage emulation. The tool's job, when the requested casefolding
+Case folding is a kernel ext4/f2fs feature (the `FS_CASEFOLD_FL` inode flag).
+It makes a directory perform case-insensitive name lookups, which Android can
+use for external-storage emulation. The tool's job, when the requested casefolding
 state no longer matches what is on disk, is to:
 
 1. Set the correct casefolding flag on a fresh `/data/media_temp` directory.
@@ -3270,7 +3280,7 @@ service casefolding_remover /system/bin/casefolding_remover
 **Source**: `system/fs/casefolding_remover/casefolding_remover.rc`
 
 The tool's `Android.bp` header still reads `// system/core/casefolding_remover`,
-a leftover from before the directory was placed under `system/fs/`, which is a
+a leftover from before the directory was placed under `system/fs/`. It is a
 useful reminder that the `system/fs/` consolidation happened late in the cycle.
 
 **Source**: `system/fs/casefolding_remover/Android.bp`
@@ -3293,8 +3303,8 @@ useful reminder that the `system/fs/` consolidation happened late in the cycle.
 ## 5.9 Try It: Examine the Emulator Kernel
 
 This section provides hands-on exercises for exploring the Android emulator's
-kernel. These exercises assume you have an AOSP source tree synced and an
-emulator image built (or the ability to use prebuilt images).
+kernel. These exercises assume that you have a synced AOSP source tree and a
+built emulator image. You can use prebuilt images instead.
 
 ### Exercise 1: Inspect the Prebuilt Kernel
 
@@ -3440,10 +3450,10 @@ grep -c "<build" kernel/configs/approved-ogki-builds.xml
 - Each branch has a defined EOL years in the future (4-6 years of support)
 - LTS releases within a branch have shorter individual lifetimes (mostly 12-17
   months, with recent entries around 15-16)
-- The android17-6.18 branch is the newest -- registered but still in the
-  pre-release phase, marked with a `<no-releases .../>` entry -- while
-  android16-6.12 is the newest branch with published LTS releases, starting
-  in 2025
+- The android17-6.18 branch is the newest. It is registered but still in the
+  pre-release phase, marked with a `<no-releases .../>` entry. The
+  android16-6.12 branch is the newest branch with published LTS releases,
+  which start in 2025.
 - The approved-ogki-builds.xml file has far more android15-6.6 entries than
   android16-6.12, reflecting the maturity difference
 
@@ -3478,7 +3488,7 @@ adb shell cat /proc/pressure/io
 ```
 
 The `CONFIG_IKCONFIG=y` and `CONFIG_IKCONFIG_PROC=y` options in the base config
-ensure that the kernel's configuration is always accessible at runtime through
+make the kernel's configuration always accessible at runtime through
 `/proc/config.gz`. This is invaluable for debugging configuration-related issues.
 
 ### Exercise 7: Explore Binder on the Emulator
@@ -3532,10 +3542,10 @@ on early-init
 
 This shows:
 
-1. The `vendor.dlkm_loader` service runs `/vendor/bin/dlkm_loader`, which
-   modprobes the modules listed in `modules.load` under `/vendor/lib/modules`
-   on the vendor partition (the emulator does not use a `vendor_dlkm`
-   partition)
+1. The `vendor.dlkm_loader` service runs `/vendor/bin/dlkm_loader`. This
+   program modprobes the modules listed in `modules.load` under
+   `/vendor/lib/modules` on the vendor partition. The emulator does not use a
+   `vendor_dlkm` partition.
 2. `zram.ko` is loaded from `system_dlkm` via modprobe during early init
 3. The modprobe command runs in the `modprobe` SELinux domain (`u:r:modprobe:s0`)
 
@@ -3583,10 +3593,11 @@ Notable observations:
 
 ## 5.10 Summary
 
-The Android kernel is a carefully managed extension of the Linux kernel, with
-additions that support Android's unique requirements for IPC (Binder), memory
-management (lmkd + PSI), storage (FUSE passthrough, incremental FS), security
-(dm-verity, file-based encryption, SELinux), and power management (wakelocks).
+The Android kernel is a carefully managed extension of the Linux kernel. Its
+additions support Android's unique requirements for IPC (Binder), memory
+management (lmkd + PSI), and storage (FUSE passthrough, incremental FS). They
+also support security (dm-verity, file-based encryption, SELinux) and power
+management (wakelocks).
 
 The GKI architecture represents a fundamental shift in how Android kernels are
 managed. By splitting the kernel into a Google-built core image and
@@ -3597,19 +3608,19 @@ vendor-supplied modules with a stable interface (KMI), GKI enables:
 - Longer kernel support lifetimes (4-6 years per branch)
 - Verified, approved kernel builds for production devices
 
-The kernel configuration system ensures that all Android devices meet a minimum
-set of requirements, verified at build time, test time (VTS), and OTA/update
-time (`checkvintf` against the framework compatibility matrix). The lifecycle
-management system
+The kernel configuration system makes sure that all Android devices meet a
+minimum set of requirements. The requirements are verified at build time, at
+test time (VTS), and at OTA/update time (`checkvintf` against the framework
+compatibility matrix). The lifecycle management system
 (`kernel-lifetimes.xml`) provides transparency about which kernels are supported
 and for how long.
 
 Android 17 advances this picture in a few concrete ways, collected in Section
-5.8: a new `android17-6.18` GKI branch (upstream LTS 6.18) with its own prebuilt
-and a trimmed KMI; a fully fledged 16 KB page size build shipping next to the
-4 KB one; the relocation of the `fs_mgr`/`liblp`/`libsnapshot`/`libdm` family out
-of `system/core` into the new `system/fs/` tree; and the new `mmd` daemon taking
-over ZRAM setup and maintenance from `init` and `fs_mgr`.
+5.8. First, a new `android17-6.18` GKI branch (upstream LTS 6.18) has its own
+prebuilt and a trimmed KMI. Second, a fully fledged 16 KB page size build ships
+next to the 4 KB one. Third, the `fs_mgr`/`liblp`/`libsnapshot`/`libdm` family
+moved out of `system/core` into the new `system/fs/` tree. Fourth, the new
+`mmd` daemon takes over ZRAM setup and maintenance from `init` and `fs_mgr`.
 
 For developers working with AOSP, understanding the kernel layer is essential
 for:
@@ -3621,28 +3632,30 @@ for:
 - Maintaining and updating kernels for devices in the field
 
 The exercises in section 5.9 provide a starting point for hands-on kernel
-exploration using the Android emulator, which includes a fully functional GKI
-kernel with the same architecture as production devices.
+exploration on the Android emulator. The emulator includes a fully functional
+GKI kernel with the same architecture as production devices.
 
 A few points are worth holding onto. The Android kernel is upstream Linux plus
-targeted extensions, and that delta keeps shrinking as former Android-only
-features are upstreamed. GKI is now mandatory: starting with Android 12 and
-kernel 5.10, every new device ships the GKI architecture behind a stable KMI,
-which is what makes independent kernel updates and reduced fragmentation
-possible. Configuration lives in fragments under `kernel/configs/` rather than
-monolithic defconfigs, validated at build, test (VTS), and OTA/update time
-(`checkvintf` against the framework compatibility matrix).
-Security is enforced at every layer, from dm-verity and file-based encryption
-through SELinux, seccomp, CFI, and SCS. The debugging story is rich, combining
-ftrace, Perfetto, eBPF, debuggerd, and pstore. And the goldfish emulator is a
-fully functional GKI target running the same architecture as production
-hardware, which makes it a good platform for kernel work.
+targeted extensions. That delta keeps shrinking as former Android-only
+features are upstreamed. GKI is now mandatory. From Android 12 and kernel 5.10
+onward, every new device ships the GKI architecture behind a stable KMI. This
+is what makes independent kernel updates and reduced fragmentation possible.
 
-Several other chapters build on this material: Chapter 2 covers Kleaf, the
-Bazel-based kernel build system; Chapter 4 covers how the kernel is loaded and
-init begins; Chapter 10 covers HALs that depend on kernel drivers; Chapter 40
-covers SELinux policy, seccomp filters, and the verified boot chain; and Chapter
-58 covers Perfetto tracing, CPU scheduling, and memory tuning.
+Configuration lives in fragments under `kernel/configs/` rather than
+monolithic defconfigs. The configuration is validated at build, test (VTS), and
+OTA/update time (`checkvintf` against the framework compatibility matrix).
+
+Security is enforced at every layer, from dm-verity and file-based encryption
+through SELinux, seccomp, CFI, and SCS. The debugging story is rich. It includes
+ftrace, Perfetto, eBPF, debuggerd, and pstore. The goldfish emulator is a
+fully functional GKI target. It runs the same architecture as production
+hardware, so it is a good platform for kernel work.
+
+Several other chapters build on this material. Chapter 2 covers Kleaf, the
+Bazel-based kernel build system. Chapter 4 covers how the kernel is loaded and
+init begins. Chapter 10 covers HALs that depend on kernel drivers. Chapter 40
+covers SELinux policy, seccomp filters, and the verified boot chain. Chapter 58
+covers Perfetto tracing, CPU scheduling, and memory tuning.
 
 ### Key File Reference
 

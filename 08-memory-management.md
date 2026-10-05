@@ -1,24 +1,29 @@
 # Chapter 8: Memory Management
 
 Memory management is arguably the single most critical subsystem in a mobile operating system.
-Android devices operate under severe physical constraints -- a flagship phone may have 8--16 GB of
+Android devices operate under severe physical constraints. A flagship phone may have 8--16 GB of
 RAM, yet users routinely have dozens of apps installed and expect instant switching between them.
 This chapter dissects how AOSP orchestrates memory from the hardware page tables all the way up to
-the Java `onTrimMemory()` callbacks that developers interact with. We trace the path through the
-Linux kernel's virtual memory subsystem, the userspace Low Memory Killer Daemon (lmkd), cgroup
-accounting, compressed swap (zRAM), graphics buffer allocation (ION/DMA-BUF), anonymous shared
-memory (ashmem/memfd), profiling tools, and the security-oriented memory hardening features that
-protect against exploitation.
+the Java `onTrimMemory()` callbacks that developers interact with.
+
+We trace the path through these parts: the
+Linux kernel's virtual memory subsystem, the userspace Low Memory Killer Daemon (lmkd), and
+cgroup accounting. The path also covers compressed swap (zRAM), graphics buffer allocation
+(ION/DMA-BUF), anonymous shared memory (ashmem/memfd), and profiling tools. Last, we look at the
+security-oriented memory hardening features that protect against exploitation.
 
 Android 17 reshapes the lower half of this stack. ZRAM management moves out of `system_server` and
 the boot-time `swapon_all` path into a dedicated native Rust daemon, the Memory Management Daemon
-(`mmd`, `system/memory/mmd/`), which also introduces per-process ZRAM writeback and prefetch. A
-companion daemon, the Process Memory Guardian (`pmgd`, `system/memory/guardian/`), adds per-process
+(`mmd`, `system/memory/mmd/`). This daemon also introduces per-process ZRAM writeback and prefetch.
+
+A companion daemon, the Process Memory Guardian (`pmgd`, `system/memory/guardian/`), adds per-process
 memory enforcement alongside lmkd's system-wide kills. Section 8.10 covers `mmd` in depth and
 cross-references Chapter 29, where `pmgd` is documented as part of the power and process-lifecycle
-story. The platform is also in the middle of a 4 KB to 16 KB page-size transition; Section 8.11
-explains how a larger page size ripples through the memory subsystem (Chapter 7 covers the bionic
-linker side of the same migration).
+story.
+
+The platform is also in the middle of a 4 KB to 16 KB page-size transition. Section 8.11
+explains how a larger page size ripples through the memory subsystem. Chapter 7 covers the bionic
+linker side of the same migration.
 
 Every section references real source files rooted at the AOSP tree. When a path such as
 `system/memory/lmkd/lmkd.cpp` appears, it is relative to the AOSP checkout root.
@@ -31,7 +36,7 @@ Every section references real source files rooted at the AOSP tree. When a path 
 
 Android runs on the Linux kernel, which provides each process with its own virtual address space.
 On a 64-bit ARM device (AArch64), the kernel typically uses a 39-bit or 48-bit virtual address
-space, giving each process up to 256 TB of addressable memory -- vastly more than any physical
+space. This gives each process up to 256 TB of addressable memory, vastly more than any physical
 device will ever contain. The Memory Management Unit (MMU) in the CPU translates virtual addresses
 to physical frame numbers through multi-level page tables.
 
@@ -446,9 +451,9 @@ struct lmk_procprio {
 };
 ```
 
-The `LMK_PROCS_PRIO` command (line 41) is an optimization that allows batching multiple process
-priority updates in a single packet, reducing socket round-trips when many process priorities
-change simultaneously (e.g., during activity transitions).
+The `LMK_PROCS_PRIO` command (line 41) is an optimization. It allows batching of multiple process
+priority updates in a single packet. This reduces socket round-trips when many process priorities
+change at the same time (e.g., during activity transitions).
 
 ### 8.2.4 OOM Adjustment Scores
 
@@ -559,12 +564,14 @@ static struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
 };
 ```
 
-These static values are only the fallback for the legacy minfree-based strategy. In the default
+These static values are only the fallback for the legacy minfree-based strategy.
+
+In the default
 new-strategy mode (`use_new_strategy` is true whenever `ro.lmk.use_minfree_levels` is false, its
-default), `init_psi_monitors()` overwrites the table before registration: the LOW threshold is
-set to 0 -- and `init_mp_psi()` skips registration when the threshold is 0, so no LOW monitor
-exists -- while MEDIUM becomes `psi_partial_stall_ms` (`some`, 70 ms/1 s by default, 200 ms on
-low-RAM devices) and CRITICAL becomes `psi_complete_stall_ms` (`full`, 700 ms/1 s). In practice
+default), `init_psi_monitors()` overwrites the table before registration. The LOW threshold is
+set to 0. `init_mp_psi()` skips registration when the threshold is 0, so no LOW monitor
+exists. MEDIUM becomes `psi_partial_stall_ms` (`some`, 70 ms/1 s by default, 200 ms on
+low-RAM devices). CRITICAL becomes `psi_complete_stall_ms` (`full`, 700 ms/1 s). In practice
 only two PSI monitors are registered.
 
 The PSI monitor library (`system/memory/lmkd/libpsi/psi.cpp`) registers triggers with the kernel:
@@ -931,15 +938,15 @@ static int find_and_kill_process(int min_score_adj,
 }
 ```
 
-The function returns as soon as `kill_one_process()` succeeds (a non-negative result); only if
+The function returns as soon as `kill_one_process()` succeeds (a non-negative result). Only if
 every candidate fails does the outer loop fall through and return the last failure.
 
 The dual selection strategy is important:
 
 1. **For cached/background processes** (`oom_adj > PERCEPTIBLE_APP_ADJ`): Kill the
    least-recently-added (oldest) process at each score level. New registrations are inserted at
-   the head of each adj slot, and `proc_adj_tail` walks from the back, so the process that has
-   been registered at that score the longest dies first.
+   the head of each adj slot. `proc_adj_tail` walks from the back. So the process that has been
+   registered at that score the longest dies first.
 2. **For perceptible processes** (`oom_adj <= 200`): Always kill the heaviest process
    (`proc_get_heaviest`), which reads `/proc/[pid]/statm` for each candidate. This minimizes the
    number of visible-to-user processes that must die.
@@ -1050,7 +1057,7 @@ out:
 }
 ```
 
-The `lmkd_free_memory_before_kill_hook` is a vendor hook that allows OEM-specific code to free
+The `lmkd_free_memory_before_kill_hook` is a vendor hook. It lets OEM-specific code free
 memory (e.g., by compacting specific caches or dropping GPU resources) without actually killing
 a process. If the hook frees enough memory, the kill is skipped entirely.
 
@@ -1113,11 +1120,11 @@ enum vmstat_field {
 };
 ```
 
-A `workingset_refault` is a page that was recently evicted from the page cache and is now being
-faulted back in -- a strong signal that the system is thrashing. The thrashing percentage is
-calculated as the growth in `workingset_refault_file` expressed as a percentage of the
-file-backed page cache size (`nr_inactive_file + nr_active_file`) sampled at the start of the
-window, and compared against configurable thresholds:
+A `workingset_refault` is a page that was recently evicted from the page cache and is now
+being faulted back in. It is a strong signal that the system is thrashing. The thrashing percentage is
+the growth in `workingset_refault_file`, as a percentage of the file-backed page cache size
+(`nr_inactive_file + nr_active_file`) sampled at the start of the window. This
+percentage is compared against configurable thresholds:
 
 | Property | Default | Low RAM Default |
 |---|---|---|
@@ -1161,12 +1168,12 @@ The reaper thread's main loop:
 
 1. **Pop** a kill target from the thread-safe reap queue.
 2. **Kill the target's cgroup** -- `kill_cgroup_or_process()` writes to the cgroup's `cgroup.kill`
-   (or walks `cgroup.procs`), falling back to `pidfd_send_signal(SIGKILL)` for processes that are
-   not in their own Android-managed cgroup (e.g., children of adbd). The pidfd avoids PID
+   (or walks `cgroup.procs`). It falls back to `pidfd_send_signal(SIGKILL)` for processes that
+   are not in their own Android-managed cgroup (e.g., children of adbd). The pidfd avoids PID
    recycling races.
-3. **Hand off priority adjustment** -- the victim's uid/pid is pushed to a dedicated
-   `lmkd_setprio` thread, which moves the dying process into the LMKD reap-target cgroups so its
-   teardown can use the big cores.
+3. **Hand off priority adjustment** -- the victim's uid/pid goes to a dedicated
+   `lmkd_setprio` thread. This thread moves the dying process into the LMKD reap-target cgroups,
+   so its teardown can use the big cores.
 4. **Call `process_mrelease()`** -- a Linux syscall (number 448) that triggers synchronous memory
    reclamation from the dying process.
 
@@ -1232,7 +1239,7 @@ public:
 ```
 
 The watchdog uses a `CLOCK_MONOTONIC` timer with `SIGALRM` delivery. If lmkd's main event loop
-does not disarm the watchdog within the 2-second timeout, the watchdog bites -- `bite()` invokes
+does not disarm the watchdog within the 2-second timeout, the watchdog bites. Then `bite()` invokes
 `watchdog_callback()`, which performs the emergency synchronous kill described in Section 8.2.11.
 It does not abort the daemon.
 
@@ -1315,8 +1322,8 @@ graph TD
     Handler --> FailH["kill_fail_handler()"]
 ```
 
-The epoll capacity is sized for all three pressure levels, but as Section 8.2.5 explains, the
-LOW monitor is not registered in the default new-strategy mode, so only the MEDIUM and CRITICAL
+The epoll capacity is sized for all three pressure levels. But as Section 8.2.5 explains, the
+LOW monitor is not registered in the default new-strategy mode. So only the MEDIUM and CRITICAL
 file descriptors appear in the event loop.
 
 After receiving a PSI event, lmkd enters a polling mode where it periodically re-checks memory
@@ -1418,8 +1425,8 @@ during boot by init:
 ### 8.3.2 Process Group Assignment
 
 When ActivityManagerService registers a process with lmkd via `LMK_PROCPRIO`, lmkd writes the
-process's `/proc/[pid]/oom_score_adj` and sets a memory soft limit on the cgroup the process
-already belongs to. lmkd never moves a process between cgroups: membership is assigned by
+process's `/proc/[pid]/oom_score_adj`. It also sets a memory soft limit on the cgroup that the
+process already belongs to. lmkd never moves a process between cgroups: membership is assigned by
 ActivityManagerService through libprocessgroup, and lmkd only looks up the resulting attribute
 paths.
 
@@ -1487,11 +1494,11 @@ The soft limit multiplier translates to actual memory limits:
 | >= 0 (foreground) | 20 | 160 MB |
 | < 0 (persistent) | 64 | 512 MB |
 
-These are **soft limits** -- the kernel will attempt to reclaim memory from processes exceeding
-their soft limit before reclaiming from processes within their limit, but a process can use more
-memory if available. Note the special handling of the home/launcher range: the `>= 600` branch
-also remaps the registered `oom_adj_score` down to 200 so lmkd treats the launcher as
-perceptible rather than killing it, while the service (`>= 500`) and heavy-weight app (`>= 400`)
+These are **soft limits**. The kernel will attempt to reclaim memory from processes that exceed
+their soft limit before it reclaims from processes within their limit. But a process can use more
+memory if available. Note the special handling of the home/launcher range. The `>= 600` branch
+also remaps the registered `oom_adj_score` down to 200, so lmkd treats the launcher as
+perceptible rather than killing it. The service (`>= 500`) and heavy-weight app (`>= 400`)
 ranges get no soft limit at all.
 
 ### 8.3.3 Task Profiles
@@ -1575,8 +1582,8 @@ Android 11 introduced the app freezer, which uses the cgroup freezer controller 
 background apps instead of killing them. Frozen apps consume zero CPU but retain their memory:
 
 Android mounts the freezer as a cgroup v2 controller (`system/core/libprocessgroup/profiles/cgroups.json`),
-so freezing is controlled through each process's own cgroup directory rather than a separate
-v1 `freezer/` hierarchy:
+so freezing is controlled through each process's own cgroup directory. There is no separate v1 `freezer/`
+hierarchy:
 
 ```
 /sys/fs/cgroup/uid_<uid>/pid_<pid>/               # Per-process cgroup directory
@@ -1591,24 +1598,24 @@ The interaction between the freezer and lmkd is simple:
 1. When an app goes to the background, ActivityManagerService may freeze it.
 2. Frozen apps still consume memory -- their oom_adj is high, making them candidates for lmkd
    killing.
-3. lmkd itself has no freezer awareness: it selects victims purely by oom_score_adj (and RSS for
-   perceptible processes), with no preference between frozen and unfrozen apps, and it needs no
-   thaw step -- the reaper's `cgroup.kill` write and `pidfd_send_signal(SIGKILL)` both terminate
-   a process frozen by the cgroup v2 freezer.
+3. lmkd itself has no freezer awareness. It selects victims purely by oom_score_adj (and RSS for
+   perceptible processes), with no preference between frozen and unfrozen apps. It needs no
+   thaw step. The reaper's `cgroup.kill` write and `pidfd_send_signal(SIGKILL)` both terminate
+   a process that the cgroup v2 freezer froze.
 
 ---
 
 ## 8.4 zRAM (Compressed Swap)
 
 Android uses zRAM (compressed RAM disk) as its swap device instead of traditional disk-based
-swap. zRAM compresses pages in memory before storing them, allowing the system to effectively
-increase its usable memory capacity at the cost of CPU cycles for compression and decompression.
+swap. zRAM compresses pages in memory before it stores them. This effectively increases the usable
+memory capacity of the system, at the cost of CPU cycles for compression and decompression.
 
 This section describes the zRAM mechanism itself: the kernel device, its allocator (zsmalloc),
 and how lmkd reasons about compressed swap. Starting in Android 17, the *configuration and
 maintenance* of zRAM no longer live in init scripts and `system_server`; they move into the new
 `mmd` daemon. Where the subsections below show legacy init-script setup, treat it as the
-mechanism `mmd` now drives; Section 8.10 documents the `mmd` ownership model, its `mmd.zram.*`
+mechanism `mmd` now drives. Section 8.10 documents the `mmd` ownership model, its `mmd.zram.*`
 properties, and per-process writeback.
 
 ### 8.4.1 zRAM Architecture
@@ -1662,10 +1669,12 @@ swapon_all /vendor/etc/fstab.${ro.hardware}
 /dev/block/zram0  none  swap  defaults  zramsize=2147483648,zram_backingdev_size=512M
 ```
 
-On Android 17, when `mmd.zram.enabled` is set this work moves into the `mmd_setup` service: it
-sizes the device from `mmd.zram.size` (a byte count or a percentage of RAM, default `50%`), selects
-the compression algorithm from `mmd.zram.comp_algorithm`, and calls `swapon` with an optional swap
-priority. In that mode the zRAM setup inside `swapon_all` becomes a no-op and the legacy overlay
+On Android 17, when `mmd.zram.enabled` is set, this work moves into the `mmd_setup` service. The
+service sizes the device from `mmd.zram.size` (a byte count or a percentage of RAM, default
+`50%`). It selects the compression algorithm from `mmd.zram.comp_algorithm`. Then it calls
+`swapon` with an optional swap priority.
+
+In that mode the zRAM setup inside `swapon_all` becomes a no-op and the legacy overlay
 `config_zramWriteback` / `ro.zram.*` properties are ignored. The kernel sysfs nodes below still
 exist and report the same statistics; only the writer changed. Section 8.10.2 walks through the
 `mmd_setup` flow.
@@ -1735,10 +1744,10 @@ static inline int64_t get_free_swap(union meminfo *mi) {
 }
 ```
 
-This is a critical insight: free swap reported by the kernel (`SwapFree` in `/proc/meminfo`)
-can be misleading on zRAM because the swap space itself consumes physical RAM. If the system
-has 100 MB of free swap but only 50 MB of free physical RAM, it can only actually swap 50 MB
-(before compression). The `swap_compression_ratio` property (default: 1:1) adjusts this
+This is a critical insight. The free swap that the kernel reports (`SwapFree` in `/proc/meminfo`)
+can be misleading on zRAM, because the swap space itself consumes physical RAM. Suppose the
+system has 100 MB of free swap but only 50 MB of free physical RAM. Then it can only actually
+swap 50 MB (before compression). The `swap_compression_ratio` property (default: 1:1) adjusts this
 calculation.
 
 ### 8.4.5 zRAM Writeback
@@ -1758,9 +1767,11 @@ write /sys/block/zram0/writeback idle
 
 Writeback reduces zRAM's memory footprint by moving infrequently accessed pages to flash. It is
 used cautiously due to flash wear concerns. On Android 17, this whole-device "idle writeback" is
-no longer a fixed init script: `mmd` decides *when* and *how much* to write back from policy
-properties (`mmd.zram.writeback.*`), and it adapts the idle-page age dynamically based on memory
-utilization. The kernel exposes idle tracking through `CONFIG_ZRAM_TRACK_ENTRY_ACTIME` /
+no longer a fixed init script. `mmd` decides *when* and *how much* to write back from policy
+properties (`mmd.zram.writeback.*`). It also adapts the idle-page age dynamically, based on
+memory utilization.
+
+The kernel exposes idle tracking through `CONFIG_ZRAM_TRACK_ENTRY_ACTIME` /
 `CONFIG_ZRAM_MEMORY_TRACKING`; when neither is present, `mmd` falls back to marking all pages idle
 on a timer (`system/memory/mmd/src/zram/writeback.rs`, `system/memory/mmd/src/zram/idle.rs`). A17
 also adds *per-process* writeback and prefetch on top of this whole-device path, covered in
@@ -1866,8 +1877,8 @@ adb shell setprop persist.device_config.lmkd_native.swap_compression_ratio_div 1
 
 Graphics buffers are among the largest memory consumers on an Android device. A single 1080p
 RGBA buffer occupies approximately 8 MB. The graphics pipeline requires specialized allocation
-mechanisms that can provide memory accessible by both the CPU and various hardware accelerators
-(GPU, video encoder/decoder, display controller, camera ISP).
+mechanisms. These mechanisms can provide memory that both the CPU and various hardware accelerators
+(GPU, video encoder/decoder, display controller, camera ISP) can access.
 
 ### 8.5.1 Evolution: ION to DMA-BUF Heaps
 
@@ -1931,8 +1942,8 @@ int ion_alloc(int fd, size_t len, size_t align,
 ```
 
 ION historically supported two kernel ABI versions (a "legacy" pre-4.12 interface and a "modern"
-one), and libion used to probe which was in use. That probing is gone: in the current tree
-`system/memory/libion/ion.c` is a small file of stubs in which every entry point fails
+one), and libion used to probe which was in use. That probing is gone. In the current tree
+`system/memory/libion/ion.c` is a small file of stubs. Every entry point in it fails
 unconditionally, and `ion_is_legacy()` is a hardcoded `return 0`:
 
 ```c
@@ -1962,8 +1973,8 @@ ION heap types:
 ### 8.5.3 DMA-BUF Heaps (Modern)
 
 DMA-BUF heaps are the upstream Linux replacement for ION. Each heap exposes its own device node
-under `/dev/dma_heap/`, and in Android 17 this root is the only allocation path the library knows
-(see Section 8.5.9):
+under `/dev/dma_heap/`. In Android 17 this root is the only allocation path that the library
+knows (see Section 8.5.9):
 
 ```c
 // system/memory/libdmabufheap/BufferAllocator.cpp (line 36)
@@ -1971,7 +1982,7 @@ static constexpr char kDmaHeapRoot[] = "/dev/dma_heap/";
 ```
 
 `BufferAllocator::Alloc` opens the named heap and allocates from it. Earlier releases tried a
-DMA-BUF heap first and fell back to `/dev/ion`; the current code drops that fallback and simply
+DMA-BUF heap first and fell back to `/dev/ion`. The current code drops that fallback and simply
 fails if the heap does not exist:
 
 ```c
@@ -2044,8 +2055,8 @@ GraphicBufferMapper::GraphicBufferMapper() {
 
 The `requireMapper4()` guard (`android_get_device_api_level() >= 36 &&
 flags::require_gralloc4_or_newer()`) means that on API level 36+ devices with the
-`require_gralloc4_or_newer` flag enabled, the Gralloc 2/3 fallbacks are skipped entirely --
-only Gralloc 4 and 5 are considered.
+`require_gralloc4_or_newer` flag enabled, the Gralloc 2/3 fallbacks are skipped entirely.
+Only Gralloc 4 and 5 are considered.
 
 The `GraphicBufferAllocator` selects the matching allocator implementation:
 
@@ -2192,8 +2203,8 @@ int BufferAllocator::DoSync(unsigned int dmabuf_fd, bool start,
 }
 ```
 
-There is no ION fallback here any more: with the ION removal (Section 8.5.9) the sync path is a
-single `DMA_BUF_IOCTL_SYNC` ioctl, and the old `CustomCpuSyncLegacyIon` overloads simply forward
+There is no ION fallback here any more. With the ION removal (Section 8.5.9), the sync path is a
+single `DMA_BUF_IOCTL_SYNC` ioctl. The old `CustomCpuSyncLegacyIon` overloads simply forward
 to this function.
 
 The sync protocol:
@@ -2249,27 +2260,30 @@ static int64_t read_gpu_total_kb() {
 }
 ```
 
-This BPF map is maintained by a GPU memory tracking BPF program that hooks into the GPU driver's
-allocation and deallocation paths, providing the total GPU memory usage without requiring
-vendor-specific code in lmkd.
+A GPU memory tracking BPF program maintains this BPF map. The program hooks into the GPU driver's
+allocation and deallocation paths and provides the total GPU memory usage. lmkd needs no
+vendor-specific code for this.
 
 The BPF map gives lmkd a *system-wide* total, but it cannot attribute graphics memory to a
 particular process. Much of a process's GPU and graphics-buffer memory lives in driver-private
-allocations that never appear in that process's `/proc/<pid>/smaps`, so a naive PSS sum
-under-counts graphics-heavy apps. The gap is filled by `libmemtrack`
-(`system/memory/libmemtrack/`), a thin client of the memtrack HAL: a caller fills a
-`memtrack_proc` handle with `memtrack_proc_get(pid)` and reads back per-process graphics, GL, and
-"other" totals. Internally the library does not talk to the vendor HAL directly; it binds to the
-`memtrack.proxy` service (the `MemtrackProxy` class, `frameworks/native/services/memtrackproxy/`),
-which fronts the per-device memtrack HAL. This is the path -- process to `libmemtrack` to the
-memtrack proxy to the HAL -- that produces the `GL mtrack` line in the `dumpsys meminfo` output
-shown in Section 8.7.1; the JNI layer (`frameworks/base/core/jni/android_os_Debug.cpp`) calls
+allocations that never appear in that process's `/proc/<pid>/smaps`. A naive PSS sum therefore
+under-counts graphics-heavy apps.
+
+`libmemtrack` (`system/memory/libmemtrack/`) fills the gap. It is
+a thin client of the memtrack HAL. A caller fills a `memtrack_proc` handle with
+`memtrack_proc_get(pid)` and reads back per-process graphics, GL, and "other" totals.
+
+Internally the library does not talk to the vendor HAL directly. It binds to the `memtrack.proxy` service
+(the `MemtrackProxy` class, `frameworks/native/services/memtrackproxy/`), which fronts the
+per-device memtrack HAL. The path goes from the process to `libmemtrack`, then to the memtrack
+proxy, then to the HAL. This path produces the `GL mtrack` line in the `dumpsys meminfo` output
+shown in Section 8.7.1. The JNI layer (`frameworks/base/core/jni/android_os_Debug.cpp`) calls
 `memtrack_proc_get()` to add the missing graphics memory to each process's report.
 
 ### 8.5.9 ION Removal in Android 17
 
 Android 17 removes ION as a supported allocator. `libdmabufheap` (commit "libdmabufheap: Remove
-most ION support") drops every ION code path: `BufferAllocator` no longer opens `/dev/ion`, the
+most ION support") drops every ION code path. `BufferAllocator` no longer opens `/dev/ion`. The
 `kIonDevice` and `kIonSystemHeapName` constants are gone from `BufferAllocator.cpp`, and allocation
 goes straight to `/dev/dma_heap/`. The ION-shaped entry points stay in the header only to keep the
 ABI stable for prebuilts; they are marked deprecated and do nothing useful:
@@ -2295,19 +2309,23 @@ int BufferAllocator::MapNameToIonHeap(const std::string&, const std::string&, un
 `ion_fd_` field and the `ion_heap_data`/`IonHeapConfig` structs `[[deprecated("Retained for ABI
 compatibility for GRF")]]`, so they occupy space in the object but are never populated.
 
-For vendors this means a device must ship DMA-BUF heaps: each buffer pool that used to be an ION
-heap needs a matching `/dev/dma_heap/<name>` node, registered through the kernel's `dma-buf` heap
-framework (system, CMA, and vendor-specific heaps) rather than the old ION heap registration. The
+For vendors this means a device must ship DMA-BUF heaps. Each buffer pool that used to be an ION
+heap needs a matching `/dev/dma_heap/<name>` node. The node is registered through the kernel's
+`dma-buf` heap framework (system, CMA, and vendor-specific heaps), not through the old ION heap
+registration. The
 heap flag and alignment properties that `MapNameToIonHeap()` used to carry have no replacement --
-they were ION-specific and are simply gone. The `/vendor/etc/dma_heap.json` file added alongside
-this change (`system/memory/libdmabufheap/configs/schema.proto`) is something different: an
-NPU/heap compatibility matrix mapping each `/dev/dma_heap/<name>` device to the NPU device
-numbers and buffer types it can serve, consumed by the separate `libdma_heap_config_rust` (Rust,
-crate `dma_heap_config`) and `libdma_heap_config_proto` (C++) libraries -- `BufferAllocator` itself
-never reads it.
-`system/memory/libion/` still ships as a shared library, but only for ABI compatibility: every
+they were ION-specific and are simply gone.
+
+The `/vendor/etc/dma_heap.json` file added alongside
+this change (`system/memory/libdmabufheap/configs/schema.proto`) is something different. It is an
+NPU/heap compatibility matrix that maps each `/dev/dma_heap/<name>` device to the NPU device
+numbers and buffer types it can serve. The separate `libdma_heap_config_rust` (Rust,
+crate `dma_heap_config`) and `libdma_heap_config_proto` (C++) libraries consume it.
+`BufferAllocator` itself never reads it.
+
+`system/memory/libion/` still ships as a shared library, but only for ABI compatibility. Every
 function in it is a stub (each returns -1, and the two `ion_is_*` predicates return 0), and the
-library never opens `/dev/ion`. Calling libion therefore cannot touch the ION driver at all; a
+library never opens `/dev/ion`. Calling libion therefore cannot touch the ION driver at all. A
 vendor blob would have to open `/dev/ion` itself, and that in turn depends on a kernel that still
 builds the ION driver. The Android 17 reference configs do not enable `CONFIG_ION`;
 the only `CONFIG_ION=y` lines left in the tree are the old `kernel/configs/s/` (Android 12)
@@ -2407,7 +2425,7 @@ parcel.writeParcelable(shm, 0);
 
 ### 8.6.5 Purgeable Memory
 
-One ashmem feature that memfd does not directly replace is purgeable memory -- the ability to
+One ashmem feature that memfd does not directly replace is purgeable memory. This is the ability to
 unpin memory regions so the kernel can reclaim them under pressure. This pattern is important
 for caches:
 
@@ -2458,9 +2476,9 @@ The `dumpsys meminfo` output shows these distinctions for each process.
 
 The switch is gated in `system/core/libcutils/ashmem-dev.cpp`: `ASharedMemory_create()` calls
 into `ashmem_create_region()`, which picks memfd over `/dev/ashmem` only when `__use_memfd()`
-passes -- the kernel/sepolicy must support the `memfd_class` capability, the device must have
-`ro.vendor.api_level >= 202604`, and the app must target SDK 37 or higher (or memfd is forced
-via `sys.use_memfd=true`). On anything older, the call still falls back to `/dev/ashmem`.
+passes. The check has three conditions. The kernel/sepolicy must support the `memfd_class`
+capability. The device must have `ro.vendor.api_level >= 202604`. The app must target SDK 37 or
+higher (or memfd is forced via `sys.use_memfd=true`). On anything older, the call still falls back to `/dev/ashmem`.
 
 ### 8.6.8 Memory Mapping Patterns
 
@@ -2903,11 +2921,11 @@ The `/proc` filesystem exposes per-process and system-wide memory information:
 ### 8.7.11 libprocinfo: The Canonical /proc Parser
 
 Almost every tool in the preceding sections -- `showmap`, `procrank`, the `dumpsys meminfo` JNI
-path, heapprofd's unwinder -- has to read the same handful of `/proc/<pid>` files and turn their
-text into structured records. Rather than each one re-implementing a brittle line parser, Android
+path, heapprofd's unwinder -- has to read the same handful of `/proc/<pid>` files. Each tool must
+also turn the text of these files into structured records. Rather than each one re-implementing a brittle line parser, Android
 centralizes that work in a small, header-heavy library, `libprocinfo`
 (`system/libprocinfo/`). It is the canonical parser behind the `/proc/<pid>/{status,task,maps}`
-files this chapter keeps referring to, and is depended on by dozens of modules across the tree --
+files this chapter keeps referring to. Dozens of modules across the tree depend on it,
 including `libmeminfo`, `libunwindstack`, `simpleperf`, `debuggerd`, and `init`.
 
 The library exposes two headers in the `android::procinfo` namespace:
@@ -2918,37 +2936,39 @@ The library exposes two headers in the `android::procinfo` namespace:
 | `system/libprocinfo/include/procinfo/process_map.h` | `/proc/<pid>/maps` | `ReadProcessMaps()`, `ReadMapFile()`, `ReadMapFileAsyncSafe()`, `MappedFileSize()` |
 
 `GetProcessInfo()` fills a `struct ProcessInfo` (name, state, pid/tid/ppid, uid/gid, and the
-boot-relative `starttime`) from a single read of `status`; the `...FromProcPidFd` variant takes an
-already-open `/proc/<pid>` directory fd so a caller that has pinned a process (via a pidfd or an
-`openat`) avoids a TOCTOU window on the pid. `GetProcessTids()` enumerates a process's threads by
+boot-relative `starttime`) from a single read of `status`. The `...FromProcPidFd` variant takes an
+already-open `/proc/<pid>` directory fd. This lets a caller that has pinned a process (via a pidfd or an
+`openat`) avoid a TOCTOU window on the pid. `GetProcessTids()` enumerates a process's threads by
 listing its `task/` subdirectory.
 
 The maps reader is the more interesting half. `ParseMapsFileLine()` decodes a single `maps` line
-into start/end addresses, protection flags, page offset, inode, and the backing object's name,
-and `ReadProcessMaps()` drives it over an entire file, invoking a callback per mapping. Two
+into start/end addresses, protection flags, page offset, inode, and the backing object's name.
+`ReadProcessMaps()` drives it over an entire file and invokes a callback per mapping. Two
 details matter for the rest of this chapter:
 
 - **`ReadMapFileAsyncSafe()`** parses `maps` into a caller-supplied fixed buffer with no heap
-  allocation, so it is safe to call from a signal handler or another context where the heap may be
-  held or corrupt. It is built for in-process self-`maps` iteration while the allocator is locked --
-  the `malloc_disable()` / `ReadMapFileAsyncSafe()` / `malloc_enable()` pattern, where reading `maps`
-  through the *allocating* path would deadlock or skew the snapshot. In practice it has no production
-  callers; its only in-tree call sites are bionic's malloc-iterate tests
-  (`bionic/tests/malloc_iterate_test.cpp`, which brackets the call exactly that way) and libprocinfo's
-  own `process_map_test.cpp`. Crash tooling has a different shape: `debuggerd`
+  allocation. It is therefore safe to call from a signal handler or another context where the heap
+  may be held or corrupt. It is built for in-process self-`maps` iteration while the allocator is
+  locked. This is the `malloc_disable()` / `ReadMapFileAsyncSafe()` / `malloc_enable()` pattern,
+  where reading `maps` through the *allocating* path would deadlock or skew the snapshot. In
+  practice it has no production callers. Its only in-tree call sites are bionic's malloc-iterate
+  tests (`bionic/tests/malloc_iterate_test.cpp`, which brackets the call exactly that way) and
+  libprocinfo's own `process_map_test.cpp`.
+
+  Crash tooling has a different shape. `debuggerd`
   and its `crash_dump` helper (Chapter 58) are a *separate* process that `PTRACE_SEIZE`s the target
-  and reads its `maps` from the outside, and `libunwindstack`
+  and reads its `maps` from the outside. `libunwindstack`
   (`system/unwinding/libunwindstack/Maps.cpp`) reads through the *allocating* `ReadMapFile()` /
   `ReadMapFileContent()` path. Both still build on `libprocinfo`, just not on the async-safe variant.
-- **`MappedFileSize()`** returns how much of a mapping is actually backed by its file. As the
-  header notes, on builds with a page size larger than 4 KB the old assumption that a file mapping
-  is fully file-backed is more often false, so accounting tools must clamp to the real file size
+- **`MappedFileSize()`** returns how much of a mapping is actually backed by its file. The
+  header notes this for builds with a page size larger than 4 KB. There, the old assumption that
+  a file mapping is fully file-backed is more often false. Accounting tools must therefore clamp to the real file size
   to avoid charging (or faulting on) bytes past the end of the file. Section 8.11 covers the page
   size transition that makes this matter.
 
-`MapInfo` also canonicalizes the `[anon:mt:...]` names the kernel produces for MTE-globals
-mappings (Section 8.9.2), re-extracting the original page offset and basename so downstream tools
-report the real segment rather than the anonymized blob. Because `libmeminfo`'s smaps reader sits
+`MapInfo` also canonicalizes the `[anon:mt:...]` names that the kernel produces for MTE-globals
+mappings (Section 8.9.2). It re-extracts the original page offset and basename, so downstream tools
+report the real segment and not the anonymized blob. Because `libmeminfo`'s smaps reader sits
 on top of these primitives, every PSS/RSS figure in `dumpsys meminfo` and `showmap` ultimately
 flows through `libprocinfo`.
 
@@ -2959,8 +2979,8 @@ flows through `libprocinfo`.
 ### 8.8.1 ActivityManager Memory Trimming
 
 The Android framework actively manages app memory through the `ActivityManagerService` (AMS).
-When the system detects memory pressure, AMS sends `onTrimMemory()` callbacks to applications,
-giving them the opportunity to release cached resources before the system resorts to killing
+When the system detects memory pressure, AMS sends `onTrimMemory()` callbacks to applications.
+The callbacks give them the opportunity to release cached resources before the system resorts to killing
 processes.
 
 The trim levels are defined in `ComponentCallbacks2.java`:
@@ -3218,8 +3238,8 @@ graph TD
 ```
 
 The default collector is selected at build time (`ART_DEFAULT_GC_TYPE`, default `CMC` in
-`art/build/art.go`). CMC compacts the main space using the kernel's `userfaultfd` mechanism and
-mark-sweeps the non-moving and large object spaces in the same collection; Concurrent Copying
+`art/build/art.go`). CMC compacts the main space using the kernel's `userfaultfd` mechanism. It
+mark-sweeps the non-moving and large object spaces in the same collection. Concurrent Copying
 (CC) was the previous default and remains selectable.
 
 ART triggers GC based on:
@@ -3277,9 +3297,9 @@ ARM's Memory Tagging Extension (MTE), available from ARMv8.5, provides hardware-
 memory safety. Android was the first major platform to adopt MTE system-wide.
 
 MTE assigns a 4-bit tag (0-15) to both pointers and memory allocations. The pointer's tag rides
-in bits 59:56, inside the top byte that AArch64's Top-Byte-Ignore feature already excludes from
-address translation, so the addressable virtual address is unchanged at 56 bits. The hardware
-checks that the pointer tag matches the memory tag on every access:
+in bits 59:56. These bits are in the top byte that AArch64's Top-Byte-Ignore feature already
+excludes from address translation. So the addressable virtual address is unchanged at 56 bits.
+The hardware checks that the pointer tag matches the memory tag on every access:
 
 ```mermaid
 graph LR
@@ -3323,15 +3343,17 @@ MTE modes:
 
 ### 8.9.3 GWP-ASan
 
-GWP-ASan (upstream expands it as the recursive acronym "GWP-ASan Will Provide Allocation
-SANity") is a probabilistic memory error detector that instruments a small fraction of
-allocations. Unlike full ASan, it has negligible runtime overhead, so it can run on production
-builds. Since Android 14 ordinary apps get it by default too: system processes, system apps and
+GWP-ASan is a probabilistic memory error detector that instruments a small fraction of
+allocations. Upstream expands it as the recursive acronym "GWP-ASan Will Provide Allocation
+SANity". Unlike full ASan, it has negligible runtime overhead, so it can run on production
+builds.
+
+Since Android 14 ordinary apps get it by default too. System processes, system apps and
 apps left at `Mode::APP_MANIFEST_DEFAULT` all enable GWP-ASan through 1-in-128 random process
 sampling (`kDefaultProcessSampling` in `bionic/libc/bionic/gwp_asan_wrappers.cpp`). Setting
-`android:gwpAsanMode="always"` drops the process sampling so every process of the app is guarded,
-and `android:gwpAsanMode="never"` is the opt-out -- it is the only mode that leaves GWP-ASan off
-(`bionic/libc/platform/bionic/malloc.h`, the `Mode` enum).
+`android:gwpAsanMode="always"` drops the process sampling, so every process of the app is
+guarded. The value `android:gwpAsanMode="never"` is the opt-out. It is the only mode that leaves
+GWP-ASan off (`bionic/libc/platform/bionic/malloc.h`, the `Mode` enum).
 
 Key features:
 
@@ -3492,8 +3514,8 @@ On Android, KSM is most effective for:
 
 ### 8.9.7 Transparent Huge Pages (THP)
 
-THP allows the kernel to use 2 MB pages (on ARM64) instead of 4 KB pages, reducing TLB misses
-and improving performance for large contiguous allocations:
+THP lets the kernel use 2 MB pages (on ARM64) instead of 4 KB pages. This reduces TLB misses
+and improves performance for large contiguous allocations:
 
 ```
 # Android kernel typically enables THP selectively
@@ -3510,9 +3532,9 @@ automatic huge page promotion.
 ## 8.10 mmd: The Memory Management Daemon
 
 Before Android 17, ZRAM was set up by the `swapon_all` init builtin and maintained by ad-hoc
-logic inside `system_server`, with knobs scattered across the `config.xml` overlay
+logic inside `system_server`. Knobs were scattered across the `config.xml` overlay
 (`config_zramWriteback`) and `ro.zram.*` system properties. Android 17 consolidates all of this
-into a single native Rust daemon, the Memory Management Daemon (`mmd`), whose stated goals are to
+into a single native Rust daemon, the Memory Management Daemon (`mmd`). Its stated goals are to
 centralize ZRAM configuration and to separate swap management from `system_server`
 (`system/memory/mmd/README.md`).
 
@@ -3536,20 +3558,21 @@ centralize ZRAM configuration and to separate swap management from `system_serve
 
 ### 8.10.1 Why a Dedicated Daemon
 
-The README frames the motivation as two-fold. First, the old configuration story was fragmented:
-zRAM size, compression algorithm, and writeback were spread across an init builtin, an overlay
-resource, and a family of read-only properties, which made per-device tuning awkward and adding
-new features (such as recompression) harder. Centralizing the logic in one daemon makes the
-configuration surface uniform and gives a single place to implement policy. Second, swap
-management is a separation-of-concerns problem: keeping it inside `system_server` couples a
-core, security-sensitive service to a steady stream of swap maintenance work. `mmd` pulls that
-out into a small, dedicated process.
+The README frames the motivation as two-fold. First, the old configuration story was fragmented.
+The zRAM size, compression algorithm, and writeback were spread across an init builtin, an overlay
+resource, and a family of read-only properties. This made per-device tuning awkward. It also made
+it harder to add new features (such as recompression). Centralizing the logic in one daemon makes
+the configuration surface uniform and gives a single place to implement policy.
+
+Second, swap management is a separation-of-concerns problem. Keeping it inside `system_server`
+couples a core, security-sensitive service to a steady stream of swap maintenance work. `mmd`
+pulls that out into a small, dedicated process.
 
 `mmd` is gated behind an AConfig flag (`android.mmd.flags.mmd_enabled`,
-`system/memory/mmd/flags.aconfig`). Because init's `on property` triggers cannot read AConfig
-flags directly, `mmd.rc` runs `mmd --set-property` at `sys.boot_completed=1` to copy the flag
-value into the `mmd.enabled_aconfig` system property, and the rest of the boot sequence keys off
-that property.
+`system/memory/mmd/flags.aconfig`). Init's `on property` triggers cannot read AConfig flags
+directly. So `mmd.rc` runs `mmd --set-property` at `sys.boot_completed=1` to copy the flag value
+into the `mmd.enabled_aconfig` system property. The rest of the boot sequence keys off that
+property.
 
 ### 8.10.2 The mmd and mmd_setup Services
 
@@ -3573,25 +3596,25 @@ graph TD
 ```
 
 - **`mmd_setup`** runs as `root` and is a `oneshot` service. ZRAM activation needs write access to
-  `/dev/loop-control` and a range of zram sysfs nodes; rather than granting the long-lived daemon
-  those permissions, the one-time setup runs privileged and then exits. It sizes the device from
+  `/dev/loop-control` and a range of zram sysfs nodes. The one-time setup runs privileged and then
+  exits, so the long-lived daemon does not need those permissions. It sizes the device from
   `mmd.zram.size` (a byte count, or a percentage of RAM, default `50%`), selects the compression
   algorithm, runs `mkswap`, and calls `swapon`.
 - **`mmd`** runs as the unprivileged `mmd` user with only `CAP_SYS_NICE` (needed for per-process
   writeback). It starts only after `mmd.setup_complete=true` and handles ongoing maintenance.
 
 `mmd_setup` packs an optional swap priority into the `swapon` flags using `SWAP_FLAG_PREFER`
-(`system/memory/mmd/src/zram/setup.rs`), and Android 17 supports configuring multiple zram
-devices through `mmd.zram.num_devices` with per-device property lists. The `mmd` daemon registers
+(`system/memory/mmd/src/zram/setup.rs`). Android 17 supports multiple zram devices through
+`mmd.zram.num_devices`, with per-device property lists. The `mmd` daemon registers
 its Binder service under the name `mmd` in `system/memory/mmd/src/main.rs`.
 
 ### 8.10.3 ZRAM Maintenance over Binder
 
 With `mmd` owning ZRAM, periodic maintenance (idle writeback and recompression) is no longer
 driven by `system_server`'s own timers. Instead, `system_server` schedules a `JobService`
-(`frameworks/base/services/core/java/com/android/server/memory/ZramMaintenance.java`) that fires
-when enough time has elapsed, the device is idle, and the battery is not low, and then sends a
-one-way *hint* to `mmd`:
+(`frameworks/base/services/core/java/com/android/server/memory/ZramMaintenance.java`). The job
+fires when enough time has elapsed, the device is idle, and the battery is not low. Then it sends
+a one-way *hint* to `mmd`:
 
 ```java
 // frameworks/base/services/core/java/com/android/server/memory/ZramMaintenance.java
@@ -3605,30 +3628,32 @@ mmd.doZramMaintenanceAsync();
 ```
 
 The hint and command methods of `IMmd` (`doZramMaintenanceAsync`,
-`asyncWritebackProcessZramMemory`, `asyncPrefetchProcessZramMemory`) are declared `oneway`:
-`mmd` treats everything passed from outside as a *hint* and applies its own policy, so the
+`asyncWritebackProcessZramMemory`, `asyncPrefetchProcessZramMemory`) are declared `oneway`.
+`mmd` treats everything passed from outside as a *hint* and applies its own policy. So the
 caller never blocks on them. The two capability queries (`isZramMaintenanceSupported`,
 `supportsProcessMemoryZramOps`) are ordinary blocking Binder calls, which is why
 `ZramMaintenance` invokes them from a background thread
-(`system/memory/mmd/aidl/android/os/IMmd.aidl`). When the maintenance hint arrives, `mmd` decides
+(`system/memory/mmd/aidl/android/os/IMmd.aidl`).
+
+When the maintenance hint arrives, `mmd` decides
 whether to write back idle pages, recompress pages with a stronger algorithm (default `zstd`), or
-do nothing, based on the `mmd.zram.writeback.*` and `mmd.zram.recompression.*` policy properties
-and the device's recent memory utilization. Idle-page age is computed dynamically between a
+do nothing. It bases this on the `mmd.zram.writeback.*` and `mmd.zram.recompression.*` policy
+properties and the device's recent memory utilization. Idle-page age is computed dynamically between a
 minimum and maximum bound rather than using a single fixed threshold
 (`system/memory/mmd/src/zram/idle.rs`).
 
 A subtle correctness point: idle-page tracking depends on a kernel feature
 (`CONFIG_ZRAM_TRACK_ENTRY_ACTIME` or `CONFIG_ZRAM_MEMORY_TRACKING`). When the kernel lacks it,
-`mmd` falls back to marking *all* zram pages idle when it starts and skipping subsequent rounds
-until the required idle duration has elapsed (`system/memory/mmd/README.md`, "Zram idle pages
-tracking").
+`mmd` falls back to a simpler behavior. It marks *all* zram pages idle when it starts. Then it
+skips subsequent rounds until the required idle duration has elapsed
+(`system/memory/mmd/README.md`, "Zram idle pages tracking").
 
 ### 8.10.4 Per-Process Writeback and Prefetch
 
-The genuinely new low-memory capability in Android 17 is *per-process* ZRAM operations. Whole-
-device idle writeback moves whatever happens to be cold; per-process writeback lets the framework
-target one process's compressed pages, which is useful when a specific cached app is unlikely to
-be resumed soon. The `IMmd` interface gains three methods for this
+The genuinely new low-memory capability in Android 17 is *per-process* ZRAM operations. Whole-device
+idle writeback moves whatever happens to be cold. Per-process writeback lets the framework target
+one process's compressed pages. This is useful when a specific cached app is unlikely to be
+resumed soon. The `IMmd` interface gains three methods for this
 (`system/memory/mmd/aidl/android/os/IMmd.aidl`):
 
 ```aidl
@@ -3644,9 +3669,9 @@ oneway void asyncPrefetchProcessZramMemory(in ParcelFileDescriptor pidfd);
   `IMmdProcessWritebackCallback.onProcessMemoryWritebackComplete()`. The status enum distinguishes
   `SUCCESS`, `FAILURE_DEVICE_FULL`, `FAILURE_UNSUPPORTED`, and `FAILURE_OTHER`
   (`system/memory/mmd/aidl/android/os/IMmdProcessWritebackCallback.aidl`).
-- **`asyncPrefetchProcessZramMemory(pidfd)`** is the inverse: it pulls a process's written-back
-  pages back into the compressed pool, intended to run just before a cached app is resumed so the
-  resume does not stall on backing-device reads.
+- **`asyncPrefetchProcessZramMemory(pidfd)`** is the inverse. It pulls a process's written-back
+  pages back into the compressed pool. It is meant to run just before a cached app is resumed, so
+  the resume does not stall on backing-device reads.
 
 Processes are identified by `pidfd` rather than raw PID, which closes the PID-reuse race the same
 way lmkd's reaper does. Under the hood these ride new zRAM kernel ioctls
@@ -3656,8 +3681,8 @@ way lmkd's reaper does. Under the hood these ride new zRAM kernel ioctls
 The caller is `CachedAppOptimizer`
 (`frameworks/base/services/core/java/com/android/server/am/CachedAppOptimizer.java`), the same
 ActivityManager component that owns the app freezer. It calls `supportsProcessMemoryZramOps()`
-once to learn whether the device supports the feature, then issues
-`asyncWritebackProcessZramMemory()` for processes it has frozen, mirroring the freeze decision
+once to learn whether the device supports the feature. Then it issues
+`asyncWritebackProcessZramMemory()` for processes it has frozen. This mirrors the freeze decision
 into the swap subsystem.
 
 mmd per-process ZRAM writeback and prefetch flow
@@ -3680,10 +3705,11 @@ sequenceDiagram
 ```
 
 Internally `MmdService` runs a two-level work queue (`system/memory/mmd/src/service.rs`):
-prefetch requests go on a high-priority `prefetch_work` deque, while writeback and periodic
-maintenance go on a low-priority `other_work` deque. Crucially, enqueuing a prefetch for a process
-cancels any still-pending writeback for that same process (matched via `pidfds_likely_equals`), so
-a resume can never race a writeback that is about to evict the very pages being prefetched.
+prefetch requests go on a high-priority `prefetch_work` deque. Writeback and periodic
+maintenance go on a low-priority `other_work` deque. Crucially, a new prefetch for a process
+cancels any still-pending writeback for that same process (matched via `pidfds_likely_equals`).
+So a resume can never race a writeback that is about to evict the very pages that the prefetch
+pulls back.
 
 ### 8.10.5 mmd as a statsd Producer
 
@@ -3691,37 +3717,40 @@ a resume can never race a writeback that is about to evict the very pages being 
 (`system/memory/mmd/src/atom.rs`): `ZramSetupExecuted` from the setup service, plus
 `ZramMaintenanceExecuted`, `ZramMmStatMmd`, `ZramIoStatMmd`, and `ZramBdStatMmd` from maintenance.
 This means the same compression-ratio, writeback, and I/O statistics that `lmkd` reads from
-`/sys/block/zram0/` are also surfaced as structured metrics, so a device fleet's swap behavior can
+`/sys/block/zram0/` are also available as structured metrics. So a device fleet's swap behavior can
 be analyzed off-device alongside lmkd kill atoms.
 
 ### 8.10.6 Relationship to lmkd and pmgd
 
 `mmd` does not make kill decisions. It owns the *shape* of swap: how large zRAM is, what
 compresses it, and which pages get written back or recompressed. `lmkd` (Section 8.2) remains the
-component that decides *which process dies* under global pressure, and it continues to read raw
-zRAM statistics from sysfs when computing easily-available memory (Section 8.4.4). The two are
+component that decides *which process dies* under global pressure. It continues to read raw
+zRAM statistics from sysfs when it computes easily-available memory (Section 8.4.4). The two are
 complementary: `mmd` widens the effective memory budget by managing compressed swap well, and
 `lmkd` enforces the budget when it is exhausted.
 
 A third daemon, the Process Memory Guardian (`pmgd`, `system/memory/guardian/`), sits between
 them conceptually. Where `lmkd` and `mmd` reason about *system-wide* memory, `pmgd` watches
-*individual* named processes: it uses `inotify` on a cgroup-v2 `memory.events` file to detect when
-a monitored process crosses its `memory.high` threshold, waits a configurable reclaim grace
-period, and kills the process (emitting a statsd memory atom first) if it stays over its limit or
-exceeds a hard `anon_limit_in_mb`. Its target list and limits are vendor-supplied via
-`/vendor/etc/pmgd/config.json`, and it rate-limits itself to one kill per target per reboot using
-`/data/misc/pmgd/history.json` to avoid boot loops. Because `pmgd` is primarily a
-process-lifecycle and stability mechanism rather than a swap mechanism, this book documents it in
-Chapter 29 (Section 29.14); the key file is `system/memory/guardian/README.md`.
+*individual* named processes. It uses `inotify` on a cgroup-v2 `memory.events` file to detect when
+a monitored process crosses its `memory.high` threshold. Then it waits a configurable reclaim grace
+period. It kills the process if the process stays over its limit or exceeds a hard
+`anon_limit_in_mb`. Before the kill, it emits a statsd memory atom.
+
+Its target list and limits are vendor-supplied via `/vendor/etc/pmgd/config.json`. It rate-limits
+itself to one kill per target per reboot, using `/data/misc/pmgd/history.json` to avoid boot
+loops. `pmgd` is primarily a process-lifecycle and stability mechanism rather than a swap
+mechanism. So this book documents it in Chapter 29 (Section 29.14). The key file is
+`system/memory/guardian/README.md`.
 
 ## 8.11 The 4 KB to 16 KB Page-Size Transition
 
 Android has historically used a 4 KB hardware page size on ARM64. Android 17 pushes the platform
-toward a 16 KB page size, which trades a little memory overhead for measurable performance gains:
-larger pages mean fewer entries needed to map the same amount of memory, so the TLB covers more
-of the working set and the kernel walks shorter page tables. This section covers the memory-
-subsystem consequences; Chapter 7 covers how the bionic dynamic linker loads ELF segments under a
-larger page size, and Chapter 18 covers the ART side.
+toward a 16 KB page size. This trades a little memory overhead for measurable performance gains.
+Larger pages mean fewer entries to map the same amount of memory. So the TLB covers more of the
+working set, and the kernel walks shorter page tables.
+
+This section covers the memory-subsystem consequences. Chapter 7 covers how the bionic dynamic
+linker loads ELF segments under a larger page size. Chapter 18 covers the ART side.
 
 ### 8.11.1 What "Page Size" Touches
 
@@ -3741,8 +3770,8 @@ graph TD
 ```
 
 Userspace code that hardcodes `4096` instead of querying `getpagesize()` / `sysconf(_SC_PAGESIZE)`
-breaks on a 16 KB kernel: `mmap` offsets and lengths must be multiples of the *runtime* page
-size, and `mprotect` on a sub-page range silently rounds. The platform's own libraries are audited
+breaks on a 16 KB kernel. The `mmap` offsets and lengths must be multiples of the *runtime* page
+size. Also, `mprotect` on a sub-page range silently rounds. The platform's own libraries are audited
 for this; the linker, for instance, derives its alignment from `kPageSize` rather than a literal
 (see Chapter 7).
 
@@ -3758,8 +3787,8 @@ A larger page size changes several mechanisms described earlier in this chapter:
 | Page cache | File-backed pages are cached and evicted in 16 KB units, which can read more data per fault but waste more on small files |
 | lmkd watermarks | The kernel's zone watermarks and `totalreserve_pages` (Section 8.1.4) are expressed in pages; `lmkd`'s math is page-count based and already scales, but the byte values per page change |
 
-Because `lmkd`, `libmeminfo`, and `mmd` all reason in *page counts* read from the kernel rather
-than assuming a fixed byte-per-page constant, they continue to work on a 16 KB kernel without
+`lmkd`, `libmeminfo`, and `mmd` all reason in *page counts* read from the kernel. They do not
+assume a fixed byte-per-page constant. So they continue to work on a 16 KB kernel without
 arithmetic changes. The visible difference is in absolute byte figures: the same number of pages
 now represents four times the bytes.
 
@@ -3771,11 +3800,11 @@ A 16 KB kernel can only run apps and native libraries whose ELF segments are ali
 - **Build alignment**: native libraries are built with a maximum page-size alignment so a single
   binary loads correctly on both 4 KB and 16 KB kernels.
 - **Linker segment extension and padding**: the bionic linker extends or pads segments to satisfy
-  the larger alignment at load time, with a per-app compatibility property to opt out for legacy
-  code (Chapter 7 covers the linker's segment extension and padding in `linker_phdr.cpp` --
-  `kPageSize`, `FixMinAlignFor16KiB()` -- and the page-size compatibility property in detail).
-- **Emulator and dev devices**: Android 17 ships 16 KB system images and emulator targets so
-  developers can test before shipping hardware that boots a 16 KB kernel by default.
+  the larger alignment at load time. A per-app compatibility property lets legacy code opt out.
+  Chapter 7 covers the linker's segment extension and padding in `linker_phdr.cpp` --
+  `kPageSize`, `FixMinAlignFor16KiB()` -- and the page-size compatibility property in detail.
+- **Emulator and dev devices**: Android 17 ships 16 KB system images and emulator targets.
+  Developers can test with them before they ship hardware that boots a 16 KB kernel by default.
 
 The page size is observable at runtime:
 
@@ -3786,20 +3815,22 @@ adb shell getconf PAGE_SIZE
 ```
 
 For app developers the practical rule is simple: never assume 4096. Query the page size at
-runtime, align `mmap`/`mprotect` arguments to it, and build native code with the toolchain's
-16 KB alignment defaults so the resulting `.so` files load on either kernel.
+runtime and align `mmap`/`mprotect` arguments to it. Build native code with the toolchain's
+16 KB alignment defaults, so the resulting `.so` files load on either kernel.
 
-To quantify the trade-off rather than reason about it abstractly, Android 17 adds `amemdiff`
-(`system/memory/amemdiff/`), a host-side Python tool that measures the memory impact of a 4 KB
-versus 16 KB page-size configuration. It connects to two devices over ADB (one booted 4 KB, one
-16 KB), applies a fixed set of device configs to suppress variance, drives a workload such as the
-default `SteadyStateWorkload`, and probes each device repeatedly with `/proc/meminfo` and
-`showmap`. It then emits per-device CSVs along with mean and mean-diff files, so a developer can
-read directly how much extra RAM the larger page size costs for the same workload and where the
-fragmentation lands. Building it with `m amemdiff` produces a host binary
+Android 17 adds `amemdiff` (`system/memory/amemdiff/`), a host-side Python tool that measures the
+memory impact of a 4 KB versus 16 KB page-size configuration. It quantifies the trade-off instead
+of leaving it abstract. It connects to two devices over ADB (one booted 4 KB, one 16 KB). It
+applies a fixed set of device configs to suppress variance. It drives a workload such as the
+default `SteadyStateWorkload`. Then it probes each device repeatedly with `/proc/meminfo` and
+`showmap`.
+
+It then emits per-device CSVs along with mean and mean-diff files. A developer can read from them
+how much extra RAM the larger page size costs for the same workload, and where the fragmentation
+lands. Building it with `m amemdiff` produces a host binary
 (`out/host/linux-x86/bin/amemdiff`); its design is documented in `system/memory/amemdiff/README.md`.
-Because it is a measurement harness rather than an on-device daemon, it complements the page-count
-reasoning above with concrete numbers when validating a device's move to 16 KB pages.
+It is a measurement harness rather than an on-device daemon. So it complements the page-count
+reasoning above with concrete numbers for the validation of a device's move to 16 KB pages.
 
 ---
 
@@ -3807,8 +3838,8 @@ reasoning above with concrete numbers when validating a device's move to 16 KB p
 
 Android 17 adds a `system_server` service, `MemoryLimiter`, that caps the memory a single app
 process may use through cgroup v2 (`frameworks/base/services/core/java/com/android/server/am/MemoryLimiter.java`).
-It is distinct from the daemons in Section 8.10: `mmd` shapes swap and `lmkd` decides which process
-dies under global pressure, while pmgd (Section 29.14) watches a small set of vendor-named
+It is distinct from the daemons in Section 8.10. `mmd` shapes swap, and `lmkd` decides which process
+dies under global pressure. In contrast, pmgd (Section 29.14) watches a small set of vendor-named
 processes. `MemoryLimiter` instead applies a budget to *every* application process and derives that
 budget from the process's ActivityManager state. The service is owned by `ActivityManagerService`,
 which constructs it with `MemoryLimiter.getDefaultMemoryLimiter()` and calls `onSystemReady()` once
@@ -3819,21 +3850,25 @@ the system is up.
 `MemoryLimiter` splits across two layers. The Java class in the `am` package tracks process state
 and configuration and feeds process information down to a native worker over JNI
 (`frameworks/base/services/core/jni/com_android_server_am_MemoryLimiter.cpp`). The native layer
-owns the cgroup interaction: it writes the limits into the cgroup v2 files and uses `inotify`
+owns the cgroup interaction. It writes the limits into the cgroup v2 files. It uses `inotify`
 (`IN_MODIFY`) on each process's `memory.events` file to learn when a limit fires, then notifies
-the Java layer. The class is documented as not thread-safe; AMS calls into it while holding the AMS
-lock. Because the native side holds the cgroup watch descriptors, the instance allocates native
-resources that are released only when it is closed, which in production happens when
-`system_server` exits.
+the Java layer.
 
-The two cgroup v2 attributes it programs are `memory.high` (a soft limit that throttles the process
-and triggers kernel reclaim when crossed) and `memory.swap.max` (a cap on the process's swap). The
-source is inconsistent about the swap attribute's name: the native worker writes `memory.swap.max`
-(the file that actually caps swap), while the Java layer's strings and comments call it
-`memory.swap.high`. The native worker adds a margin to the programmed `memory.high` and uses a
-10 MB hysteresis band: once
-both the memory and swap events have fired it stops relying on cgroup events for that process and
-polls instead, re-enabling events only after the process drops back below the limit.
+The class is documented as not thread-safe. AMS calls into it while it holds the AMS lock. The
+native side holds the cgroup watch descriptors, so the instance allocates native resources. These
+are released only when the instance is closed. In production, this happens when `system_server`
+exits.
+
+The two cgroup v2 attributes it programs are `memory.high` and `memory.swap.max`. The first is a
+soft limit that throttles the process and triggers kernel reclaim when crossed. The second is a cap
+on the process's swap. The source is inconsistent about the swap attribute's name. The native
+worker writes `memory.swap.max` (the file that actually caps swap), while the Java layer's strings
+and comments call it `memory.swap.high`.
+
+The native worker adds a margin to the programmed `memory.high` and uses a 10 MB hysteresis band.
+Once both the memory and swap events have fired, the worker stops relying on cgroup events for that
+process and polls instead. It re-enables events only after the process drops back below the
+limit.
 
 ### 8.12.2 Per-State Limits
 
@@ -3848,12 +3883,12 @@ system UIDs are exempt so core services are never throttled. It maps each proces
 | Not-visible (foreground service, `SERVICE`, `RECEIVER`, `HOME`, `BACKUP`, etc.) | config `memNotVisible` | config `swapNotVisible` |
 | Cached (`CACHED_*`) | left unchanged | unlimited |
 
-When a process exceeds its `memory.high` or `memory.swap.max`, the native layer reports the breach
-and the Java layer emits a statsd atom (one per process) and a log line. There is a third,
-stronger action: if a process's combined anonymous memory plus swap exceeds the sum of its
-`memory.high` and `memory.swap.max`, `MemoryLimiter` emits a third atom, notifies the process
-through the ProfilingManager service so it can capture diagnostics, and kills the process after a
-30-second delay (`KILL_DELAY_MS`).
+When a process exceeds its `memory.high` or `memory.swap.max`, the native layer reports the breach.
+The Java layer then emits a statsd atom (one per process) and a log line. A third, stronger action
+applies if a process's combined anonymous memory plus swap exceeds the sum of its
+`memory.high` and `memory.swap.max`. In that case `MemoryLimiter` emits a third atom and notifies
+the process through the ProfilingManager service so it can capture diagnostics. It kills the
+process after a 30-second delay (`KILL_DELAY_MS`).
 
 ### 8.12.3 Configuration and Flags
 
@@ -3861,20 +3896,22 @@ The service is configured by an optional vendor XML file, `/vendor/etc/memory-li
 validated against `frameworks/base/services/core/xsd/memory-limiter-config/memory-limiter-config.xsd`.
 If the file is absent, `MemoryLimiter` is disabled; if it is present but invalid, the service throws
 a fatal exception. The file carries a `<version>` (must be 1) and a `<configList>` of `<limitSet>`
-entries. Each `limitSet` has a `minimumRequiredMemTotal` and the four MiB values
-(`memVisible`/`memNotVisible`/`swapVisible`/`swapNotVisible`); at startup `MemoryLimiter` picks the
-entry with the largest `minimumRequiredMemTotal` that is still at or below the device's total RAM,
-so a 14 GB phone and a 10 GB phone get different budgets from one file. If no entry applies, the
+entries.
+
+Each `limitSet` has a `minimumRequiredMemTotal` and the four MiB values
+(`memVisible`/`memNotVisible`/`swapVisible`/`swapNotVisible`). At startup `MemoryLimiter` picks the
+entry with the largest `minimumRequiredMemTotal` that is still at or below the device's total RAM.
+So a 14 GB phone and a 10 GB phone get different budgets from one file. If no entry applies, the
 service stays disabled, which is not treated as an error.
 
 The feature is gated by aconfig flags in the `system_performance` namespace
 (`frameworks/base/services/core/java/com/android/server/am/flags.aconfig`, package
-`com.android.server.am`): `memory_limiter_enable` (master switch),
+`com.android.server.am`). These flags are `memory_limiter_enable` (master switch),
 `memory_limiter_default_app_limits`, and `memory_limiter_trigger` (the ProfilingManager trigger on
 an over-memory event). The design doc `frameworks/base/services/core/java/com/android/server/am/MemoryLimiter.md`
-also documents a force-on override, `com.android.server.am.memory_limiter_force_on`, for bypassing
-the vendor file (the doc itself prints the package with a `serve` typo); it is not declared in
-`flags.aconfig`.
+also documents a force-on override, `com.android.server.am.memory_limiter_force_on`, which bypasses
+the vendor file. The doc itself prints the package with a `serve` typo. The override is not
+declared in `flags.aconfig`.
 
 ### 8.12.4 Runtime Inspection
 
@@ -3966,13 +4003,15 @@ For deeper exploration of the topics covered in this chapter:
 
 ### Related AOSP Chapters
 - Chapter 5 (Kernel) covers the kernel boot process and basic kernel subsystems.
-- Chapter 7 (Bionic and Linker) covers the C library allocator (Scudo) and the linker side of
-  the 4 KB to 16 KB page-size transition (segment extension, alignment, compatibility property).
+- Chapter 7 (Bionic and Linker) covers the C library allocator (Scudo).
+  It also covers the linker side of the 4 KB to 16 KB page-size transition (segment extension,
+  alignment, compatibility property).
 - Chapter 13 (Graphics Render Pipeline) covers how GraphicBuffer flows through the display
   pipeline.
 - Chapter 18 (ART Runtime) covers garbage collection algorithms and managed heap internals.
-- Chapter 29 (Power Management) covers the Process Memory Guardian daemon (pmgd) in Section 29.14
-  and the interaction between memory management and power states (suspend, doze mode).
+- Chapter 29 (Power Management) covers the Process Memory Guardian daemon (pmgd) in Section 29.14.
+  It also covers the interaction between memory management and power states (suspend, doze
+  mode).
 - Chapter 58 (Debugging Tools) covers additional debugging techniques including Perfetto and
   systrace integration.
 
@@ -4665,8 +4704,8 @@ The critical takeaways:
 
 3. **zRAM extends effective RAM** -- by compressing swap pages in memory, Android devices
    can hold more data than their physical RAM would otherwise allow. On Android 17 the `mmd`
-   daemon owns zRAM setup and maintenance (and adds per-process writeback/prefetch), while `pmgd`
-   adds per-process memory enforcement alongside lmkd's system-wide kills.
+   daemon owns zRAM setup and maintenance (and adds per-process writeback/prefetch).
+   Separately, `pmgd` adds per-process memory enforcement alongside lmkd's system-wide kills.
 
 4. **Graphics memory is special** -- the DMA-BUF/ION/Gralloc stack handles the complex
    requirements of sharing memory between CPU, GPU, and other hardware accelerators.
@@ -4683,15 +4722,15 @@ The critical takeaways:
 
 The design of Android's memory management reflects several core principles:
 
-**1. Proactive over reactive**: Rather than waiting for the kernel's OOM killer (which is a last
-resort and can kill critical processes), lmkd proactively monitors pressure and kills processes
-before the situation becomes critical.
+**1. Proactive over reactive**: lmkd does not wait for the kernel's OOM killer, which is a last
+resort and can kill critical processes. Instead, lmkd proactively monitors pressure and kills
+processes before the situation becomes critical.
 
 **2. Importance-ordered killing**: The OOM score system ensures that the user's experience is
 preserved -- foreground apps are protected while cached background processes are sacrificed first.
 
 **3. Cooperative memory management**: The `onTrimMemory()` callback system gives apps the
-opportunity to release memory voluntarily, which is more efficient than killing because the process
+opportunity to release memory voluntarily. This is more efficient than killing, because the process
 does not need to be restarted.
 
 **4. Defense in depth for security**: MTE, GWP-ASan, KASAN, and Scudo provide overlapping layers

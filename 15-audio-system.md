@@ -2,21 +2,21 @@
 
 The Android audio stack is one of the most performance-critical subsystems in
 AOSP. It must deliver audio samples from Java applications all the way to
-hardware DACs with deterministic latency, while simultaneously supporting
+hardware DACs with deterministic latency. At the same time, it supports
 effects processing, policy-driven routing, spatial audio with head tracking,
 and low-latency MMAP paths for professional-grade recording. This chapter
-traces every layer of the stack from the Java `AudioTrack` API down to the
-Audio HAL silicon interface, using the actual source files from the AOSP tree.
+traces every layer of the stack, from the Java `AudioTrack` API down to the
+Audio HAL silicon interface. It uses the actual source files from the AOSP tree.
 
 The core audio services live under `frameworks/av/` and consist of a substantial
-amount of C++ in AudioFlinger alone, plus a comparable amount spanning
+amount of C++ in AudioFlinger alone. A comparable amount spans
 the Audio Policy engine, AAudio/Oboe service, effects library, and head
-tracking pipeline. We will read key data structures, follow the mixing thread
-loop line by line, and explain every optimization -- from the FastMixer that
-runs at SCHED_FIFO priority 3, to the MMAP zero-copy path whose data flows
-through a HAL buffer mapped directly into the client, bypassing AudioFlinger's
-mixer (AudioFlinger still opens the stream and runs the MmapThread that
-handles control and routing).
+tracking pipeline. We will read key data structures and follow the mixing
+thread loop line by line. We will also explain every optimization, such as the
+FastMixer (SCHED_FIFO priority 3) and the MMAP zero-copy
+path. In the MMAP path, a HAL buffer is mapped directly into the client, so the data
+bypasses the mixer of AudioFlinger. AudioFlinger still
+opens the stream and runs the MmapThread that handles control and routing.
 
 ---
 
@@ -171,13 +171,13 @@ This control block contains:
 
 For the default streaming track (`ALLOC_CBLK`), the audio buffer lives in the
 same shared memory block, laid out immediately after the `audio_track_cblk_t`
-control block (`frameworks/av/services/audioflinger/Tracks.cpp` allocates
-`sizeof(audio_track_cblk_t) + bufferSize` in one block and points `mBuffer`
-just past the cblk). Only the read-only
+control block. The file `frameworks/av/services/audioflinger/Tracks.cpp`
+allocates `sizeof(audio_track_cblk_t) + bufferSize` in one block and points
+`mBuffer` just past the cblk. Only the read-only
 fast-capture case (`ALLOC_READONLY`), the pipe case (`ALLOC_PIPE`), and
 client-supplied static buffers use a separate memory region. Either way, the
-memory is mapped into both the client and server address spaces, eliminating
-data copies for the transfer between processes.
+memory is mapped into both the client and server address spaces. This
+eliminates data copies for the transfer between processes.
 
 ### 15.1.6 The audioserver Process
 
@@ -298,10 +298,10 @@ across six source files:
 | `fastpath/FastMixer.cpp` | Low-latency fast mixer path |
 
 The first five files are under `frameworks/av/services/audioflinger/`. The
-fast-path code has been split into a `fastpath/` subdirectory (`FastMixer.cpp`,
+fast-path code is in a `fastpath/` subdirectory (`FastMixer.cpp`,
 `FastCapture.cpp`, `FastThread.cpp`, `StateQueue.cpp`, and their dump/state
-helpers), and the audioflinger directory now also carries `afutils/`,
-`datapath/`, `sounddose/`, and `timing/` subdirectories for utility, HAL
+helpers). The audioflinger directory now also carries `afutils/`,
+`datapath/`, `sounddose/`, and `timing/` subdirectories. They hold utility, HAL
 stream, sound-dose, and frame-counter helpers respectively. The thread classes
 themselves are declared in `Threads.h` and implemented in
 `Threads.cpp`.
@@ -608,13 +608,13 @@ ssize_t PlaybackThread::threadLoop_write()
 ```
 
 For mixer threads that have initialized a FastMixer, the write goes through an
-NBAIO (Non-Blocking Audio I/O) `MonoPipe` (`mPipeSink`) to the FastMixer; a
-mixer thread without a FastMixer uses `mOutputSink`, an NBAIO sink over the
+NBAIO (Non-Blocking Audio I/O) `MonoPipe` (`mPipeSink`) to the FastMixer.
+A mixer thread without a FastMixer uses `mOutputSink`, an NBAIO sink over the
 HAL stream directly. Direct and offload threads have no NBAIO sink and write
 straight to the HAL stream.
 
-The screen state optimization is notable: when the screen is off, the pipe's
-average frame setpoint is raised to 7/8 of maximum -- a deeper buffer means
+The screen state optimization is notable. When the screen is off, the pipe's
+average frame setpoint is raised to 7/8 of maximum. A deeper buffer means
 fewer wakeups and lower power. When the screen is on, it is set to 2x the
 normal frame count, a shallower buffer that keeps latency low during UI
 activity.
@@ -1165,10 +1165,10 @@ attention. After mixing, the effect chains are processed:
         }
 ```
 
-Haptic data is handled specially: it is copied directly from the effect input
-buffer to the output buffer (bypassing the effect processing) because haptic
-channels are generated by the HapticGenerator effect and should not be
-processed by subsequent effects in the chain.
+Haptic data is handled specially. It is copied directly from the effect input
+buffer to the output buffer, which bypasses the effect processing. The reason
+is that the HapticGenerator effect generates the haptic channels. Subsequent
+effects in the chain should not process them.
 
 For offloaded tracks, effects are still processed even without audio data:
 
@@ -1346,8 +1346,8 @@ void SpatializerThread::checkOutputStageEffects()
 
 When the spatializer effect is active, it handles the multichannel-to-binaural
 rendering. When it is not active (e.g., the effect was removed), a downmixer
-is automatically created as a fallback to prevent multichannel audio from
-being sent directly to stereo outputs.
+is automatically created as a fallback. The downmixer prevents multichannel
+audio from going directly to stereo outputs.
 
 ### 15.2.18 RecordThread
 
@@ -1911,8 +1911,8 @@ locks, so the AudioPolicyService mutex must be released to avoid deadlock.
 ### 15.3.12 Background Audio Hardening (Android 17 / API 37)
 
 The foreground/background policy in Section 15.3.10 governs how concurrent audio
-is mixed; Android 17 adds a separate gate in the Java `AudioService` that can
-deny background apps the audio operations themselves. Apps that target API 37
+is mixed. Android 17 adds a separate gate in the Java `AudioService`. This gate
+can deny background apps the audio operations themselves. Apps that target API 37
 (`Build.VERSION_CODES.CINNAMON_BUN = 37`) face restrictions on requesting audio
 focus and on changing volume from the background. The logic lives in
 `HardeningEnforcer`:
@@ -1949,13 +1949,14 @@ boolean isPreCinnamonBun = targetSdk < Build.VERSION_CODES.CINNAMON_BUN;
 ```
 
 An app targeting below API 37 is held at `DENIED_IF_PARTIAL` (the exemption
-reason is recorded as `HARDENING_EXEMPTION_TARGET_SDK`), so it is only blocked
-under partial hardening; an app targeting API 37 or higher with no other
+reason is recorded as `HARDENING_EXEMPTION_TARGET_SDK`). It is only blocked
+under partial hardening. An app targeting API 37 or higher with no other
 exemption falls through to `DENIED_IF_FULL` and is blocked. Other exemptions
-short-circuit ahead of the target-SDK check: privileged callers (holding
-permissions such as `MODIFY_AUDIO_SETTINGS_PRIVILEGED`), focus requests with
-`USAGE_ALARM` backed by `SCHEDULE_EXACT_ALARM`/`USE_EXACT_ALARM`, and callers
-holding `BLUETOOTH_CONNECT` are allowed or held at partial.
+short-circuit ahead of the target-SDK check. These callers are allowed or held
+at partial. They are privileged callers (holding permissions such as
+`MODIFY_AUDIO_SETTINGS_PRIVILEGED`), focus requests with `USAGE_ALARM` backed
+by `SCHEDULE_EXACT_ALARM`/`USE_EXACT_ALARM`, and callers holding
+`BLUETOOTH_CONNECT`.
 
 Two tiers of enforcement are controlled by flags in `com.android.media.audio`:
 `hardeningPartial()` / `hardeningPartialVolume()` for the partial tier and
@@ -1963,17 +1964,17 @@ Two tiers of enforcement are controlled by flags in `com.android.media.audio`:
 (`HardeningOverride.ENABLE`/`DISABLE`, plus `AudioManager.HARDENING_THROW` which
 turns a block into an `IllegalStateException` for testing) can force the
 decision either way. Every decision is written to the `AUDIO_HARDENING_REPORTED`
-metrics atom with its API type, enforcement level, and exemption reason, so the
-rollout can be measured before the strict tier is enabled.
+metrics atom with its API type, enforcement level, and exemption reason. This
+way, the rollout can be measured before the strict tier is enabled.
 
 ### 15.3.13 Dedicated Assistant Volume Stream (Android 17)
 
 Android 17 lets an assistant's spoken audio be controlled independently of media
 volume. Two pieces make this work. The audio attribute `USAGE_ASSISTANT`
 (`frameworks/base/media/java/android/media/AudioAttributes.java:216`) already tags
-playback as assistant output; new in Android 17 is a dedicated audio mode,
-`MODE_ASSISTANT_CONVERSATION`, threaded from native `AudioSystem` up to the public
-`AudioManager`:
+playback as assistant output. Android 17 adds a dedicated audio mode,
+`MODE_ASSISTANT_CONVERSATION`. It is threaded from native `AudioSystem` up to the
+public `AudioManager`:
 
 ```java
 // frameworks/base/media/java/android/media/AudioSystem.java:236
@@ -1985,18 +1986,19 @@ public static final int MODE_ASSISTANT_CONVERSATION =
 ```
 
 When an assistant app enters this mode, the policy engine gives its output a volume
-curve of its own, so the user -- or a connected Bluetooth headset's volume keys --
-can raise the assistant while media stays quiet, or mute media without silencing the
-assistant. This is the volume-side complement to the background-audio hardening of
-Section 15.3.12: hardening governs *whether* an app may play at all, while the
-assistant mode governs *which volume curve* applies once playback is allowed.
+curve of its own. The user (or a connected Bluetooth headset's volume keys) can
+then raise the assistant while media stays quiet. The user can also mute media
+without silencing the assistant. This is the volume-side complement to the
+background-audio hardening of Section 15.3.12. Hardening governs *whether* an app
+may play at all. The assistant mode governs *which volume curve* applies once
+playback is allowed.
 
 A related Android 17 capture-side addition is the
 `android.permission.BYPASS_CONCURRENT_RECORD_AUDIO_RESTRICTION` permission
-(`frameworks/base/core/res/AndroidManifest.xml:7511`), which lets a privileged
-assistant or accessibility component capture audio concurrently with a phone call or
-another sensitive capture session that would otherwise hold the microphone
-exclusively.
+(`frameworks/base/core/res/AndroidManifest.xml:7511`). It lets a privileged
+assistant or accessibility component capture audio concurrently with a phone call.
+It also allows capture alongside another sensitive capture session that would
+otherwise hold the microphone exclusively.
 
 ---
 
@@ -2049,9 +2051,9 @@ static aaudio_stream_id_t AAudio_getNextStreamId() {
 
 The `open()` method copies parameters from the open request. Note that the
 client builder (`AudioStreamBuilder`) and the service both funnel through an
-`AAudioStreamOpenRequest`, so `AudioStream::open()` takes that request type
-rather than the builder directly -- the AAudioService calls `open()` without
-ever calling `build()`:
+`AAudioStreamOpenRequest`. For this reason, `AudioStream::open()` takes that
+request type and not the builder directly. The AAudioService calls `open()`
+without ever calling `build()`:
 
 ```cpp
 // AudioStream.cpp, line 81-130
@@ -2137,7 +2139,7 @@ Note the loop back into `AAudioService`: `AAudioServiceEndpointShared` does not
 talk to AudioFlinger itself. It mixes its client streams into a single
 `AudioStreamInternal` that it opens against the service in
 `AAUDIO_SHARING_MODE_EXCLUSIVE`
-(`frameworks/av/services/oboeservice/AAudioServiceEndpointShared.cpp`), so the
+(`frameworks/av/services/oboeservice/AAudioServiceEndpointShared.cpp`). As a result, the
 mixed result reaches AudioFlinger's `MmapThread` through
 `AAudioServiceEndpointMMAP` like any exclusive stream.
 
@@ -2395,7 +2397,7 @@ AAudio supports two callback modes for data delivery:
 
 **Partial callback** -- May be called with fewer frames than requested. This
 mode was added for scenarios where the audio system needs to split a buffer
-boundary differently than the application expects, improving compatibility
+boundary differently than the application expects. It improves compatibility
 with various HAL implementations.
 
 ### 15.4.10 IsochronousClockModel
@@ -2684,9 +2686,9 @@ The actual HAL open uses `MmapStreamInterface::openMmapStream()`:
 ```
 
 In Android 17 `mMmapStream` is a `sp<MmapStreamInterface>` that wraps a stable
-AIDL `IMmapStream` binder proxy rather than a raw C++ pointer into AudioFlinger
-(see `frameworks/av/services/oboeservice/AAudioServiceEndpointMMAP.h` line 144,
-where the member is declared `GUARDED_BY(mMmapStreamLock)`). Every subsequent
+AIDL `IMmapStream` binder proxy rather than a raw C++ pointer into AudioFlinger.
+See `frameworks/av/services/oboeservice/AAudioServiceEndpointMMAP.h` line 144,
+where the member is declared `GUARDED_BY(mMmapStreamLock)`. Every subsequent
 control call -- `createTrack()`, `startTrack()`, `stopTrack()`,
 `releaseTrack()`, `standby()` -- is forwarded across that binder boundary.
 Section 15.11 covers the new interface in detail.
@@ -2890,9 +2892,9 @@ status_t EffectBase::addHandle(IAfEffectHandle *handle)
 
 The handle is inserted at position `i` either way -- the return status is what
 differs. Only a handle that lands in first place takes control and returns
-`NO_ERROR`; a lower-priority handle is still registered but reports
-`ALREADY_EXISTS`, telling the caller that another handle already owns control of
-the effect.
+`NO_ERROR`. A lower-priority handle is still registered but reports
+`ALREADY_EXISTS`. This tells the caller that another handle already owns control
+of the effect.
 
 ### 15.6.4 Policy Registration
 
@@ -3089,8 +3091,8 @@ The Downmix effect converts multichannel audio to stereo:
 frameworks/av/media/libeffects/downmix/
 ```
 
-It is used automatically by the SpatializerThread when no spatializer effect
-is available, and by the framework when multichannel content needs to play
+The SpatializerThread uses it automatically when no spatializer effect
+is available. The framework uses it when multichannel content needs to play
 on stereo outputs. The downmix algorithm follows standard ITU-R BS.775
 recommendations for channel folding.
 
@@ -3201,10 +3203,10 @@ if (mMixerBufferValid &&
 ```
 
 The data flow depends on whether an effect buffer is in use. When
-`mEffectBuffer` is valid, `mMixerBuffer` is copied to `mEffectBuffer` first,
-effects are processed, and mono blend and balance are applied afterwards on
+`mEffectBuffer` is valid, `mMixerBuffer` is copied to `mEffectBuffer` first.
+Then effects are processed. Mono blend and balance are applied afterwards on
 the way to `mSinkBuffer`. When there is no effect buffer, mono blend and
-balance are applied to `mMixerBuffer` directly and the result is copied
+balance are applied to `mMixerBuffer` directly. The result is copied
 straight to `mSinkBuffer`, which feeds the HAL.
 
 ---
@@ -3866,9 +3868,9 @@ The HAL includes sound dose monitoring for hearing protection:
 hardware/interfaces/audio/aidl/android/hardware/audio/core/sounddose/ISoundDose.aidl
 ```
 
-This interface allows the HAL to report MEL (Momentary Exposure Level) data
-directly from the hardware DSP, which can be more accurate than the software
-MEL computation in AudioFlinger's MelReporter.
+This interface lets the HAL report MEL (Momentary Exposure Level) data
+directly from the hardware DSP. This data can be more accurate than the
+software MEL computation in AudioFlinger's MelReporter.
 
 ### 15.8.10 VINTF Stability
 
@@ -3882,7 +3884,7 @@ interface IModule {
 
 This means they are part of the Vendor Interface (VINTF) manifest and are
 subject to strict compatibility requirements. The framework and HAL versions
-can be updated independently, with the AIDL versioning system ensuring
+can be updated independently. The AIDL versioning system keeps
 backward compatibility.
 
 ### 15.8.11 Default HAL Implementation
@@ -4030,8 +4032,8 @@ status_t AudioRecord::getMinFrameCount(
 }
 ```
 
-The "ping pong" doubling ensures that while one buffer is being read by the
-application, the other is being filled by the HAL.
+The "ping pong" doubling makes sure that the application reads one buffer
+while the HAL fills the other.
 
 ### 15.9.3 AudioSystem
 
@@ -4139,14 +4141,14 @@ sequenceDiagram
     Java-->>App: AudioTrack instance
 ```
 
-The routing decision happens on the server side, not in the client: the native
+The routing decision happens on the server side, not in the client. The native
 `AudioTrack` makes exactly one server call, `audioFlinger->createTrack()`
-(`frameworks/av/media/libaudioclient/AudioTrack.cpp:1906`), and it is
-`AudioFlinger::createTrack()` that calls
+(`frameworks/av/media/libaudioclient/AudioTrack.cpp:1906`). Then
+`AudioFlinger::createTrack()` calls
 `AudioSystem::getOutputForAttr()` into the audio policy service to pick the
 output and stream type
-(`frameworks/av/services/audioflinger/AudioFlinger.cpp:1092`) before locating
-the playback thread.
+(`frameworks/av/services/audioflinger/AudioFlinger.cpp:1092`). After that, it
+locates the playback thread.
 
 ### 15.9.6 AudioRecord Construction Flow
 
@@ -4175,12 +4177,13 @@ sequenceDiagram
     Native->>Native: Map shared memory
 ```
 
-The same server-side split applies on capture: the client's only server call is
+The same server-side split applies on capture. The client's only server call is
 `audioFlinger->createRecord()`
-(`frameworks/av/media/libaudioclient/AudioRecord.cpp:906`), and
+(`frameworks/av/media/libaudioclient/AudioRecord.cpp:906`).
 `AudioFlinger::createRecord()` calls `AudioSystem::getInputForAttr()`
 (`frameworks/av/services/audioflinger/AudioFlinger.cpp:2432`) to have the policy
-service select the input before the RecordThread and RecordTrack are set up.
+service select the input. The RecordThread and RecordTrack are set up after
+that.
 
 The minimum frame count for recording uses "ping pong" doubling:
 
@@ -4333,10 +4336,10 @@ The futex traffic runs server-to-client, not the other way round. On playback
 the client never wakes the mixer thread: `ClientProxy::releaseBuffer()` only
 does an atomic release-store of `mRear`
 (`frameworks/av/media/libaudioclient/AudioTrackShared.cpp:407`), with no syscall
-at all. It is `ServerProxy::releaseBuffer()` (line 968) and
-`ServerProxy::flushBufferIfNeeded()` (line 799) that set `CBLK_FUTEX_WAKE` and
-issue `FUTEX_WAKE` to release a client parked in `ClientProxy::obtainBuffer()`
-(line 342) waiting for buffer space. The client's own futex wakes are reserved
+at all. `ServerProxy::releaseBuffer()` (line 968) and
+`ServerProxy::flushBufferIfNeeded()` (line 799) set `CBLK_FUTEX_WAKE` and
+issue `FUTEX_WAKE`. This releases a client parked in
+`ClientProxy::obtainBuffer()` (line 342) while it waits for buffer space. The client's own futex wakes are reserved
 for the error paths, `binderDied()` and `interrupt()`. Because the wake happens
 only when a waiter is actually parked, the normal-case data transfer stays
 lock-free and syscall-free.
@@ -4393,9 +4396,9 @@ Query metrics:
 adb shell dumpsys media.metrics --since -60
 ```
 
-This shows all audio events from the last 60 seconds (a negative argument
-means "seconds in the past"; a positive value is interpreted as an absolute
-time in seconds since the Unix epoch), including:
+This shows all audio events from the last 60 seconds. A negative argument
+means "seconds in the past". A positive value is an absolute time in seconds
+since the Unix epoch. The events include:
 
 - Track creation/destruction
 - Stream opens/closes
@@ -4419,8 +4422,8 @@ Key trace points:
 - `underrun` -- Underrun detection
 
 The client library (`libaudioclient`) contains no atrace instrumentation of
-its own, so client-side `AudioTrack::write()` calls do not appear as trace
-slices -- only the server-side activity is visible.
+its own. Client-side `AudioTrack::write()` calls do not appear as trace
+slices. Only the server-side activity is visible.
 
 ### 15.10.4 Mutex Statistics
 
@@ -4507,10 +4510,12 @@ AudioFlinger uses TimeCheck as a watchdog for HAL calls:
 TimeCheck monitors binder calls to the HAL. The per-HAL-call `TIME_CHECK()`
 macro is created with a zero timeout and `crashOnTimeout=false`, so it only
 records call statistics -- it never fires. TimeCheck instances created with
-an explicit timeout are far more drastic on expiry: `onTimeout()` signals the
-audio HAL processes to produce tombstones, emits a FATAL log with the timeout
-analysis, and aborts the stuck thread (falling back to aborting the whole
-audioserver process). The resulting crash and restart is what prevents the
+an explicit timeout are far more drastic on expiry.
+
+`onTimeout()` signals the
+audio HAL processes to produce tombstones and emits a FATAL log with the timeout
+analysis. Then it aborts the stuck thread. If that fails, it aborts the whole
+audioserver process. The resulting crash and restart is what prevents the
 entire audio system from hanging indefinitely.
 
 ### 15.10.9 Deadlock Detection
@@ -4583,8 +4588,8 @@ in this call:
     BatteryNotifier::getInstance().noteResetAudio();
 ```
 
-A legacy hook exists for updating battery data when a track starts or stops,
-but it is compiled out by default -- `Configuration.h` ships with
+A legacy hook exists to update battery data when a track starts or stops.
+It is compiled out by default. `Configuration.h` ships with
 `//#define ADD_BATTERY_DATA` commented out:
 
 ```cpp
@@ -4610,15 +4615,15 @@ For most of AAudio's history the MMAP control path crossed the AudioFlinger
 boundary through a raw C++ object. AudioFlinger handed the AAudioService a
 `sp<MmapStreamInterface>` whose virtual methods (`createMmapBuffer()`,
 `createTrack()`, `start()`, `stop()`, `standby()`) were called in-process. That
-worked because both sides linked the same C++ ABI inside `audioserver`, but it
-left the MMAP surface outside the stable, versioned binder world that the rest
-of the audio stack had moved to.
+worked because both sides linked the same C++ ABI inside `audioserver`. But it
+left the MMAP surface outside the stable, versioned binder world. The rest
+of the audio stack had already moved to that world.
 
 Android 17 closes that gap. The MMAP stream is now controlled through a stable
 AIDL binder interface, `IMmapStream`, declared in
 `frameworks/av/media/libaudioclient/aidl/android/media/IMmapStream.aidl`. The
 old C++ `MmapStreamInterface` survives as a thin convenience wrapper around the
-new binder proxy, so callers that already used it keep compiling, while the
+new binder proxy. Callers that already used it keep compiling. The
 actual control traffic now travels over a versioned interface.
 
 ### 15.11.1 The IMmapStream Interface
@@ -4649,7 +4654,7 @@ interface IMmapStream {
 
 The buffer handoff is a parcelable rather than a raw struct. `createMmapBuffer()`
 returns a `MmapBufferInfo` carrying the shared-memory file descriptor as a
-`ParcelFileDescriptor`, so the kernel buffer is transferred and reclaimed
+`ParcelFileDescriptor`. The kernel buffer is transferred and reclaimed
 through the normal binder FD machinery:
 
 ```aidl
@@ -4689,9 +4694,9 @@ parcelable OpenMmapResponse {
 }
 ```
 
-On the AudioFlinger side, `openMmapStream()` parses the request, opens or
-reuses a `MmapThread`, and wraps that thread in an adapter before returning it
-in the response:
+On the AudioFlinger side, `openMmapStream()` parses the request and opens or
+reuses a `MmapThread`. Then it wraps that thread in an adapter and puts the
+adapter in the response:
 
 ```cpp
 // AudioFlinger.cpp, line 512-550 (abridged)
@@ -4722,8 +4727,8 @@ interface = IAfMmapThread::createMmapStreamInterfaceAdapter(thread);
 The adapter that turns an internal `MmapThread` into the binder object is
 `MmapThreadHandle`, a `BnMmapStream` subclass. It holds the thread by strong
 pointer and forwards every AIDL call to the thread's C++ interface
-(`IAfMmapThread`), translating between AIDL parcelables and the legacy native
-types on the way:
+(`IAfMmapThread`). On the way, it translates between AIDL parcelables and the
+legacy native types:
 
 ```cpp
 // Threads.cpp, line 10378
@@ -4747,9 +4752,9 @@ sp<media::IMmapStream> IAfMmapThread::createMmapStreamInterfaceAdapter(
 ```
 
 `createMmapBuffer()` is the clearest illustration of the translation work. The
-native `MmapThread` fills an `audio_mmap_buffer_info` struct; the handle copies
-its fields into the `MmapBufferInfo` parcelable and `dup()`s the shared-memory
-FD into the `ParcelFileDescriptor` so binder can own the transfer:
+native `MmapThread` fills an `audio_mmap_buffer_info` struct. The handle copies
+its fields into the `MmapBufferInfo` parcelable. It also `dup()`s the shared-memory
+FD into the `ParcelFileDescriptor`, so binder can own the transfer:
 
 ```cpp
 // Threads.cpp, line 10427
@@ -4768,9 +4773,9 @@ binder::Status MmapThreadHandle::createMmapBuffer(
 }
 ```
 
-The track methods do the same kind of conversion in the other direction:
+The track methods do the same kind of conversion in the other direction.
 `startTrack(int32_t portId)` and `stopTrack(int32_t portId)` translate the AIDL
-`int32_t` back to a native `audio_port_handle_t` before calling the thread.
+`int32_t` back to a native `audio_port_handle_t`. Then they call the thread.
 
 ### 15.11.4 The Client Side Keeps MmapStreamInterface
 
@@ -4824,14 +4829,16 @@ graph TB
 ```
 
 Moving MMAP control onto a `@VintfStability`-adjacent stable AIDL surface gives
-the audio team the same benefits the rest of the stack already enjoys: a
-versioned, introspectable interface; parcelable buffer descriptors that carry
-their FD lifetime correctly; and the option to place the MMAP control endpoint
-in a different process from its caller in the future. The two new control
-methods on the interface -- `drain()` and `activate()`, which exchange a
-`TimerQueueHandle` -- also let the service schedule client wake-ups against
-AudioFlinger's `TimerQueue` (Section 15.10.6) instead of busy-waiting, which is
-how the new power-saving offloaded MMAP mode coordinates its draining.
+the audio team the same benefits the rest of the stack already has. These are a
+versioned, introspectable interface and parcelable buffer descriptors that carry
+their FD lifetime correctly. They also include the option to place the MMAP
+control endpoint in a different process from its caller in the future.
+
+The two
+new control methods on the interface are `drain()` and `activate()`. They
+exchange a `TimerQueueHandle`. They also let the service schedule client wake-ups
+against AudioFlinger's `TimerQueue` (Section 15.10.6) instead of busy-waiting.
+This is how the new power-saving offloaded MMAP mode coordinates its draining.
 
 ---
 
@@ -4840,11 +4847,13 @@ how the new power-saving offloaded MMAP mode coordinates its draining.
 Hands-free voice audio over Bluetooth runs on a SCO (synchronous
 connection-oriented) link rather than the A2DP or LE Audio data path. For most
 of Android's history the Bluetooth stack decided when to bring that SCO link up
-and down: an app called `AudioManager.startBluetoothSco()`, the request reached
-the headset profile (HFP) service, and the Bluetooth stack opened the link and
-told the audio framework about it afterward. Android 17 inverts that ownership.
+and down. An app called `AudioManager.startBluetoothSco()`. The request reached
+the headset profile (HFP) service. The Bluetooth stack opened the link and
+told the audio framework about it afterward.
+
+Android 17 inverts that ownership.
 The audio framework now drives SCO routing the same way it routes to a speaker
-or a wired headset, and the HFP profile follows the audio framework's lead
+or a wired headset. The HFP profile follows the audio framework's lead
 instead of the other way round.
 
 ### 15.12.1 The Communication Device Model
@@ -4855,9 +4864,9 @@ The replacement for the old SCO calls is the communication-device API on
 `setCommunicationDevice(AudioDeviceInfo)`, `clearCommunicationDevice()`,
 `getCommunicationDevice()`, and `getAvailableCommunicationDevices()`. An app
 that wants call audio on a Bluetooth headset picks the matching
-`AudioDeviceInfo` from the available list and calls `setCommunicationDevice()`;
-the framework figures out that this is a SCO device and brings the link up. The
-older entry points are deprecated in favour of this surface:
+`AudioDeviceInfo` from the available list and calls `setCommunicationDevice()`.
+The framework finds out that this is a SCO device and brings the link up. The
+older entry points are deprecated in favor of this surface:
 
 | Deprecated method | Replacement |
 |-------------------|-------------|
@@ -4889,14 +4898,16 @@ mScoManagedByAudio = scoManagedByAudio()
 The flag is true only when both the `scoManagedByAudio()` feature flag and the
 `bluetooth.sco.managed_by_audio` system property agree. When it is set, a
 communication-device selection that resolves to a SCO device makes
-`AudioDeviceBroker` call into `BtHelper` to start or stop SCO itself, rather
-than waiting for the Bluetooth stack to report a link. When the flag is clear
-the broker keeps the legacy path, so a device can fall back to the old
-behaviour. The HFP profile reads the same setting:
+`AudioDeviceBroker` call into `BtHelper`. That call starts or stops SCO itself.
+The broker does not wait for the Bluetooth stack to report a link. When the flag
+is clear the broker keeps the legacy path, so a device can fall back to the old
+behavior.
+
+The HFP profile reads the same setting:
 `packages/modules/Bluetooth/android/app/src/com/android/bluetooth/hfp/HeadsetService.java`
-calls `mNativeInterface.setIsScoManagedByAudio(...)` at startup and checks
-`isScoManagedByAudioEnabled()` throughout its connection logic, deferring SCO
-audio start to the audio framework when the new mode is on. A comment on a field
+calls `mNativeInterface.setIsScoManagedByAudio(...)` at startup. It checks
+`isScoManagedByAudioEnabled()` throughout its connection logic. When the new
+mode is on, it defers SCO audio start to the audio framework. A comment on a field
 in `HeadsetService` marks the new dependency directly: a device can be left
 "waiting for audio framework to start SCO."
 
@@ -4921,11 +4932,11 @@ ScoConfig setScoConfig(in ScoConfig config);
 ```
 
 The bridge from framework parameters to this call lives in
-`frameworks/av/media/libaudiohal/impl/DeviceHalAidl.cpp`, whose
+`frameworks/av/media/libaudiohal/impl/DeviceHalAidl.cpp`. Its
 `filterAndUpdateBtScoParameters()` reads the legacy `BT_SCO`, `bt_headset_nrec`,
-and `bt_wbs` parameter keys and turns them into a `setScoConfig()` call on the HAL.
-A field left unset in `ScoConfig` keeps its current value, so the framework can
-flip just the enable bit or just the codec mode without disturbing the rest.
+and `bt_wbs` parameter keys. It turns them into a `setScoConfig()` call on the HAL.
+A field left unset in `ScoConfig` keeps its current value. So the framework can
+flip just the enable bit or just the codec mode without a change to the rest.
 The result is that SCO routing now flows through the same chain as any other
 device:
 
@@ -4955,8 +4966,8 @@ For apps the practical change is small: migrate off `startBluetoothSco()` /
 `setBluetoothScoOn()` to `setCommunicationDevice()`, which has been the
 recommended call since the communication-device API was introduced. The
 architectural change is larger. SCO is no longer a special case owned by the
-Bluetooth profile; it is a routable device that the audio policy and the audio
-HAL manage alongside the speaker, the wired headset, and LE Audio.
+Bluetooth profile. It is a routable device. The audio policy and the audio
+HAL manage it alongside the speaker, the wired headset, and LE Audio.
 
 ---
 
@@ -5033,8 +5044,8 @@ adb shell dumpsys media.audio_policy | grep -A 5 "Audio Ports"
 adb shell dumpsys media.audio_flinger | grep -A 20 "Patches"
 ```
 
-Each patch shows the source and sink port handles, the associated thread,
-and whether it is a hardware or software patch.
+Each patch shows the source and sink port handles and the associated thread.
+It also shows whether the patch is a hardware or software patch.
 
 ### Exercise 5: AAudio MMAP Detection
 
@@ -5301,12 +5312,12 @@ adb shell cat /proc/$(adb shell pidof audioserver)/task/*/sched | head -60
 
 Audio threads typically run at:
 
-- MixerThread: CFS at `ANDROID_PRIORITY_URGENT_AUDIO` by default, but boosted
+- MixerThread: CFS at `ANDROID_PRIORITY_URGENT_AUDIO` by default. It is boosted
   to SCHED_FIFO 1 whenever its normal buffer period is shorter than
-  `persist.audio.normal_priority_playback_period_ms` (default 20 ms) -- the
-  common case on devices with short mixer buffers -- as well as in special
-  cases such as ARC, the `af.watch.thread.priority` override on watches, or
-  the spatializer thread boost
+  `persist.audio.normal_priority_playback_period_ms` (default 20 ms). This is the
+  common case on devices with short mixer buffers. The boost also applies in
+  special cases such as ARC, the `af.watch.thread.priority` override on watches,
+  or the spatializer thread boost
 - FastMixer: SCHED_FIFO priority 3
 - FastCapture: SCHED_FIFO priority 3
 - Registered client app audio threads: SCHED_FIFO priority 2
@@ -5383,10 +5394,11 @@ Devices with spatial audio support may show:
 
 ## Summary
 
-The Android audio system is a masterwork of systems engineering that balances
-competing demands: low latency for gaming and professional audio, power
-efficiency for music playback, flexibility for diverse hardware configurations,
-and the complexity of spatial audio with real-time head tracking.
+The Android audio system is a masterwork of systems engineering. It balances
+competing demands. These are low latency for gaming and professional audio,
+and power efficiency for music playback. They are also flexibility for diverse
+hardware configurations, and the complexity of spatial audio with real-time
+head tracking.
 
 The key architectural decisions that make it work:
 
@@ -5395,7 +5407,7 @@ The key architectural decisions that make it work:
    zero-copy, near-zero-latency transfer between app and AudioFlinger.
 
 2. **Dual mixer architecture** -- The normal MixerThread handles the common
-   case with effects and resampling, while the FastMixer provides a dedicated
+   case with effects and resampling. The FastMixer provides a dedicated
    SCHED_FIFO priority 3 path for latency-critical tracks.
 
 3. **MMAP zero-copy path** -- AAudio's MMAP mode maps the HAL buffer directly
@@ -5407,7 +5419,7 @@ The key architectural decisions that make it work:
    control path.
 
 5. **Layered HAL interface** -- The AIDL Audio HAL provides a clean abstraction
-   over hardware, with the IModule/IStream model supporting everything from
+   over hardware. The IModule/IStream model supports everything from
    simple codecs to complex DSP chains with MMAP support.
 
 The source files we examined represent some of the most performance-critical
@@ -5529,11 +5541,12 @@ cts/tests/tests/media/audio/
 ```
 
 The audio system continues to evolve with each Android release. Recent
-additions include AIDL Audio HAL migration, MMAP PCM offload support, the move
-of MMAP stream control onto the stable AIDL `IMmapStream` interface in Android
-17 (Section 15.11), improved spatial audio with multiple head tracker support,
-sound dose monitoring for hearing protection compliance, and the Eraser effect
-for audio source separation. The core architecture, however, remains remarkably
-stable -- the AudioFlinger mixing loop, the shared memory data path, and
-the policy/mechanism separation have been proven over more than 15 years
-of Android releases.
+additions include AIDL Audio HAL migration and MMAP PCM offload support. They
+also include the move of MMAP stream control onto the stable AIDL `IMmapStream`
+interface in Android 17 (Section 15.11). Other additions are improved spatial
+audio with multiple head tracker support and sound dose monitoring for hearing
+protection compliance. The Eraser effect for audio source separation is also new.
+
+The core architecture, however, remains remarkably stable. The AudioFlinger mixing
+loop, the shared memory data path, and the policy/mechanism separation have
+been proven over more than 15 years of Android releases.

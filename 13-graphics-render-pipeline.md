@@ -1,12 +1,12 @@
 # Chapter 13: Graphics and Render Pipeline
 
-Android's graphics stack is one of the most intricate subsystems in AOSP. It spans from
-the Java `View.draw()` call in an application's UI thread all the way down through native
-C++ rendering libraries, GPU shader compilation, hardware-accelerated composition, and
-finally to photons leaving the physical display panel. This chapter traces that entire
-journey through the actual AOSP source code, revealing the architecture, data structures,
-synchronization mechanisms, and design decisions that make 60+ FPS rendering possible on
-billions of devices.
+Android's graphics stack is one of the most intricate subsystems in AOSP. It starts
+with the Java `View.draw()` call in an application's UI thread. From there it goes down
+through native C++ rendering libraries, GPU shader compilation, and hardware-accelerated
+composition. It ends with photons that leave the physical display panel. This chapter
+traces that entire journey through the actual AOSP source code. It shows the architecture,
+data structures, synchronization mechanisms, and design decisions that make 60+ FPS
+rendering possible on billions of devices.
 
 ---
 
@@ -103,8 +103,8 @@ enum class RenderPipelineType { SkiaGL, SkiaVulkan, SkiaCpu, NotInitialized = 12
 
 `SkiaGL` and `SkiaVulkan` are the two GPU-backed pipelines, chosen via the
 `debug.hwui.renderer` property (`"skiagl"` or `"skiavk"`). `SkiaCpu` is a software
-pipeline used for headless and test contexts where no GPU surface is available; its
-`SkiaCpuPipeline` (`frameworks/base/libs/hwui/pipeline/skia/SkiaCpuPipeline.h`)
+pipeline used for headless and test contexts where no GPU surface is available.
+Its `SkiaCpuPipeline` (`frameworks/base/libs/hwui/pipeline/skia/SkiaCpuPipeline.h`)
 disables image pinning and renders entirely on the CPU.
 
 The `pipelineToString()` helper in `RenderThread.cpp` reports the active pipeline in
@@ -125,8 +125,8 @@ static const char* pipelineToString() {
 }
 ```
 
-Note there is deliberately no `SkiaCpu` case here -- on a device build the CPU
-pipeline is never the reported renderer, and an unexpected type hits the fatal
+Note there is deliberately no `SkiaCpu` case here. On a device build the CPU
+pipeline is never the reported renderer. An unexpected type hits the fatal
 default.
 
 The `CanvasContext::create()` factory in `CanvasContext.cpp` (line 88) instantiates the
@@ -445,8 +445,8 @@ for:
 - `egl_context_t` -- wraps `EGLContext`, tracks GL extensions
 - `egl_surface_t` -- wraps `EGLSurface`
 
-`egl_display_t` is different: it lives in `egl_display.h`, does not derive from
-`egl_object_t` (each `egl_object_t` instead holds a pointer to its display), and
+`egl_display_t` is different. It lives in `egl_display.h` and does not derive from
+`egl_object_t` (each `egl_object_t` instead holds a pointer to its display). It
 follows its own NOT_INITIALIZED / INITIALIZED / TERMINATED lifecycle rather than
 reference counting.
 
@@ -535,9 +535,9 @@ Android adds several proprietary extensions:
 
 Alongside the `MultifileBlobCache`, Android carries the monolithic `BlobCache` (and
 `FileBlobCache`) implementation. The two are runtime-selected alternatives, not
-old-and-new: `egl_cache.cpp` picks multifile only when the
+old-and-new. `egl_cache.cpp` picks multifile only when the
 `ro.egl.blobcache.multifile` property is set (default false, with
-`debug.egl.blobcache.multifile` as an override), so most devices use the
+`debug.egl.blobcache.multifile` as an override). Most devices therefore use the
 monolithic path.
 
 - `BlobCache.cpp` -- In-memory key-value cache; when full, it evicts randomly
@@ -628,8 +628,8 @@ bool Hal::Open() {
 
 Android 17 collapses the loader to two sources. `LoadUpdatedDriver()` (line 224) tries
 the Game/updatable driver namespace from `GraphicsEnv`. If that is absent
-(`-ENOENT`), `LoadBuiltinDriver()` (line 202) loads the vendor driver -- and that
-function now also handles the APEX case directly: when the `ro.vulkan.apex` property is
+(`-ENOENT`), `LoadBuiltinDriver()` (line 202) loads the vendor driver. That
+function now also handles the APEX case directly. When the `ro.vulkan.apex` property is
 set, it resolves the named APEX namespace and loads `vulkan.<name>.so` from there.
 Earlier releases routed APEX loading through a separate `LoadDriverFromApex()` step in
 `Hal::Open`; that step has been folded into `LoadBuiltinDriver`.
@@ -651,9 +651,9 @@ the vendor partition.
 
 Android supports loading Vulkan drivers from APEX modules, enabling driver updates
 outside of full OTA updates. In Android 17 this is handled inside
-`LoadBuiltinDriver()` (line 202): when the `ro.vulkan.apex` property names an APEX, the
-builtin path resolves that APEX's linker namespace and loads `vulkan.<name>.so` from it
-instead of from the vendor partition:
+`LoadBuiltinDriver()` (line 202). When the `ro.vulkan.apex` property names an APEX, the
+builtin path resolves the linker namespace of that APEX. It then loads `vulkan.<name>.so`
+from it instead of from the vendor partition:
 
 ```cpp
 // frameworks/native/vulkan/libvulkan/driver.cpp, line 202
@@ -1129,9 +1129,9 @@ Skia handles glyph rasterization using:
 - **GPU glyph atlas**: Ganesh maintains a texture atlas for cached glyphs, with
   the atlas size configured by HWUI's `CacheManager` (see Section 13.7.7)
 
-Complex text shaping (which is a separate step from rasterization) is done on
-Android by minikin, which uses HarfBuzz -- Skia only rasterizes the glyphs that
-shaping selects.
+Complex text shaping is a separate step from rasterization. On Android, minikin
+does the shaping and uses HarfBuzz. Skia only rasterizes the glyphs that shaping
+selects.
 
 ### 13.5.8 SIMD Optimizations
 
@@ -1272,7 +1272,7 @@ mMaxGpuFontAtlasBytes = nextPowerOfTwo(mMaxSurfaceArea)
 ```
 
 `mMaxSurfaceArea` starts as the screen area scaled by the memory policy's
-`initialMaxSurfaceAreaScale` (1.0 by default) and grows at runtime if a larger
+`initialMaxSurfaceAreaScale` (1.0 by default). It grows at runtime if a larger
 frame is rendered. For a 1080x2400 display under the default policy:
 `nextPowerOfTwo(2592000) = 4194304` (4 MB per atlas)
 
@@ -1375,9 +1375,9 @@ virtual void punchHole(const SkRRect& rect, float alpha) = 0;
 
 ### 13.6.3 Canvas Op Types
 
-HWUI also carries an experimental typed op-buffer display-list format (the
-`CanvasOpBuffer` path described in 13.6.8, not the active recording pipeline);
-its operation set is enumerated in `CanvasOpTypes.h`:
+HWUI also carries an experimental typed op-buffer display-list format. This is the
+`CanvasOpBuffer` path described in 13.6.8, not the active recording pipeline.
+`CanvasOpTypes.h` enumerates its operation set:
 
 ```cpp
 // frameworks/base/libs/hwui/canvas/CanvasOpTypes.h, line 23
@@ -1435,7 +1435,7 @@ public:
 ```
 
 The `DirtyPropertyMask` enum enables fine-grained dirty tracking. When a View property
-changes (e.g., `setTranslationX()`), only the corresponding bit is set, avoiding
+changes (e.g., `setTranslationX()`), only the corresponding bit is set. This avoids
 unnecessary work during the sync phase.
 
 ### 13.6.5 Double-Buffered Properties
@@ -1530,8 +1530,8 @@ The `SkiaDisplayListWrapper` wraps a `skiapipeline::SkiaDisplayList`, which stor
 - Vector drawable references
 
 There is also a `MultiDisplayList` variant (line 173) that supports both the Skia
-recording and a new `CanvasOpBuffer` format, indicating ongoing modernization of
-the display list system.
+recording and a new `CanvasOpBuffer` format. This shows that the display list
+system is being modernized.
 
 ### 13.6.9 The Skia Display List Pipeline
 
@@ -1694,7 +1694,7 @@ void EglManager::initialize() {
 ```
 
 **Config selection** -- The EglManager holds four configurations for different pixel
-formats; three are loaded up front in `loadConfigs()`, while the A8 config is created
+formats. Three are loaded up front in `loadConfigs()`. The A8 config is created
 lazily on the first `ColorMode::A8` surface inside `createSurface()`:
 
 | Config | Pixel Format | Use Case |
@@ -1768,9 +1768,8 @@ sp<VulkanManager> VulkanManager::getInstance() {
 }
 ```
 
-The VulkanManager opts in to 16 Vulkan extensions (line 51; the array is declared
-with spare capacity of 26, and extensions Skia needs implicitly are added by Skia
-itself):
+The VulkanManager opts in to 16 Vulkan extensions (line 51). The array is declared
+with spare capacity of 26. Skia itself adds the extensions that it needs implicitly:
 
 ```cpp
 // frameworks/base/libs/hwui/renderthread/VulkanManager.cpp, line 51
@@ -2182,8 +2181,8 @@ bool SkiaVulkanPipeline::swapBuffers(...) {
 ```
 
 **Step 8: SurfaceFlinger Composition.** SurfaceFlinger acquires the buffer from the
-BufferQueue, composites all visible layers (using RenderEngine for GPU composition
-or HWC for hardware overlay composition), and presents the result to the display.
+BufferQueue. It composites all visible layers, with RenderEngine for GPU composition
+or HWC for hardware overlay composition. Then it presents the result to the display.
 
 ---
 
@@ -2372,18 +2371,23 @@ The whole feature is "layer caching," gated on at runtime by `debug.sf.enable_la
 (or `adb shell service call SurfaceFlinger 1040 i32 1`).
 
 **The Planner.** `Planner` (`Planner.h`) is the top-level orchestrator. Each frame it is handed
-the current layer stack and, in its own words, "heuristically determin[es] the composition
+the current layer stack. In its own words, it does this:
+"heuristically determin[es] the composition
 strategy of the current layer stack, and flattens inactive layers into an override buffer so it
-can be used as a more efficient representation of parts of the layer stack." It calls `plan()`
-before the composition strategy is chosen -- which asks the Flattener either to replace cached
-sets with a newly available flattened one or to create a new cached set -- and updates again
-afterward. It owns two collaborators: a `Predictor`, which records observed composition results
-keyed by a layer-stack hash and predicts a DEVICE/CLIENT plan from history (gated off by
-default behind `debug.sf.enable_planner_prediction` -- only the Flattener runs in a stock
-build), and the `Flattener`.
+can be used as a more efficient representation of parts of the layer stack."
+
+It calls `plan()`
+before the composition strategy is chosen. This call asks the Flattener either to replace cached
+sets with a newly available flattened one or to create a new cached set. The Planner updates again
+afterward.
+
+The Planner owns two collaborators. The first is a `Predictor`. It records observed composition
+results keyed by a layer-stack hash and predicts a DEVICE/CLIENT plan from history. It is gated off by
+default behind `debug.sf.enable_planner_prediction`, so only the Flattener runs in a stock
+build. The second collaborator is the `Flattener`.
 
 **The Flattener and CachedSets.** A `CachedSet` (`CachedSet.h`) is a group of layers composited
-together into one buffer; a single layer is a `CachedSet` of size one, and the interesting case
+together into one buffer. A single layer is a `CachedSet` of size one, and the interesting case
 is a multi-layer set. The `Flattener` (`Flattener.h`) watches for layers that have gone *quiet*
 and folds them together:
 
@@ -2392,24 +2396,24 @@ and folds them together:
 - The Flattener groups a stable **Run** of cached sets. A Run "must contain more than 1
   CachedSet or be used for a hole punch," because flattening a single set buys nothing.
 - `flattenLayers()` hashes the stack and calls `mergeWithCachedSets()` to reconcile the
-  incoming layers with the existing cached sets; `buildCachedSets()` then finds candidate
+  incoming layers with the existing cached sets. Then `buildCachedSets()` finds candidate
   runs (`findCandidateRuns()` / `findBestRun()`) and folds the best stable run into one
   `CachedSet`. `renderCachedSets()` then GPU-composites that group into a
   single buffer drawn from a reused `TexturePool`. From the next frame on, the whole group is
-  one buffer -- which the hardware composer can scan out as a single **DEVICE** layer -- so the
+  one buffer. The hardware composer can scan out this buffer as a single **DEVICE** layer. So the
   per-frame composite cost of that region collapses to one layer instead of many.
 
 **Rendering the cached set without stealing frame time.** Compositing a cached set itself costs
 GPU time, so the Flattener schedules it carefully. Its `RenderScheduling` tunables give a
-`cachedSetRenderDuration` budget (default ~1.5 ms) and, if a frame does not have enough slack,
-rendering the cached set is *deferred* to a later frame -- up to `maxDeferRenderAttempts`
-(default **240**) times, after which it is rendered anyway so future frames can benefit. This
+`cachedSetRenderDuration` budget (default ~1.5 ms). If a frame has too little slack,
+the render of the cached set is *deferred* to a later frame, up to `maxDeferRenderAttempts`
+(default **240**) times. After that, it is rendered anyway so future frames can benefit. This
 keeps the one-time flattening cost from causing the very jank it exists to prevent.
 
 **Hole punching.** Flattening a region would normally swallow a video or `SurfaceView` layer
 sitting within it. With `mEnableHolePunch` (default on), the Flattener instead punches a
-transparent hole in the flattened buffer where that layer is, so the underlying buffer-backed
-layer can still be scanned out directly by HWC (DEVICE) while everything around it is served
+transparent hole in the flattened buffer where that layer is. The underlying buffer-backed
+layer can then still be scanned out directly by HWC (DEVICE). Everything around it is served
 from the single cached buffer.
 
 ```mermaid
@@ -2428,10 +2432,12 @@ graph TD
 ```
 
 This is the SurfaceFlinger-side answer to "which part does the rendering combination and
-reduction": the Planner/Flattener *combines* quiet layers into a cached buffer and *reduces* the
-per-frame composite to fewer (often HWC-only) layers. It is also where OOPR layers (13.41.11)
-land once replayed -- a static OOPR layer is just another candidate the Flattener can fold into
-a CachedSet, on top of the occlusion and HWC-offload reductions of 13.9.5.
+reduction". The Planner/Flattener *combines* quiet layers into a cached buffer and *reduces* the
+per-frame composite to fewer (often HWC-only) layers.
+
+It is also where OOPR layers (13.41.11)
+land once replayed. A static OOPR layer is just another candidate that the Flattener can fold into
+a CachedSet. This is on top of the occlusion and HWC-offload reductions of 13.9.5.
 
 ---
 
@@ -2488,8 +2494,8 @@ interface IAllocator {
 }
 ```
 
-Android 17 uses `allocate2()` as the live allocation entry point; the original
-`allocate()` taking an opaque `byte[]` descriptor remains only for back-compat with
+Android 17 uses `allocate2()` as the live allocation entry point. The original
+`allocate()` takes an opaque `byte[]` descriptor. It remains only for back-compat with
 pre-IMapper-5.0 clients.
 
 ### 13.10.3 EGL Driver Loading
@@ -2727,11 +2733,11 @@ void SkiaGpuPipeline::renderLayersImpl(
 ### 13.11.4 Image Pinning
 
 For **mutable** bitmaps, `SkiaGpuPipeline` pins a snapshot of the pixels as a GPU
-texture during the sync phase, so the app mutating the bitmap on the UI thread
-afterwards cannot change what this frame draws. (Hardware bitmaps are already
-GPU-backed and do not go through this path; `unpinImages()` runs at the start of
+texture during the sync phase. As a result, a later change to the bitmap on the UI
+thread cannot change what this frame draws. Hardware bitmaps are already
+GPU-backed and do not go through this path. `unpinImages()` runs at the start of
 the *next* frame's `syncFrameState()`, so pinned images stay resident for the
-whole frame.)
+whole frame.
 
 ```cpp
 // frameworks/base/libs/hwui/pipeline/skia/SkiaGpuPipeline.cpp, line 115
@@ -2863,9 +2869,9 @@ static void clipOutline(const Outline& outline,
 
 Nodes with non-zero Z values (elevation) are drawn in a special reordering section.
 The `onDraw` method draws in place only when the node is outside a reordering
-section, or when it is inside one but has zero Z; a node inside a reordering
-section with non-zero Z is skipped here and drawn later, out of recording order,
-by the reorder barriers:
+section, or when it is inside one but has zero Z. A node inside a reordering
+section with non-zero Z is skipped here. The reorder barriers draw it later,
+out of recording order:
 
 ```cpp
 // RenderNodeDrawable.cpp, line 125
@@ -2878,7 +2884,7 @@ void RenderNodeDrawable::onDraw(SkCanvas* canvas) {
 ```
 
 Nodes with negative Z are drawn first within the reordering section, ahead of
-their zero-Z siblings; nodes with positive Z are drawn after, each preceded by
+their zero-Z siblings. Nodes with positive Z are drawn after, each preceded by
 its shadow. This creates Android's Material Design elevation system.
 
 ---
@@ -3133,7 +3139,7 @@ sequenceDiagram
 ```
 
 The UI thread is typically unblocked as soon as the sync phase completes (before GPU
-work begins), allowing the next frame's measure/layout/record to overlap with the
+work begins). The next frame's measure/layout/record can then overlap with the
 current frame's GPU rendering.
 
 ---
@@ -3172,30 +3178,32 @@ HWUI supports multiple color modes, managed through `EglManager.createSurface()`
 | `A8` | None | R8 | Alpha-8 windows (`@hide`) |
 
 In the `Default` row, `EGL_GL_COLORSPACE_LINEAR_KHR` does not mean linear-light
-content: it tells the GPU to store HWUI's already sRGB-encoded values untouched
-(no framebuffer encode/decode around blending), and libEGL maps it to an unknown
+content. It tells the GPU to store HWUI's already sRGB-encoded values untouched
+(no framebuffer encode/decode around blending). libEGL maps it to an unknown
 dataspace that SurfaceFlinger interprets as sRGB by default
 (`dataSpaceFromEGLColorSpace()` in
 `frameworks/native/opengl/libs/EGL/egl_platform_entries.cpp`).
 
 Two of these rows are conditional. For `WideColorGamut`, `createSurface()` picks
-the EGL colorspace from the requested gamut (Display P3, sRGB/scRGB, or Rec.2020),
-while the Skia surface color type comes from `DeviceInfo::getWideColorType()` in
-`SkiaPipeline::setSurfaceColorProperties()`. For `Hdr`, the scRGB + F16 EGL config
+the EGL colorspace from the requested gamut (Display P3, sRGB/scRGB, or Rec.2020).
+The Skia surface color type comes from `DeviceInfo::getWideColorType()` in
+`SkiaPipeline::setSurfaceColorProperties()`.
+
+For `Hdr`, the scRGB + F16 EGL config
 is used only when the device supports fp16 *and* does not support RGBA_10101010
-for HDR; otherwise the code falls through to the `Hdr10` handling, and the Skia
-surface color type is RGBA_10x6 or 8888 with an extended-range P3 color space
-(the F16 Skia branch is currently disabled in `SkiaPipeline.cpp`). And despite
-its name, `Hdr10` is not the HDR10
-(BT.2020 + PQ) standard: `ColorMode.h` defines it as extended-range Display P3 at
-10 bits per channel, marked test-only because two alpha bits are insufficient for
+for HDR. Otherwise the code falls through to the `Hdr10` handling. The Skia
+surface color type is then RGBA_10x6 or 8888 with an extended-range P3 color space
+(the F16 Skia branch is currently disabled in `SkiaPipeline.cpp`). Despite
+its name, `Hdr10` is not the HDR10 (BT.2020 + PQ) standard.
+`ColorMode.h` defines it as extended-range Display P3 at
+10 bits per channel. It is marked test-only because two alpha bits are insufficient for
 shipping UI.
 
 ### 13.16.3 Wide Color Gamut in Vulkan
 
 The VulkanSurface also supports wide color gamut. Unlike a typical Vulkan
-application, HWUI does not create a `VkSwapchainKHR` — `VulkanSurface` manages
-the `ANativeWindow` buffers directly, so the color space travels as an Android
+application, HWUI does not create a `VkSwapchainKHR`. `VulkanSurface` manages
+the `ANativeWindow` buffers directly. As a result, the color space travels as an Android
 dataspace on the window rather than as a swapchain `imageColorSpace`:
 
 ```cpp
@@ -3211,8 +3219,8 @@ err = native_window_set_buffers_data_space(window, windowInfo.dataspace);
 
 ### 13.16.4 HDR Override Workaround
 
-The EglManager contains a notable workaround for HDR: since there is no standard EGL
-color space for extended-range P3, it overrides the dataspace after surface creation:
+The EglManager contains a notable workaround for HDR. There is no standard EGL
+color space for extended-range P3, so it overrides the dataspace after surface creation:
 
 ```cpp
 // EglManager.cpp, line 517
@@ -3312,9 +3320,9 @@ AnimatorManager& animators() { return mAnimatorManager; }
 
 ### 13.18.2 Frame Callbacks
 
-The RenderThread supports frame callbacks so a `CanvasContext` (the only
-`IFrameCallback` implementer) can schedule its own frames -- this is how
-RenderThread-driven animations keep running without involving the UI thread:
+The RenderThread supports frame callbacks. A `CanvasContext` (the only
+`IFrameCallback` implementer) can use them to schedule its own frames. This is how
+RenderThread-driven animations keep running without the UI thread:
 
 ```cpp
 // RenderThread.cpp, line 385
@@ -3361,10 +3369,10 @@ void RenderThread::frameCallback(
 }
 ```
 
-This scheduling at 25% of the deadline ensures that the RenderThread's frame work
-starts early enough to complete before the deadline, while also leaving time for
+This scheduling at 25% of the deadline makes sure that the RenderThread's frame work
+starts early enough to complete before the deadline. It also leaves time for
 the UI thread to process input events after the VSYNC. (The 25% value is the
-default path; when the `use_prev_frame_duration_for_render_thread` aconfig flag
+default path. When the `use_prev_frame_duration_for_render_thread` aconfig flag
 is enabled, the run time is instead derived from the previous frame's measured
 callback duration.)
 
@@ -3394,7 +3402,7 @@ graph TD
 ```
 
 Skia talks to the `PersistentGraphicsCache` (registered as
-`GrContextOptions::fPersistentCache`), which delegates to the `ShaderCache`
+`GrContextOptions::fPersistentCache`). This cache delegates to the `ShaderCache`
 singleton (or to a separate pipeline cache when the `separate_pipeline_cache`
 flag is enabled).
 
@@ -3423,7 +3431,7 @@ void CacheManager::configureContext(
 ```
 
 The `identity` parameter is the GLES version string (for GL) or the Vulkan driver
-version (for Vulkan), ensuring that cached shaders are invalidated when the driver
+version (for Vulkan). This makes sure that cached shaders are invalidated when the driver
 changes.
 
 ### 13.19.3 Cache Executor
@@ -3562,8 +3570,8 @@ stateDiagram-v2
     Destroyed --> [*]
 ```
 
-There is no explicit resume call for a paused context -- `pauseSurface()` only
-removes the frame callback and bumps the generation id, and drawing restarts
+There is no explicit resume call for a paused context. `pauseSurface()` only
+removes the frame callback and bumps the generation id. Drawing restarts
 with the next `DrawFrameTask` (hence the unlabeled return edge).
 
 ### 13.22.2 Surface Setup
@@ -3869,8 +3877,8 @@ void damageSelf(TreeInfo& info);
 ```
 
 If a node changes alpha, transform, or clip, its entire bounds are damaged. A
-display-list swap also damages the node's full bounds -- twice, once before and
-once after `syncDisplayList()`, so a change in `isRenderable` is caught on both
+display-list swap also damages the node's full bounds. It does this twice, once before and
+once after `syncDisplayList()`. As a result, a change in `isRenderable` is caught on both
 sides (HWUI does not track finer content bounds here). When
 `getClipDamageToBounds()` is false, the damage is an effectively unbounded rect
 rather than the node bounds.
@@ -3901,7 +3909,7 @@ graph TD
 ```
 
 Only `sExtremeLowRam` actually lowers the size budget (surface-size multiplier 20
-instead of the default 48, background retention 0.2); the system/persistent policy
+instead of the default 48, background retention 0.2). The system/persistent policy
 keeps the default size limits but retains idle resources for a much shorter time.
 
 ### 13.26.2 Resource Budget Calculation
@@ -4047,8 +4055,8 @@ status_t EglManager::fenceWait(int fence) {
 }
 ```
 
-The GPU-side wait is strongly preferred because it allows the CPU to continue
-preparing the next frame while the GPU waits for the fence to signal.
+The GPU-side wait is strongly preferred. This is because it lets the CPU continue to prepare
+the next frame while the GPU waits for the fence to signal.
 
 ---
 
@@ -4148,7 +4156,7 @@ void applyColorTransform(ColorTransform transform) {
 ### 13.30.1 What is Hole Punching
 
 Hole punching is a technique where HWUI creates a transparent "hole" in its rendered
-content, allowing a hardware overlay (e.g., a video surface or camera preview) to
+content. A hardware overlay (e.g., a video surface or camera preview) can then
 show through:
 
 ```cpp
@@ -4291,7 +4299,7 @@ timeline
 
 Skia's Graphite backend is the successor to Ganesh. In Android 17 it has reached
 production code in SurfaceFlinger's RenderEngine (`GraphiteVkRenderEngine`, gated behind
-the rollout flags described in Section 13.43), while HWUI still renders with Ganesh
+the rollout flags described in Section 13.43). HWUI still renders with Ganesh
 (its `RenderPipelineType` enum has no Graphite variant). Its adoption path for Android
 is:
 
@@ -4644,7 +4652,7 @@ void SkiaGpuPipeline::prepareToDraw(
 ```
 
 The pin/unpin sequence forces the upload to happen immediately and frees the
-reference, but the texture remains in the GPU resource cache for later use.
+reference. The texture remains in the GPU resource cache for later use.
 
 ### 13.38.3 HardwareBitmapUploader
 
@@ -4882,7 +4890,7 @@ SurfaceFlinger has long supported running its RenderEngine on a dedicated worker
 inside the SurfaceFlinger process. The wrapper that implements this is
 `RenderEngineThreaded`, declared in
 `frameworks/native/libs/renderengine/threaded/RenderEngineThreaded.h` (line 38). It owns a
-single worker thread and a queue of work items; every call into the `RenderEngine` API is
+single worker thread and a queue of work items. Every call into the `RenderEngine` API is
 turned into a lambda and enqueued for that thread:
 
 ```cpp
@@ -4902,17 +4910,19 @@ mThread = std::thread(&RenderEngineThreaded::threadMain, this, factory);
 ```
 
 This wrapper runs RenderEngine on another *thread*, still inside SurfaceFlinger's
-own address space; the win is that GPU command recording and submission move off
-the SurfaceFlinger main thread, freeing it to keep latching buffers and handling
-transactions. In Android 17 the non-threaded path is gone: `RenderEngine::create()`
+own address space. The win is that GPU command recording and submission move off
+the SurfaceFlinger main thread. The main thread can then keep latching buffers and
+handle transactions.
+
+In Android 17 the non-threaded path is gone. `RenderEngine::create()`
 in `frameworks/native/libs/renderengine/RenderEngine.cpp` (lines 66-71) *always*
-returns `RenderEngineThreaded::create(...)`, and if a caller requested
-`Threaded::No` it logs an error ("Non-threaded RenderEngine not supported") and
+returns `RenderEngineThreaded::create(...)`. If a caller requested
+`Threaded::No`, it logs an error ("Non-threaded RenderEngine not supported") and
 proceeds with the threaded engine anyway. The `Threaded::Yes/No` builder option,
 `chooseRenderEngineType()` in
 `frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp` (line 887), and the
-`mRenderEngine->isThreaded()` query all still exist and feed feature gates such as
-the offload-composition flag below, but the underlying engine object is the
+`mRenderEngine->isThreaded()` query all still exist. They feed feature gates such as
+the offload-composition flag below. But the underlying engine object is the
 threaded wrapper either way.
 
 Note that this off-main-thread threading is a *different* feature from out-of-process
@@ -4948,10 +4958,10 @@ const bool canOffloadGpuComposition =
 
 When `canOffloadGpuComposition` holds and no main-thread client composition is required,
 SurfaceFlinger hands the virtual display's whole composition pass to a
-`BackgroundExecutor` worker thread running a second `CompositionEngine` instance
+`BackgroundExecutor` worker thread. That thread runs a second `CompositionEngine` instance
 (which shares the one threaded RenderEngine -- that is why `isThreaded()` gates the
-feature), returning a `std::future<void>` that signals when the offloaded
-composition completes, rather than blocking the main thread.
+feature). SurfaceFlinger gets a `std::future<void>` that signals when the offloaded
+composition completes. It does not block the main thread.
 
 ```mermaid
 graph TD
@@ -4968,16 +4978,16 @@ graph TD
 ```
 
 The related `force_slower_follower_gpu_composition_platform` flag (same aconfig file)
-forces "follower" connected displays onto GPU composition so that a slower secondary
-display does not throttle the primary; together these flags give SurfaceFlinger finer
+forces "follower" connected displays onto GPU composition. This is so that a slower secondary
+display does not throttle the primary. Together these flags give SurfaceFlinger finer
 control over where and on which thread composition runs in multi-display setups.
 
 ### 13.41.3 The Real OOPR: a Client-Recorded Render-Command Channel
 
 Separate from the threaded RenderEngine, Android 17 ships actual out-of-process
-rendering infrastructure: a cross-process channel where a *client* process records
-Skia draw commands and SurfaceFlinger replays them, instead of the client rendering
-into a GraphicBuffer and handing the finished pixels over. It is flag-gated by
+rendering infrastructure. It is a cross-process channel where a *client* process records
+Skia draw commands and SurfaceFlinger replays them. The client does not render
+into a GraphicBuffer and hand the finished pixels over. It is flag-gated by
 `out_of_process_rendering` (namespace `window_surfaces`) in
 `frameworks/native/libs/gui/libgui_flags.aconfig` and is not the default path yet,
 but the machinery is fully present in the tree.
@@ -4987,10 +4997,10 @@ endpoints:
 
 - `RenderCommandBufferProducer` (`frameworks/native/libs/gui/RenderCommandBufferProducer.cpp`)
   lives in the client. Its constructor (line 51) allocates an `IpcRenderRegion` in an
-  ashmem region (`ashmem_create_region`, line 33) and exposes `startRecording()`
-  (line 73) / `finishRecordingAndPostFrame()` (line 79) so the client records a frame's
+  ashmem region (`ashmem_create_region`, line 33). It exposes `startRecording()`
+  (line 73) / `finishRecordingAndPostFrame()` (line 79), so the client records a frame's
   worth of draw ops.
-  The fd is passed to SurfaceFlinger by serializing the producer into a transaction
+  The producer is serialized into a transaction. This passes the fd to SurfaceFlinger
   (`writeToParcel` dups the ashmem fd) via
   `SurfaceComposerClient::Transaction::setRenderCommandBuffer()`
   (`SurfaceComposerClient.cpp`, line 2564) and a paired
@@ -4999,37 +5009,37 @@ endpoints:
   is the SurfaceFlinger end. It adopts the fd, maps the same `IpcRenderRegion`, and
   `consumerAcquire(frameNumber)` / `getCurrentBuffer()` hand the recorded
   `RenderCommandBuffer` to SurfaceFlinger for replay.
-- `IpcRenderRegion` (defined in `gui/RenderCommandBuffer.h`) is the shared struct: a
+- `IpcRenderRegion` (defined in `gui/RenderCommandBuffer.h`) is the shared struct. It holds a
   `LocklessStaticQueue` of command buffers plus a `MagicRingBuffer` upload buffer
-  (`gui/MagicRingBuffer.h`), a lock-free single-producer/single-consumer ring that maps
-  the same physical pages twice in virtual memory so wrap-around is automatic and reads
-  are zero-copy and contiguous. The lock-free queues are how the producer and consumer
+  (`gui/MagicRingBuffer.h`). The upload buffer is a lock-free single-producer/single-consumer
+  ring. It maps the same physical pages twice in virtual memory, so wrap-around is
+  automatic and reads are zero-copy and contiguous. The lock-free queues are how the producer and consumer
   share the region without a mutex across the process boundary.
 - `RenderResourceCache` (`frameworks/native/services/surfaceflinger/RenderResourceCache.{h,cpp}`,
   held as `mIpcCache` in `SurfaceFlinger.h`, line 1718) tracks the GraphicBuffers a
-  client registers for use in its recorded commands, keyed by the client's binder token,
-  and reaps them via a `DeathRecipient` when the client dies.
+  client registers for use in its recorded commands. It keys them by the client's binder token.
+  It reaps them via a `DeathRecipient` when the client dies.
 
 On the compositor side a layer carries a `renderCommandBufferFrameId` through its
 `LayerFECompositionState`. The `eRenderCommandBufferFrameIdChanged` transaction bit
-is handled in `SurfaceFlinger.cpp` (around line 6016), while
-`eRenderCommandBufferChanged` is handled in the front end
-(`FrontEnd/RequestedLayerState.cpp`, lines 195-210) -- which is also where
+is handled in `SurfaceFlinger.cpp` (around line 6016). `eRenderCommandBufferChanged` is handled in the front end
+(`FrontEnd/RequestedLayerState.cpp`, lines 195-210). This is also where
 `consumerAcquire(renderCommandBufferFrameId)` and `getCurrentBuffer()` are invoked
 to pick up the right recorded frame.
+
 There is even a `--render-command-buffer` dumpsys hook
 (`dumpRenderCommandBuffers`, `SurfaceFlinger.cpp` line 7122) that dumps a layer's
 recorded buffer to a file. So unlike RenderEngineThreaded, this is genuinely
-out-of-process: the draw commands originate in another process and cross into
-SurfaceFlinger through shared memory rather than as a finished framebuffer.
+out-of-process. The draw commands originate in another process. They cross into
+SurfaceFlinger through shared memory, not as a finished framebuffer.
 
 ### 13.41.4 The HWUI Client Side: Recording Instead of Rendering
 
-Section 13.41.3 described the *channel*. The other half is what feeds it: in an
-OOPR app the normal HWUI pipeline is replaced by one that records draw commands
-rather than executing them. Whether a process uses OOPR is decided per package, not
-globally. `ViewRootImpl.useIpcRendering()` consults a system property and returns
-true only when the app's base package is in the allowlist:
+Section 13.41.3 described the *channel*. The other half is what feeds it. In an OOPR app,
+the normal HWUI pipeline is replaced by one that records draw commands. It does not
+execute them. Whether a process uses OOPR is decided per package, not globally.
+`ViewRootImpl.useIpcRendering()` consults a system property and returns true only when the
+app's base package is in the allowlist:
 
 ```java
 // frameworks/base/core/java/android/view/ViewRootImpl.java, line 14748
@@ -5082,11 +5092,11 @@ graph TD
     style GPU fill:#4CAF50,color:#fff
 ```
 
-`SkiaIpcPipeline` (`frameworks/base/libs/hwui/pipeline/skia/SkiaIpcPipeline.{h,cpp}`,
-new in Android 17) is a degenerate `IRenderPipeline`: it never touches the GPU.
+`SkiaIpcPipeline` (`frameworks/base/libs/hwui/pipeline/skia/SkiaIpcPipeline.{h,cpp}`, new
+in Android 17) is a degenerate `IRenderPipeline`: it never touches the GPU.
 `makeCurrent()`, `getFrame()`, `flush()`, `pinImages()`, `getSurface()`, and
-`createTextureLayer()` are all stubs that return empty/false/null, and `isContextReady()`
-is hard-coded `true` because there is no local GPU context to wait on. Instead, the
+`createTextureLayer()` are all stubs that return empty/false/null. `isContextReady()` is
+hard-coded `true`, because there is no local GPU context to wait on. Instead, the
 constructor wires up a recorder and turns on the OOPR client:
 
 ```cpp
@@ -5098,15 +5108,15 @@ SkiaIpcPipeline::SkiaIpcPipeline(renderthread::RenderThread& thread)
     mOoprClient->enableOutOfProcessRendering();
 ```
 
-`IPCRecordingCanvas` (`frameworks/native/libs/ipcrenderbuffer/`, also new) is the heart
-of the recording. It subclasses `SkCanvasVirtualEnforcer<SkNoDrawCanvas>` -- a Skia
-canvas that draws nothing -- and overrides every `onDraw*`, `onClip*`, `willSave`,
-`willRestore`, and matrix hook to *serialize* the call into the command buffer instead
-of rasterizing it. The full op vocabulary is the `RenderBufferOpType` enum
-(`RenderBufferOpTypes.h`), running from `TYPE_SAVE` through `TYPE_UPLOADTYPEFACE` (46 op
-types), and it mirrors the Skia canvas API one-to-one: `TYPE_DRAWRECT`, `TYPE_DRAWPATH`,
-`TYPE_DRAWTEXTBLOB`, `TYPE_CLIPRRECT`, `TYPE_DRAWWEBVIEW`, `TYPE_DRAWVECTORDRAWABLE`, and
-so on. A frame becomes a serialized op list, not a pile of pixels.
+`IPCRecordingCanvas` (`frameworks/native/libs/ipcrenderbuffer/`, also new) is the heart of
+the recording. It subclasses `SkCanvasVirtualEnforcer<SkNoDrawCanvas>` -- a Skia canvas
+that draws nothing. It overrides every `onDraw*`, `onClip*`, `willSave`, `willRestore`,
+and matrix hook to *serialize* the call into the command buffer instead of rasterizing it.
+The full op vocabulary is the `RenderBufferOpType` enum (`RenderBufferOpTypes.h`), from
+`TYPE_SAVE` through `TYPE_UPLOADTYPEFACE` (46 op types). The enum mirrors the Skia canvas
+API one-to-one: `TYPE_DRAWRECT`, `TYPE_DRAWPATH`, `TYPE_DRAWTEXTBLOB`, `TYPE_CLIPRRECT`,
+`TYPE_DRAWWEBVIEW`, `TYPE_DRAWVECTORDRAWABLE`, and so on. A frame becomes a serialized op
+list, not a pile of pixels.
 
 #### Threading: OOPR reuses the existing RenderThread
 
@@ -5114,24 +5124,25 @@ OOPR does not add a thread to the app process, and it does not move recording of
 RenderThread. `SkiaIpcPipeline` is an ordinary `IRenderPipeline`, exactly like the GPU
 pipelines: `class SkiaIpcPipeline : public SkiaPipeline` (`SkiaIpcPipeline.h:45`) and
 `class SkiaPipeline : public renderthread::IRenderPipeline` (`SkiaPipeline.h:42`). The
-selection branch in `CanvasContext::create` (shown above, `CanvasContext.cpp:90`) hands
-it the *same* `RenderThread&` it would have handed a `SkiaOpenGLPipeline` or
-`SkiaVulkanPipeline`, and the base constructor stashes it
-(`SkiaPipeline.cpp:61` -- `SkiaPipeline(RenderThread& thread) : mRenderThread(thread)`).
-Frame production therefore stays on the one RenderThread the process already owns; OOPR
-swaps the *pipeline*, not the *threading model*.
+selection branch in `CanvasContext::create` (shown above, `CanvasContext.cpp:90`) hands it
+the *same* `RenderThread&` that it would hand to a `SkiaOpenGLPipeline` or
+`SkiaVulkanPipeline`. The base constructor stashes it (`SkiaPipeline.cpp:61` --
+`SkiaPipeline(RenderThread& thread) : mRenderThread(thread)`). Frame production therefore
+stays on the one RenderThread that the process already owns. OOPR swaps the *pipeline*,
+not the *threading model*.
 
-What changes is what that thread does on each frame. With a GPU pipeline the RenderThread
-calls `makeCurrent()` on an EGL/Vulkan context, replays the RenderNode display lists into
-that context, and submits GPU work. With OOPR the same `CanvasContext::draw()` ->
+What changes is what that thread does on each frame. With a GPU pipeline, the RenderThread
+calls `makeCurrent()` on an EGL/Vulkan context. It replays the RenderNode display lists
+into that context and submits GPU work. With OOPR, the same `CanvasContext::draw()` ->
 `SkiaIpcPipeline::draw()` call (`SkiaIpcPipeline.cpp:157`) instead records the frame into
-the `IPCRecordingCanvas` and serializes it into the RenderCommandBuffer. The GPU half is
-simply absent on the client: `makeCurrent()` returns `MakeCurrentResult::AlreadyCurrent`
-(`SkiaIpcPipeline.cpp:148`) and `isContextReady()` is hard-coded `true`
-(`SkiaIpcPipeline.h:86`) because there is
-no EGL surface or Vulkan device to make current. The only context-ish call that survives
-is `mRenderThread.getGrContext()` when allocating a layer's backing
-(`SkiaIpcPipeline.cpp:138`), which borrows the RenderThread's shared context for
+the `IPCRecordingCanvas`. Then it serializes the frame into the RenderCommandBuffer.
+
+The GPU half is simply absent on the client. `makeCurrent()` returns
+`MakeCurrentResult::AlreadyCurrent` (`SkiaIpcPipeline.cpp:148`). `isContextReady()` is
+hard-coded `true` (`SkiaIpcPipeline.h:86`), because there is no EGL surface or Vulkan
+device to make current. The only context-ish call that survives is
+`mRenderThread.getGrContext()`, when a layer's backing is allocated
+(`SkiaIpcPipeline.cpp:138`). This call borrows the RenderThread's shared context for
 bookkeeping, not to draw the window.
 
 | | SkiaGL / SkiaVulkan pipeline | SkiaIpcPipeline (OOPR) |
@@ -5142,11 +5153,11 @@ bookkeeping, not to draw the window.
 | Rasterization | the RenderThread's own GPU context | SurfaceFlinger's RenderEngine (a different process) |
 | Threads added by OOPR | -- | 0 |
 
-So the RenderThread is reused unchanged as the per-process frame orchestrator; OOPR
-narrows its job from *rasterize-and-submit* to *record-and-IPC-submit*, and the pixels are
-produced later by SurfaceFlinger's RenderEngine (Section 13.41.6). This reuse is why an
-OOPR client never blocks on a GPU fence of its own, and why a frame's GPU cost leaves the
-app's RenderThread entirely (Section 13.41.9).
+So the RenderThread is reused unchanged as the per-process frame orchestrator. OOPR
+narrows its job from *rasterize-and-submit* to *record-and-IPC-submit*. SurfaceFlinger's
+RenderEngine produces the pixels later (Section 13.41.6). This reuse has two effects. An
+OOPR client never blocks on a GPU fence of its own. A frame's GPU cost leaves the app's
+RenderThread entirely (Section 13.41.9).
 
 ### 13.41.5 Sharing Resources: OoprClient and the Resource Cache
 
@@ -5164,16 +5175,17 @@ resource a frame references and uses two strategies depending on where the pixel
   `ComposerService::getComposerService()->registerGraphicBuffers(registerInfo)`. Every
   registration carries the client's `renderResourceToken` -- a `BBinder` the client owns
   -- so the server can scope the buffers to that client.
-- **Heap bitmaps** have no GraphicBuffer, so `registerBitmap()` queues them, and the
-  same per-frame `sendPendingBitmapRegistrations()` flush emits an inline
-  `UploadBitmap` op (`TYPE_UPLOADBITMAP`) into the command buffer's upload region, and
+- **Heap bitmaps** have no GraphicBuffer, so `registerBitmap()` queues them. The same
+  per-frame `sendPendingBitmapRegistrations()` flush emits an inline `UploadBitmap` op
+  (`TYPE_UPLOADBITMAP`) into the command buffer's upload region. It also emits
   `FreeBitmap` (`TYPE_FREEBITMAP`) when the image is dropped.
 
-HWUI layers need a render target that SurfaceFlinger can later draw into, so
-`OoprClient::createLayerSurface()` (`OutOfProcessRendering.cpp:138`) allocates a
-`GraphicBuffer` with `USAGE_HW_TEXTURE | USAGE_HW_RENDER`, wraps it as a Skia `SkSurface` via a backend
-texture, and returns both; `SkiaIpcPipeline::createOrUpdateLayer()` uses it so the layer's
-pixels live in a buffer the compositor can sample.
+HWUI layers need a render target that SurfaceFlinger can later draw into.
+For that reason, `OoprClient::createLayerSurface()` (`OutOfProcessRendering.cpp:138`) allocates a
+`GraphicBuffer` with `USAGE_HW_TEXTURE | USAGE_HW_RENDER`. It wraps the buffer as a Skia
+`SkSurface` via a backend texture, and returns both.
+`SkiaIpcPipeline::createOrUpdateLayer()` uses the result, so the layer's pixels live in a
+buffer the compositor can sample.
 
 #### End-to-end OOPR data flow
 
@@ -5201,21 +5213,21 @@ graph LR
     style OUT fill:#4CAF50,color:#fff
 ```
 
-`SkiaIpcPipeline::setSurfaceControl()` is where the two halves attach to the layer:
-it calls `Transaction.setRenderResourceToken(sc, token)` and
-`Transaction.setRenderCommandBuffer(sc, producer)` (`SkiaIpcPipeline.cpp:83-86`), and each
+`SkiaIpcPipeline::setSurfaceControl()` is where the two halves attach to the layer. It
+calls `Transaction.setRenderResourceToken(sc, token)` and
+`Transaction.setRenderCommandBuffer(sc, producer)` (`SkiaIpcPipeline.cpp:83-86`). Each
 frame commits `setRenderCommandBufferFrameId(sc, frameNumber)` (lines 287/293). On the
 server, the matching `RenderResourceCache` (held as `mIpcCache` in `SurfaceFlinger.h`,
-covered in 13.41.3) is keyed by that same token and reaps a client's buffers via a
+covered in 13.41.3) is keyed by that same token. It reaps a client's buffers via a
 `DeathRecipient` when the client process dies.
 
 ### 13.41.6 Replaying the Command Buffer in RenderEngine
 
-The recorded ops are finally turned into pixels inside SurfaceFlinger's RenderEngine.
-When a layer carries a `renderCommandBuffer`, `SkiaRenderEngine::drawLayersInternal()`
-first materializes the registered GraphicBuffers into Skia objects -- each becomes a
-backend texture and an `SkImage` (or an `SkSurface` for render targets) -- and then
-replays the op list straight onto the layer's composition canvas:
+The recorded ops are finally turned into pixels inside SurfaceFlinger's RenderEngine. When
+a layer carries a `renderCommandBuffer`, `SkiaRenderEngine::drawLayersInternal()` first
+materializes the registered GraphicBuffers into Skia objects. Each becomes a backend
+texture and an `SkImage` (or an `SkSurface` for render targets). Then it replays the op
+list straight onto the layer's composition canvas:
 
 ```cpp
 // frameworks/native/libs/renderengine/skia/SkiaRenderEngine.cpp, line 1577
@@ -5233,14 +5245,15 @@ if (layer.renderCommandBuffer) {
 ```
 
 Because the replay draws directly onto the composition target, there is never a separate
-per-app framebuffer for these layers: the app's draw recipe is executed by the
-compositor's single GPU context at composition time. `renderCommandBufferToCanvas()`
-itself lives in `frameworks/native/libs/ipcrenderbuffer/src/RenderBufferOps.cpp:335` and
-walks the op list, dispatching each `IPCRenderBufferOp` back onto a real `SkCanvas`. The
-same routine is reused by a standalone debug tool, `replay_render_buffer`
-(`replay_render_buffer.cpp`, with its own `main()`), which can load a captured buffer and
-replay it to a PNG, and by the `dumpsys SurfaceFlinger --render-command-buffer` hook
-(`dumpRenderCommandBuffers`, 13.41.3).
+per-app framebuffer for these layers. The compositor's single GPU context executes the
+app's draw recipe at composition time. `renderCommandBufferToCanvas()` itself lives in
+`frameworks/native/libs/ipcrenderbuffer/src/RenderBufferOps.cpp:335`. It walks the op list
+and dispatches each `IPCRenderBufferOp` back onto a real `SkCanvas`.
+
+A standalone debug tool, `replay_render_buffer` (`replay_render_buffer.cpp`, with its own
+`main()`), reuses the same routine. The tool can load a captured buffer and replay it to a
+PNG. The `dumpsys SurfaceFlinger --render-command-buffer` hook
+(`dumpRenderCommandBuffers`, 13.41.3) also reuses it.
 
 #### One OOPR frame, end to end
 
@@ -5263,21 +5276,22 @@ sequenceDiagram
 ```
 
 The net architectural effect is that, for an allowlisted app, GPU rendering moves out of
-the app process entirely: the app process records and ships a display list plus shared
-buffers, and SurfaceFlinger's RenderEngine does the actual drawing in one shared GPU
-context. The payoff is fewer per-app GPU contexts (less driver memory), the option for
-the compositor to skip drawing fully occluded layers, and an app process that needs no
-GPU driver mapping of its own. As of Android 17 it remains experimental and per-package
-gated, so the in-process SkiaGL/SkiaVulkan pipelines of 13.6 are still what the vast
-majority of apps run.
+the app process entirely. The app process records and ships a display list plus shared
+buffers. SurfaceFlinger's RenderEngine does the actual drawing in one shared GPU context.
+
+The payoff has three parts. There are fewer per-app GPU contexts (less driver memory). The
+compositor can skip the drawing of fully occluded layers. An app process needs no GPU
+driver mapping of its own. As of Android 17 the feature remains experimental and
+per-package gated. The vast majority of apps still run the in-process SkiaGL/SkiaVulkan
+pipelines of 13.6.
 
 ### 13.41.7 Many Clients, Many Windows, One GPU Context
 
 The single-window walkthrough above hides where OOPR actually earns its keep: a screen
-almost never shows one window. A launcher with a live wallpaper, two apps in split-screen,
-a freeform desktop with several windows, or one app showing a main window plus a dialog
-are all the common case, and OOPR is structured around it. Two boundaries matter, and they
-are deliberately *different*.
+almost never shows one window. A screen can show a launcher with a live wallpaper, or two
+apps in split-screen. It can also show a freeform desktop with several windows, or one app
+with a main window plus a dialog. These are all common cases, and OOPR is structured
+around them. Two boundaries matter, and they are deliberately *different*.
 
 **Per window: an independent command channel.** Each window is a separate
 `ViewRootImpl` with its own `HardwareRenderer`, so each gets its own `SkiaIpcPipeline`,
@@ -5306,10 +5320,10 @@ if (snapshot.renderResourceToken) {
 }
 ```
 
-Two windows of the same app resolve to the *same* server cache; two different apps get
-two different caches. The server-side `mCaches` map (13.41.3 / `RenderResourceCache.cpp`)
-therefore holds one `IPCServerResourceCache` per client process, and the `DeathRecipient`
-reaps an entire process's resources in one `mCaches.erase(token)` when that process dies.
+Two windows of the same app resolve to the *same* server cache. Two different apps get two
+different caches. The server-side `mCaches` map (13.41.3 / `RenderResourceCache.cpp`)
+therefore holds one `IPCServerResourceCache` per client process. When that process dies,
+the `DeathRecipient` reaps all of its resources in one `mCaches.erase(token)`.
 
 #### Multiple OOPR clients composited in one GPU context
 
@@ -5345,7 +5359,7 @@ graph TD
 ```
 
 All of those command buffers converge on SurfaceFlinger's *one* threaded RenderEngine
-(13.41.1), which replays each visible layer's ops into the single composited frame using
+(13.41.1). It replays the ops of each visible layer into the single composited frame, with
 a single GPU context. Compare the two models for a screen with N visible OOPR windows
 spread across several apps:
 
@@ -5357,18 +5371,19 @@ spread across several apps:
 | Occluded window | still rendered by the app, then discarded | recipe need not be replayed at all |
 | App process GPU driver mapping | required | not required |
 
-The last two rows are the structural wins. Because the draw work happens at composition
-time inside the compositor, the compositor -- which already computes the visible region
-and occlusion of every layer -- can decline to replay a window's command buffer when that
-window is fully covered, so an occluded app's frame costs nothing to "render." And because
-an OOPR app never touches the GPU, its process needs no GPU driver mapping at all, which
-shrinks both its memory footprint and its attack surface. These benefits scale with the
-number of simultaneously visible windows, which is exactly why the feature is framed
-around multi-window and multi-client layouts rather than a single foreground app.
+The last two rows are the structural wins. The draw work happens at composition time
+inside the compositor. The compositor already computes the visible region and occlusion of
+every layer. For that reason, it can decline to replay the command buffer of a fully covered window. An
+occluded app's frame therefore costs nothing to "render."
+
+An OOPR app never touches the GPU. Its process therefore needs no GPU driver mapping at
+all, which shrinks both its memory footprint and its attack surface. These benefits scale
+with the number of simultaneously visible windows. This is exactly why the feature is
+framed around multi-window and multi-client layouts, not a single foreground app.
 
 ### 13.41.8 Frame Lifecycle and Cross-Process Sync
 
-A frame's home is the `IpcRenderRegion` in shared memory, which holds two things: a
+A frame's home is the `IpcRenderRegion` in shared memory. It holds two things: a
 `LocklessStaticQueue<RenderCommandBuffer, 4>` (a four-deep ring of command buffers) and a
 `MagicRingBuffer<16 * 1024 * 1024>` for inline bitmap pixels (13.41.3). The queue is the
 cross-process sync primitive. It carries two monotonically increasing atomic counters:
@@ -5385,23 +5400,24 @@ The producer writes `mBuffer[mHi % 4]` then bumps `mHi`; the consumer reads
 release/acquire ordering on those two counters is the entire synchronization. A frame
 moves through five stages:
 
-1. **Record** (app RenderThread, `SkiaIpcPipeline::draw`). `IPCRecordingCanvas::startRecording()`
-   calls `RenderCommandBufferProducer::startRecording()`, which hands back the write slot
-   `mBuffer[mHi % 4]` and resets it. Replaying the RenderNode display lists serializes ops
-   into that buffer (and large bitmaps into the upload ring), `sendPendingBitmapRegistrations`
-   flushes any GraphicBuffer registrations, and `endRecording()` calls
-   `finishRecordingAndPostFrame()` -> `pushBack()`, which increments `mHi` with a release
-   store. The frame is now published, and its frame number is simply `mHi`
-   (`getFrameNumber()`).
-2. **Post and sync** (`SkiaIpcPipeline::swapBuffers`, line 238). It marks the swap, builds a
-   `SurfaceComposerClient::Transaction`, and calls
-   `setRenderCommandBufferFrameId(mSurfaceControl, getFrameNumber())`. This is the handshake:
-   it tells SurfaceFlinger "for this layer, latch recorded frame N." It then attaches a
-   transaction-completed callback, merges any pending geometry transactions targeted at this
-   frame number (`mergePendingTransactions`), and `apply()`s. Because the layer's geometry
-   change and its render-command frame id ride the *same* atomic transaction, the recorded
-   content and the matching layer state latch together -- there is no window where new
-   commands draw against an old size.
+1. **Record** (app RenderThread, `SkiaIpcPipeline::draw`).
+   `IPCRecordingCanvas::startRecording()` calls
+   `RenderCommandBufferProducer::startRecording()`, which hands back the write slot
+   `mBuffer[mHi % 4]` and resets it. The RenderThread replays the RenderNode display
+   lists. The replay serializes ops into that buffer (and large bitmaps into the upload
+   ring), and `sendPendingBitmapRegistrations` flushes any GraphicBuffer registrations.
+   Then `endRecording()` calls `finishRecordingAndPostFrame()` -> `pushBack()`, which
+   increments `mHi` with a release store. The frame is now published, and its frame number
+   is simply `mHi` (`getFrameNumber()`).
+2. **Post and sync** (`SkiaIpcPipeline::swapBuffers`, line 238). It marks the swap, builds
+   a `SurfaceComposerClient::Transaction`, and calls
+   `setRenderCommandBufferFrameId(mSurfaceControl, getFrameNumber())`. This is the
+   handshake: it tells SurfaceFlinger "for this layer, latch recorded frame N." It then
+   attaches a transaction-completed callback, merges any pending geometry transactions
+   targeted at this frame number (`mergePendingTransactions`), and `apply()`s. The layer's
+   geometry change and its render-command frame id ride the *same* atomic transaction. So
+   the recorded content and the matching layer state latch together: there is no window
+   where new commands draw against an old size.
 3. **Acquire** (SurfaceFlinger, `RenderCommandBufferConsumer::consumerAcquire`). It advances
    `mLo` toward the requested frame, dropping anything older:
 
@@ -5427,9 +5443,9 @@ moves through five stages:
 4. **Replay** (RenderEngine, `renderCommandBufferToCanvas`, 13.41.6) draws the ops into the
    composited frame.
 5. **Retire** (`SkiaIpcPipeline::transactionCallback`, line 210). When the transaction
-   completes, SurfaceFlinger reports `SurfaceControlStats`; the client matches them to the
-   pending `SurfaceControl` and fills a per-frame `FrameEvents` slot (a ten-deep ring) with
-   the latch time, the GPU-composition-done fence, and the display present fence.
+   completes, SurfaceFlinger reports `SurfaceControlStats`. The client matches them to the
+   pending `SurfaceControl`. It fills a per-frame `FrameEvents` slot (a ten-deep ring)
+   with the latch time, the GPU-composition-done fence, and the display present fence.
    `getFrameTimestamps()` reads those back by frame number.
 
 #### One OOPR frame through the lock-free queue
@@ -5456,13 +5472,13 @@ sequenceDiagram
 ```
 
 Crucially, the timing path survives the move out of process. `setFrameTimelineInfo()`
-forwards the vsync id, input event id, and the rest of the `FrameTimeline` data (ch14) into
-the transaction at the matching frame number, so the frame is still attributed to the
-correct vsync timeline for ADPF and jank classification. And because the present and
-GPU-composition fences come back through `transactionCallback`, an OOPR app reports the same
-`FrameMetrics` and present-time timeline as a normally-rendered app even though it issued no
-GPU work itself -- the timing is recovered from SurfaceFlinger's composition and mapped back
-per frame number.
+forwards the vsync id, input event id, and the rest of the `FrameTimeline` data (ch14)
+into the transaction at the matching frame number. So the frame is still attributed to the
+correct vsync timeline for ADPF and jank classification. The present and GPU-composition
+fences come back through `transactionCallback`. So an OOPR app reports the same
+`FrameMetrics` and present-time timeline as a normally-rendered app, even though it issued
+no GPU work itself. The timing is recovered from SurfaceFlinger's composition and mapped
+back per frame number.
 
 ### 13.41.9 How OOPR Addresses Performance
 
@@ -5470,20 +5486,22 @@ OOPR is not just an isolation feature; the frame path above removes two costs th
 classic in-process pipeline pays on every frame.
 
 **No GPU work on the app's RenderThread.** Normally the RenderThread both records the
-display list *and* drives the GPU -- EGL/Vulkan context, shader compilation, command
+display list *and* drives the GPU: EGL/Vulkan context, shader compilation, command
 submission, `eglSwapBuffers`. Under OOPR the RenderThread only serializes ops into shared
-memory; there is no GPU context to make current, nothing to submit, and nothing to swap, so
-it finishes its frame far sooner and the heavy GPU work moves to SurfaceFlinger's
-already-threaded RenderEngine (13.41.1). The pipeline advertises this directly:
-`getLastDequeueDuration()` returns 0 and `setWaitForBufferReleaseCallback()` is a no-op,
-because there is no GPU buffer to dequeue or release-fence to wait on.
+memory. There is no GPU context to make current, nothing to submit, and nothing to swap.
+So it finishes its frame far sooner, and the heavy GPU work moves to SurfaceFlinger's
+already-threaded RenderEngine (13.41.1).
+
+The pipeline advertises this directly. `getLastDequeueDuration()` returns 0 and
+`setWaitForBufferReleaseCallback()` is a no-op, because there is no GPU buffer to dequeue
+or release-fence to wait on.
 
 **No BufferQueue round-trip.** A classic window publishes frames through
-`dequeueBuffer`/`queueBuffer` and waits on buffer-release fences -- the source of dequeue
-stalls and triple-buffering latency. OOPR replaces the per-window BufferQueue with the
-four-deep lock-free command queue: publishing a frame is a single atomic `mHi++` in shared
-memory with no syscall and no per-op copy, and large pixels are shared once as GraphicBuffers
-referenced by id rather than re-copied each frame.
+`dequeueBuffer`/`queueBuffer` and waits on buffer-release fences. This is the source of
+dequeue stalls and triple-buffering latency. OOPR replaces the per-window BufferQueue with
+the four-deep lock-free command queue. Publishing a frame is a single atomic `mHi++` in
+shared memory, with no syscall and no per-op copy. Large pixels are shared once as
+GraphicBuffers referenced by id, and not re-copied each frame.
 
 #### Per-frame path: classic BufferQueue vs OOPR command channel
 
@@ -5509,27 +5527,31 @@ graph TB
     style O4 fill:#9C27B0,color:#fff
 ```
 
-**Backpressure without blocking.** Because the queue is a lock-free single-producer/
-single-consumer ring, neither side ever takes a cross-process lock. `consumerAcquire` bounds
-latency by skipping stale frames to the newest, so a momentarily slow compositor never stalls
-the app or accumulates a backlog -- it simply drops to the current frame -- and the four-slot
-ring caps how far ahead a fast app can record: once the ring is full, `canRecord()`
-returns false and the frame is dropped rather than queued or waited on.
+**Backpressure without blocking.** The queue is a lock-free
+single-producer/single-consumer ring, so neither side ever takes a cross-process lock.
+`consumerAcquire` bounds latency: it skips stale frames to the newest. So a momentarily
+slow compositor never stalls the app or accumulates a backlog. It simply drops to the
+current frame.
 
-**System-wide wins compound (13.41.7).** Collapsing every visible window onto SurfaceFlinger's
-single GPU context removes per-app GPU context-switch overhead and duplicated driver memory,
-lets the compositor skip replaying fully occluded windows, and lets app processes avoid
-mapping the GPU driver at all. These savings grow with the number of simultaneously visible
-windows.
+The four-slot ring caps how far ahead a fast app can record. Once the ring is full,
+`canRecord()` returns false. The frame is then dropped rather than queued or waited on.
 
-The design buys all of this without giving up observability: full `FrameMetrics`, present
-fences, and FrameTimeline/vsync attribution still flow back (13.41.8), so JankTracker and ADPF
-(ch14) keep working. The only new per-frame cost is serializing a display list and crossing
-one binder transaction, and both are bounded -- the display list rides shared-memory lock-free
-transport and resources are registered once, not per frame. The feature is still experimental
-and per-package gated, and a few paths are explicitly unfinished in the tree (continuous sync
-in `syncNextTransaction` and `getLastDequeueDuration` both carry TODOs), so it complements
-rather than replaces the in-process SkiaGL/SkiaVulkan pipelines of 13.6.
+**System-wide wins compound (13.41.7).** The design collapses every visible window onto
+SurfaceFlinger's single GPU context. This removes per-app GPU context-switch overhead and
+duplicated driver memory. It lets the compositor skip replaying fully occluded windows. It
+also lets app processes avoid mapping the GPU driver at all. These savings grow with the
+number of simultaneously visible windows.
+
+The design buys all of this and still keeps observability. Full `FrameMetrics`, present
+fences, and FrameTimeline/vsync attribution still flow back (13.41.8), so JankTracker and
+ADPF (ch14) keep working. The only new per-frame cost is to serialize a display list and
+to cross one binder transaction. Both are bounded: the display list rides shared-memory
+lock-free transport, and resources are registered once, not per frame.
+
+The feature is still experimental and per-package gated. A few paths are explicitly
+unfinished in the tree: continuous sync in `syncNextTransaction` and
+`getLastDequeueDuration` both carry TODOs. So the feature complements the in-process
+SkiaGL/SkiaVulkan pipelines of 13.6, and does not replace them.
 
 ### 13.41.10 GPU, CPU, Perfetto, and HAL Adaptations
 
@@ -5537,65 +5559,77 @@ Splitting one frame across two processes touches every layer of the stack differ
 Three layers gain genuinely new machinery; one is deliberately left untouched.
 
 **Perfetto / tracing.** OOPR turns a single in-process frame into slices in two processes,
-and the code is instrumented so a trace can stitch them back together. On the client,
-`OoprClient` emits named atrace slices for every resource event --
+and the code is instrumented so that a trace can join them. On the client, `OoprClient`
+emits named atrace slices for every resource event:
 `registerBuffer bufferId=... imageId=...`, `registerBitmap ...`,
 `createLayerSurface bufferId=...`, and `deregisterBuffer ...`
-(`OutOfProcessRendering.cpp`) -- and the recording itself is an `ATRACE_CALL()` slice in
+(`OutOfProcessRendering.cpp`). The recording itself is an `ATRACE_CALL()` slice in
 `SkiaIpcPipeline::draw`. On the server, the replay is wrapped in
-`SFTRACE_NAME("RenderCommandBuffer")` (`SkiaRenderEngine.cpp:1578`) and each registration in
-`SFTRACE_CALL()` / `SFTRACE_FORMAT("Registering buffer %" PRIu64, ...)`
-(`RenderResourceCache.cpp`). The cross-process correlation key is the frame number:
-`SkiaIpcPipeline::getFrameTimestamps` emits an `ATRACE_FORMAT_INSTANT` carrying
+`SFTRACE_NAME("RenderCommandBuffer")` (`SkiaRenderEngine.cpp:1578`). Each registration is
+wrapped in `SFTRACE_CALL()` / `SFTRACE_FORMAT("Registering buffer %" PRIu64, ...)`
+(`RenderResourceCache.cpp`).
+
+The cross-process correlation key is the frame number.
+`SkiaIpcPipeline::getFrameTimestamps` emits an `ATRACE_FORMAT_INSTANT` that carries
 `frameNumber`, `presentTime`, and `acquireFence` (gated by the `debug_gpu_present_times`
-flag, line 433), so a Perfetto trace can line up the app's record slice, SurfaceFlinger's
+flag, line 433). So a Perfetto trace can line up the app's record slice, SurfaceFlinger's
 replay slice, and the present / GPU-composition fences on one timeline. For offline work
 there is `dumpsys SurfaceFlinger --render-command-buffer`, which dumps a layer's recorded
-buffer, and the standalone `replay_render_buffer` tool, which replays a captured buffer to a
-PNG and, with `--dump-ops`, prints every op through `RenderBufferDebugUtils`
+buffer. There is also the standalone `replay_render_buffer` tool, which replays a captured
+buffer to a PNG. With `--dump-ops`, it prints every op through `RenderBufferDebugUtils`
 (`opTypeToString` / `opToString`).
 
 **Capture and readback tooling.** An OOPR app holds no rendered pixels of its own, so the
-in-process readback paths have nothing to read: `SkiaIpcPipeline::getSurface()` returns
-`nullptr` and the pipeline keeps no GPU context, so a screenshot or per-window pixel readback
-of an OOPR window comes from SurfaceFlinger's composited result rather than from the app's
-RenderThread (the `RenderProxy::copySurfaceInto` / picture-capture paths used by the GPU
-pipelines assume an app-side surface). Hierarchy-level inspection is unaffected: Android
-Studio's Layout Inspector and similar tools are IDE-side and still receive the live `View`
-tree and `RenderNode` hierarchy from the app, which records them exactly as before -- only the
-*pixels* move. The platform's own OOPR debugging entry points are the three above: the
+in-process readback paths have nothing to read. `SkiaIpcPipeline::getSurface()` returns
+`nullptr`, and the pipeline keeps no GPU context. So a screenshot or per-window pixel
+readback of an OOPR window comes from SurfaceFlinger's composited result, not from the
+app's RenderThread. (The `RenderProxy::copySurfaceInto` / picture-capture paths used by
+the GPU pipelines assume an app-side surface.)
+
+Hierarchy-level inspection is unaffected. Android Studio's Layout Inspector and similar
+tools are IDE-side. They still receive the live `View` tree and `RenderNode` hierarchy
+from the app. The app records them exactly as before. Only the *pixels* move. The
+platform's own OOPR debugging entry points are the three above: the
 `--render-command-buffer` dumpsys hook, the `replay_render_buffer` tool, and the
 frameNumber-keyed Perfetto slices.
 
 **GPU.** The whole point is that per-app GPU contexts disappear: SurfaceFlinger's single
 Skia RenderEngine context does all of the drawing. Shared pixel resources cross as
-`AHardwareBuffer`-backed `GraphicBuffer`s allocated with `USAGE_HW_TEXTURE | USAGE_HW_RENDER`
-and are imported into SurfaceFlinger's `GrDirectContext` as Skia backend textures --
-`AutoBackendTextureRelease(context, buffer->toAHardwareBuffer())` on the layer side,
-`getOrCreateBackendTexture(...)` then `makeImage` / `getOrCreateSurface` on the replay side --
-so they are sampled by handle and never re-uploaded. One consequence is worth calling out:
-because the app issues no GPU commands at all, its `debug.hwui.renderer` choice (skiagl
-versus skiavk, 13.5) is moot under OOPR; the only GPU backend that matters is the one
-SurfaceFlinger's RenderEngine runs.
+`AHardwareBuffer`-backed `GraphicBuffer`s allocated with
+`USAGE_HW_TEXTURE | USAGE_HW_RENDER`. SurfaceFlinger imports them into its
+`GrDirectContext` as Skia backend textures.
+
+On the layer side this uses
+`AutoBackendTextureRelease(context, buffer->toAHardwareBuffer())`. On the replay side it
+uses `getOrCreateBackendTexture(...)` then `makeImage` / `getOrCreateSurface`. So the
+textures are sampled by handle and never re-uploaded. One consequence follows: because the
+app issues no GPU commands at all, its `debug.hwui.renderer` choice (skiagl versus skiavk,
+13.5) is moot under OOPR. The only GPU backend that matters is the one SurfaceFlinger's
+RenderEngine runs.
 
 **CPU.** The transport is engineered to keep the producer and consumer off each other's
 cache lines and off the kernel. The queue's two counters are
-`alignas(cacheAlign) std::atomic<uint64_t>` so the producer's `mHi` and the consumer's `mLo`
-never false-share, and the `MagicRingBuffer` maps its backing pages twice in virtual memory
-so even a wrapped read is one contiguous, copy-free span. Publishing a frame is a single
-release store (`mHi++`), not a syscall. On the app side the RenderThread now does pure CPU
-serialization with no GPU driver thread and no GPU stalls, which makes its per-frame CPU both
-lower and more predictable.
+`alignas(cacheAlign) std::atomic<uint64_t>`, so the producer's `mHi` and the consumer's
+`mLo` never false-share. The `MagicRingBuffer` maps its backing pages twice in virtual
+memory, so even a wrapped read is one contiguous, copy-free span. Publishing a frame is a
+single release store (`mHi++`), not a syscall.
 
-**HAL.** There is no new vendor HAL, and that is deliberate. OOPR rides the existing stack:
-**gralloc** allocates the shared GraphicBuffers, and the **Composer / HWC HAL** composites
-and scans out SurfaceFlinger's output exactly as before -- OOPR changes only *what fills a
-layer* (replayed commands instead of an app-posted buffer), not the composition or display
-contract. The only genuinely new interface surface is the framework-internal
-`ISurfaceComposer` / `Transaction` binder API (libgui C++, not stable AIDL) -- `registerGraphicBuffers` / `unregisterGraphicBuffers`,
-`setRenderCommandBuffer` / `setRenderResourceToken` / `setRenderCommandBufferFrameId`, and the
-`eRenderCommandBuffer*` layer-state bits -- which is a binder interface inside the platform,
-not a vendor HAL. The upshot is that the feature lands entirely in framework + SurfaceFlinger
+On the app side the RenderThread now does pure CPU serialization with no GPU driver thread
+and no GPU stalls. This makes its per-frame CPU both lower and more predictable.
+
+**HAL.** There is no new vendor HAL, and that is deliberate. OOPR rides the existing
+stack. **gralloc** allocates the shared GraphicBuffers. The **Composer / HWC HAL**
+composites and scans out SurfaceFlinger's output exactly as before. OOPR changes only
+*what fills a layer* (replayed commands instead of an app-posted buffer), not the
+composition or display contract.
+
+The only genuinely new interface surface is the framework-internal `ISurfaceComposer` /
+`Transaction` binder API (libgui C++, not stable AIDL). It includes
+`registerGraphicBuffers` / `unregisterGraphicBuffers`, `setRenderCommandBuffer` /
+`setRenderResourceToken` / `setRenderCommandBufferFrameId`, and the
+`eRenderCommandBuffer*` layer-state bits. This is a binder interface inside the platform,
+not a vendor HAL. The upshot is that the feature lands entirely in framework +
+SurfaceFlinger + libgui and needs no SoC or vendor changes to enable.
 + libgui and needs no SoC or vendor changes to enable.
 
 #### What OOPR adds versus what it rides
@@ -5628,24 +5662,28 @@ graph TB
 OOPR records *Skia 2D canvas ops* from HWUI. A whole class of windows never goes through
 HWUI at all, and the design is careful to leave them alone.
 
-**Engine-rendered game windows.** A title built on Unity, Unreal, or Godot renders with its
-own Vulkan or GLES context straight into a `Surface` -- almost always a `SurfaceView`, which is
-a *separate* `SurfaceControl` sibling to the app's view hierarchy, or a native window from
-`GameActivity` / `NativeActivity`. None of that touches HWUI's `RecordingCanvas`: the engine
-produces finished `GraphicBuffer`s and posts them through BufferQueue/BLAST exactly as always.
-OOPR therefore simply does not apply -- there is nothing to record, because an arbitrary 3D
+**Engine-rendered game windows.** A title built on Unity, Unreal, or Godot renders with
+its own Vulkan or GLES context straight into a `Surface`. This is almost always a
+`SurfaceView`, which is a *separate* `SurfaceControl` sibling to the app's view hierarchy,
+or a native window from `GameActivity` / `NativeActivity`. None of that touches HWUI's
+`RecordingCanvas`. The engine produces finished `GraphicBuffer`s and posts them through
+BufferQueue/BLAST exactly as always.
+
+OOPR therefore simply does not apply. There is nothing to record, because an arbitrary 3D
 frame (custom shaders, depth, compute) is not expressible in the `RenderBufferOpType`
-2D-canvas vocabulary (13.41.4). The per-package gate (`viewroot.ipc_rendering_packages`) keys
-off HWUI `ViewRootImpl`s, and a game's GPU surface is not one. So a `SurfaceView`-based game
-composites as a normal buffer-backed layer whether or not OOPR is enabled for the process.
+2D-canvas vocabulary (13.41.4). The per-package gate (`viewroot.ipc_rendering_packages`)
+keys off HWUI `ViewRootImpl`s, and a game's GPU surface is not one. So a
+`SurfaceView`-based game composites as a normal buffer-backed layer whether or not OOPR is
+enabled for the process.
 
 **The TextureView boundary.** The one place engine content *would* flow through HWUI is
-`TextureView`, which is drawn as a hardware texture inside the view hierarchy rather than as a
+`TextureView`. It is drawn as a hardware texture inside the view hierarchy, not as a
 sibling surface. Here OOPR has an explicit limit: `SkiaIpcPipeline::createTextureLayer()`
-returns `nullptr` (and `setHardwareBuffer()` / `hasHardwareBuffer()` are stubs), so the IPC
-pipeline does not currently host `TextureView` / `SurfaceTexture`-backed layers. An app that
-composites engine output through a `TextureView` is thus not a candidate for OOPR today;
-`SurfaceView` is the path that coexists cleanly.
+returns `nullptr` (and `setHardwareBuffer()` / `hasHardwareBuffer()` are stubs).
+
+So the IPC pipeline does not currently host `TextureView` / `SurfaceTexture`-backed
+layers. An app that composites engine output through a `TextureView` is thus not a
+candidate for OOPR today. `SurfaceView` is the path that coexists cleanly.
 
 **Mixed scene: who combines and who reduces.** The common shape is a game `SurfaceView`
 (engine GPU output) with a thin HWUI overlay on top (menus, HUD, system bars drawn from Views).
@@ -5653,18 +5691,20 @@ With OOPR on, only the overlay records commands; the game layer stays buffer-bac
 SurfaceFlinger composites both, and this is where its composition optimizations do the
 combination and the reduction:
 
-- **Combination -- the Planner / Flattener.** The CompositionEngine *Planner* and *Flattener*
+- **Combination -- the Planner / Flattener.** The CompositionEngine *Planner* and
+  *Flattener*
   (`frameworks/native/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/planner/`)
-  watch for a "Run" of layers that have been static for several frames and *flatten* them into a
-  single **CachedSet**: one GPU-composited buffer that the hardware composer then scans out, so a
-  stack of unchanging layers costs one composite instead of many. An OOPR layer participates like
-  any other -- once RenderEngine replays it, the result is just a layer the Flattener can fold
-  into a CachedSet.
+  watch for a "Run" of layers that have been static for several frames. They *flatten*
+  these layers into a single **CachedSet**: one GPU-composited buffer that the hardware
+  composer then scans out. So a stack of unchanging layers costs one composite instead of
+  many. An OOPR layer participates like any other. Once RenderEngine replays it, the
+  result is just a layer the Flattener can fold into a CachedSet.
 - **Reduction -- occlusion and HWC offload.** SurfaceFlinger computes each layer's visible
-  region and assigns a composition type: layers the hardware composer can handle go to **HWC
-  (DEVICE)** and never touch the GPU; only the rest fall to **RenderEngine (CLIENT)**, and fully
-  occluded layers are dropped. OOPR adds one extra reduction (13.41.7): a covered OOPR layer's
-  command buffer need not be replayed at all, so an occluded HWUI window costs nothing to render.
+  region and assigns a composition type. Layers the hardware composer can handle go to
+  **HWC (DEVICE)** and never touch the GPU. Only the rest fall to **RenderEngine
+  (CLIENT)**, and fully occluded layers are dropped. OOPR adds one extra reduction
+  (13.41.7): the command buffer of a covered OOPR layer need not be replayed at all. So an
+  occluded HWUI window costs nothing to render.
 
 A mixed game + HWUI-overlay scene under OOPR:
 
@@ -5688,33 +5728,36 @@ graph TD
     style OUT fill:#4CAF50,color:#fff
 ```
 
-Performance-wise this is the desired split: a game pays no OOPR penalty -- its heavy GPU work is
-untouched and could not be moved into the compositor anyway -- while the lightweight View overlay
-is the only part that records. OOPR is an HWUI-only optimization that slots into the existing
-composition pipeline; engine-rendered surfaces keep their own GPU path, and SurfaceFlinger's
-flattening and occlusion/HWC machinery does the cross-layer combination and reduction for the
-whole mixed scene.
+Performance-wise this is the desired split. A game pays no OOPR penalty: its heavy GPU
+work is untouched and could not be moved into the compositor anyway. The lightweight View
+overlay is the only part that records. OOPR is an HWUI-only optimization that slots into
+the existing composition pipeline. Engine-rendered surfaces keep their own GPU path.
+SurfaceFlinger's flattening and occlusion/HWC machinery does the cross-layer combination
+and reduction for the whole mixed scene.
 
 ### 13.41.12 Robustness: Frame Drops and GPU Isolation
 
-Moving rendering across a process boundary and onto one shared GPU context raises two fair
-worries: what happens when a single app drops frames, and what stops one app from seizing the
-GPU for everyone.
+OOPR moves rendering across a process boundary and onto one shared GPU context. This
+raises two fair worries. One is what happens when a single app drops frames. The other is
+what stops one app from seizing the GPU for everyone.
 
-**Frame-drop containment.** Each window owns its own four-deep `RenderCommandBuffer` ring and
-posts frames through a transaction carrying a frame id (13.41.8). If an app misses a vsync it
-simply does not advance its frame id; SurfaceFlinger, running on its *own* vsync cadence,
-composites that layer from its last committed frame -- replaying the previous command buffer,
-or, if the layer has gone static, the flattened CachedSet of 13.9.8 -- exactly as a slow
-buffer-producing app shows its previous buffer today. The queue is a lock-free
-single-producer/single-consumer ring and `consumerAcquire(frameNumber)` never blocks: it
-advances to the requested frame or the newest available one, dropping stale frames. So one
-client's slowness cannot stall the compositor or any other client, and a *fast* client that
-runs ahead is bounded too -- once the four-slot ring is full, `canRecord()` returns false
-and the frame is dropped rather than queued, and the consumer skips to the newest
-frame, so no backlog accumulates. OOPR preserves the
-per-client frame-drop isolation of the classic buffer model rather than coupling clients
-together.
+**Frame-drop containment.** Each window owns its own four-deep `RenderCommandBuffer` ring
+and posts frames through a transaction that carries a frame id (13.41.8). If an app misses
+a vsync, it simply does not advance its frame id. SurfaceFlinger, which runs on its *own*
+vsync cadence, composites that layer from its last committed frame. It replays the
+previous command buffer or, if the layer has gone static, the flattened CachedSet of
+13.9.8. A slow buffer-producing app behaves in exactly the same way today: it shows its
+previous buffer.
+
+The queue is a lock-free single-producer/single-consumer ring, and
+`consumerAcquire(frameNumber)` never blocks. It advances to the requested frame or the
+newest available one, and drops stale frames. So one client's slowness cannot stall the
+compositor or any other client.
+
+A *fast* client that runs ahead is bounded too. Once the four-slot ring is full,
+`canRecord()` returns false and the frame is dropped rather than queued. The consumer
+skips to the newest frame, so no backlog accumulates. OOPR preserves the per-client
+frame-drop isolation of the classic buffer model rather than coupling clients together.
 
 A slow client does not stall its neighbors:
 
@@ -5730,62 +5773,67 @@ graph TD
     style OUT fill:#4CAF50,color:#fff
 ```
 
-**Avoiding GPU seize.** The sharper worry is that, because every OOPR client now replays in
-SurfaceFlinger's *single* GPU context (13.41.7), one app's heavy or pathological frame could
-monopolize the GPU and stall composition for everyone. Several properties bound that:
+**Avoiding GPU seize.** The sharper worry comes from one fact: every OOPR client now
+replays in SurfaceFlinger's *single* GPU context (13.41.7). One app's heavy or
+pathological frame could therefore monopolize the GPU and stall composition for everyone.
+Several properties bound that:
 
-1. **The recorded work is bounded and 2D.** A `RenderCommandBuffer` is a fixed-size `IpcArena`
-   -- `RENDER_COMMAND_BUFFER_DEFAULT_SIZE` is 1 MiB -- of *canvas ops*, not arbitrary GPU
-   submission. There is no compute, no long custom shaders, and a hard per-frame size cap, so
-   the worst-case replay cost is far more constrained than what an app's own GPU context could
-   submit. (This is also why engine-rendered games are deliberately left out of OOPR, 13.41.11:
-   arbitrary 3D work has no bounded recorded form.)
+1. **The recorded work is bounded and 2D.** A `RenderCommandBuffer` is a fixed-size
+   `IpcArena` of *canvas ops*, not arbitrary GPU submission.
+   `RENDER_COMMAND_BUFFER_DEFAULT_SIZE` is 1 MiB. There is no compute, no long custom
+   shaders, and a hard per-frame size cap. So the worst-case replay cost is far more
+   constrained than what an app's own GPU context could submit. (This is also why
+   engine-rendered games are deliberately left out of OOPR, 13.41.11: arbitrary 3D work
+   has no bounded recorded form.)
 2. **SurfaceFlinger controls submission; the app does not.** An OOPR app never touches the GPU
    -- it ships a recipe. SurfaceFlinger replays recorded lists at composition time, in an order
    and cadence it controls, on its display-priority threaded RenderEngine (13.41.1). There is no
    path for a client to issue commands straight into the shared context.
-3. **Work is reduced before it runs.** Occluded layers are not replayed (13.41.11), static
-   layers collapse into CachedSets (13.9.8), and the Flattener's render scheduling *defers* an
-   expensive cached-set render when finishing it would blow the frame's `renderDeadline` (it
-   weighs `now + cachedSetRenderDuration` against the deadline, deferring up to
-   `maxDeferRenderAttempts` times).
+3. **Work is reduced before it runs.** Occluded layers are not replayed (13.41.11), and
+   static layers collapse into CachedSets (13.9.8). The Flattener's render scheduling
+   *defers* an expensive cached-set render when the render would blow the frame's
+   `renderDeadline`. It weighs `now + cachedSetRenderDuration` against the deadline, and
+   it defers up to `maxDeferRenderAttempts` times.
 4. **No first-use compile stalls.** Pipeline precompilation and warmup (13.43.3) plus the
-   cache-management policy (13.43.4) keep a client's first use of a pipeline from seizing the
-   context with a synchronous shader or pipeline compile.
+   cache-management policy (13.43.4) help here. They stop a client's first use of a
+   pipeline from seizing the context with a synchronous shader or pipeline compile.
 
-To be honest about the limit: none of this is hard GPU *preemption* -- a valid-but-expensive
-1 MiB op list still costs real GPU time in SurfaceFlinger's context. And the physical GPU was
-always a single shared, serialized resource time-sliced across every app context plus the
-compositor; OOPR consolidates the *contexts* (fewer switches, less driver memory) without
-changing that the hardware is shared. The design *bounds and reduces* per-client cost rather
-than guaranteeing isolation, which is one more reason OOPR stays experimental and per-package
-gated (13.41.4).
+To be honest about the limit: none of this is hard GPU *preemption*. A valid-but-expensive
+1 MiB op list still costs real GPU time in SurfaceFlinger's context. The physical GPU was
+always a single shared, serialized resource. It is time-sliced across every app context
+plus the compositor.
+
+OOPR consolidates the *contexts* (fewer switches, less driver memory). It does not change
+the fact that the hardware is shared. The design *bounds and reduces* per-client cost, and
+it does not guarantee isolation. This is one more reason OOPR stays experimental and
+per-package gated (13.41.4).
 
 ### 13.41.13 Per-Window Frame Rate and the Frame-Rate Ceiling
 
-OOPR changes *where* a frame is rendered, not *when* it is scheduled, so different windows
-keep running at different frame rates exactly as they do today. Two mechanisms ride the same
-per-window transaction OOPR already uses (13.41.8), because an OOPR window is still an ordinary
-`SurfaceControl`:
+OOPR changes *where* a frame is rendered, not *when* it is scheduled. Different windows
+therefore keep running at different frame rates, exactly as they do today. Two mechanisms
+ride the same per-window transaction OOPR already uses (13.41.8), because an OOPR window
+is still an ordinary `SurfaceControl`:
 
 - **Frame-rate votes.** An app's `Surface.setFrameRate` / `ANativeWindow_setFrameRate` becomes a
   per-layer frame-rate vote on the window's `SurfaceControl`. SurfaceFlinger's `Scheduler` and
   `RefreshRateSelector` aggregate the votes from every layer and pick a display refresh rate;
   OOPR layers vote identically.
 - **FrameTimeline per frame.** `SkiaIpcPipeline::setFrameTimelineInfo()` forwards the full
-  `FrameTimelineInfo` -- `vsyncId`, `useForRefreshRateSelection`, jitter, animation time -- keyed
-  by frame number and merged into the transaction at the matching frame (13.41.8). So each
-  recorded frame is attributed to the correct vsync timeline and feeds refresh-rate selection,
-  just like a normally-rendered window.
+  `FrameTimelineInfo`: `vsyncId`, `useForRefreshRateSelection`, jitter, animation time.
+  The data is keyed by frame number and merged into the transaction at the matching frame
+  (13.41.8). So each recorded frame is attributed to the correct vsync timeline and feeds
+  refresh-rate selection, just like a normally-rendered window.
 
-A single display runs at one physical refresh rate at a time, but per-layer votes plus
-frame-rate matching let a 60 Hz UI, a 120 Hz game surface, and a 24 fps video coexist: the
-panel refreshes at the chosen high rate and lower-rate layers present every Nth vsync, while
-SurfaceFlinger composites each layer's latest committed frame. Across displays (multi-display
-modeset, 13.44) each display has its own rate, and a window's per-`SurfaceControl` command
-buffer follows whichever display it is on. The recording cadence itself is still driven by the
-app's `Choreographer`/vsync -- the app records when it *would* have drawn -- so nothing about
-the frame-rate contract changes.
+A single display runs at one physical refresh rate at a time. Per-layer votes plus
+frame-rate matching let a 60 Hz UI, a 120 Hz game surface, and a 24 fps video coexist. The
+panel refreshes at the chosen high rate and lower-rate layers present every Nth vsync,
+while SurfaceFlinger composites each layer's latest committed frame.
+
+Across displays (multi-display modeset, 13.44) each display has its own rate. A window's
+per-`SurfaceControl` command buffer follows whichever display it is on. The recording
+cadence itself is still driven by the app's `Choreographer`/vsync. The app records when it
+*would* have drawn, so nothing about the frame-rate contract changes.
 
 ```mermaid
 graph TD
@@ -5798,14 +5846,16 @@ graph TD
     style COMP fill:#4CAF50,color:#fff
 ```
 
-**Highest frame rate.** There is no OOPR-specific cap. The ceiling is the display's maximum
-refresh rate (a 120 Hz / 144 Hz / LTPO panel) and SurfaceFlinger's replay-plus-composite
-throughput -- the same two limits that bound any layer. If anything the *producer* side scales
-better under OOPR: recording a command list is GPU-free and cheap on the app's RenderThread, so
-it is less likely to be the bottleneck than a GPU-bound in-process renderer. The per-window ring
-holds four frames (up to four frames of lookahead, 13.41.8) and frame numbers are a monotonic
-`uint64`, so neither imposes a practical rate limit. In short, a high-refresh OOPR window is
-bounded by the panel and the compositor, not by the IPC path.
+**Highest frame rate.** There is no OOPR-specific cap. The ceiling is the display's
+maximum refresh rate (a 120 Hz / 144 Hz / LTPO panel) and SurfaceFlinger's
+replay-plus-composite throughput. These are the same two limits that bound any layer. If
+anything the *producer* side scales better under OOPR.
+
+Recording a command list is GPU-free and cheap on the app's RenderThread. So recording is
+less likely to be the bottleneck than a GPU-bound in-process renderer. The per-window ring
+holds four frames (up to four frames of lookahead, 13.41.8), and frame numbers are a
+monotonic `uint64`. So neither imposes a practical rate limit. In short, a high-refresh
+OOPR window is bounded by the panel and the compositor, not by the IPC path.
 
 ---
 
@@ -5813,11 +5863,11 @@ bounded by the panel and the compositor, not by the IPC path.
 
 ### 13.42.1 What Display LUTs Are
 
-A long-standing cost in the graphics pipeline is HDR-to-SDR tone mapping: when an HDR
-layer is shown on a panel that cannot reach the content's peak brightness, the colors
-must be remapped. Android 17 introduces a *display LUT* (look-up table) path that lets
-this remapping be expressed as a 1D or 3D table, generated once per buffer, and applied
-either by RenderEngine's GPU shader or by the display hardware via HWC.
+A long-standing cost in the graphics pipeline is HDR-to-SDR tone mapping. When an HDR
+layer is shown on a panel that cannot reach the content's peak brightness, the colors must
+be remapped. Android 17 introduces a *display LUT* (look-up table) path. It lets this
+remapping be expressed as a 1D or 3D table. The table is generated once per buffer. Either
+RenderEngine's GPU shader or the display hardware (via HWC) applies it.
 
 The HAL contract lives under
 `hardware/interfaces/graphics/composer/aidl/android/hardware/graphics/composer3/`:
@@ -5856,15 +5906,16 @@ descriptor through `getLutFileDescriptor()`.
 
 SurfaceFlinger's composition engine tracks up to three LUT sources per output layer in
 `OutputLayerCompositionState`
-(`frameworks/native/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputLayerCompositionState.h`):
-the app-supplied `appLuts`, the HWC-supplied `hwc->luts` (filled in by
-`OutputLayer::applyDeviceLayerLut()` from the HWC's command result), and
-`generatedLuts` computed from the buffer's Adaptive Global Tone Map (AGTM) metadata.
-The generation happens in the file-local `createLutsFromAgtm()` helper, called from
-`OutputLayer::updateLuts()`
-(`frameworks/native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp`,
-line 76), which parses SMPTE 2094-50 AGTM data, derives a target HDR/SDR ratio from the
-display's brightness and SDR white point, and bakes a tone-mapping LUT into an ashmem
+(`frameworks/native/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputLayerCompositionState.h`).
+The first is the app-supplied `appLuts`. The second is the HWC-supplied `hwc->luts`,
+filled in by `OutputLayer::applyDeviceLayerLut()` from the HWC's command result. The third
+is `generatedLuts`, computed from the buffer's Adaptive Global Tone Map (AGTM) metadata.
+
+The file-local `createLutsFromAgtm()` helper does the generation.
+`OutputLayer::updateLuts()` calls it
+(`frameworks/native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp`, line
+76). The helper parses SMPTE 2094-50 AGTM data and derives a target HDR/SDR ratio from the
+display's brightness and SDR white point. Then it bakes a tone-mapping LUT into an ashmem
 region.
 
 ### 13.42.3 Applying the LUT in RenderEngine
@@ -5872,10 +5923,12 @@ region.
 When composition falls to the GPU, the Skia RenderEngine applies the LUT through a Skia
 runtime-effect shader implemented in
 `frameworks/native/libs/renderengine/skia/filters/LutShader.cpp`. The shader branches on
-the LUT dimension and sampling key, doing linear interpolation for 1D tables and
-trilinear interpolation for 3D tables, with the 3D cube flattened as
-`index = z + N * (y + N * x)`. The entry point is `LutShader::lutShader()`, declared in
-`frameworks/native/libs/renderengine/skia/filters/LutShader.h` (line 35); it maps and
+the LUT dimension and sampling key. It does linear interpolation for 1D tables and
+trilinear interpolation for 3D tables. The 3D cube is flattened as
+`index = z + N * (y + N * x)`.
+
+The entry point is `LutShader::lutShader()`, declared in
+`frameworks/native/libs/renderengine/skia/filters/LutShader.h` (line 35). It maps and
 mmaps the LUT file descriptor and builds one runtime shader per `LutProperties` entry.
 `renderengine::LayerSettings`
 (`frameworks/native/libs/renderengine/include/renderengine/LayerSettings.h`) carries the
@@ -5895,10 +5948,10 @@ graph TD
     style F fill:#2196F3,color:#fff
 ```
 
-Pushing tone mapping into a LUT means the expensive per-pixel transfer-function math runs
-once when the table is built, after which both the GPU shader and the display controller
-can apply it cheaply -- and a display that supports LUTs natively can skip GPU
-composition for the layer entirely.
+Tone mapping in a LUT means the expensive per-pixel transfer-function math runs once, when
+the table is built. After that, both the GPU shader and the display controller can apply
+the table cheaply. A display that supports LUTs natively can also skip GPU composition for
+the layer entirely.
 
 ---
 
@@ -5929,10 +5982,9 @@ if (args.skiaBackend == SkiaBackend::Graphite) {
 // ... else GaneshVkRenderEngine::create(args) or the GL engine
 ```
 
-(The chosen backend factory is actually wrapped in a `createInstanceFactory`
-lambda -- which also initializes the Graphite disk cache -- and handed to
-`RenderEngineThreaded::create()`, which `RenderEngine::create()` always
-returns.)
+(The chosen backend factory is actually wrapped in a `createInstanceFactory` lambda, which
+also initializes the Graphite disk cache. The lambda is handed to
+`RenderEngineThreaded::create()`, which `RenderEngine::create()` always returns.)
 
 Supporting code lives under
 `frameworks/native/libs/renderengine/skia/compat/` (for example
@@ -5940,15 +5992,17 @@ Supporting code lives under
 Graphite's resource and pipeline model to the same `SkiaRenderEngine` interface Ganesh
 uses.
 
-That `GraphiteVkRenderEngine` is *Vulkan-only* is the point of a longer trajectory: the
+That `GraphiteVkRenderEngine` is *Vulkan-only* is the point of a longer trajectory. The
 `vulkan_renderengine` flag is described in the tree as "Use Vulkan backend in RenderEngine
-prior to switching to Graphite," so the path is GL (`SkiaGLRenderEngine`) to Ganesh-on-Vulkan
-(`GaneshVkRenderEngine`) to Graphite, and there is no Graphite GL backend. Enabling Graphite is
-therefore also the step that retires the GL composition path on a device. This is the
-compositor side of Android 17's platform-wide move to Vulkan: the release also ships the ANGLE
-(GLES-over-Vulkan) drivers in every base image and lets a product make ANGLE the default GLES
-implementation (13.4), so app GLES and the compositor's RenderEngine can both run on Vulkan,
-leaving the vendor GL driver out of the hot path.
+prior to switching to Graphite." So the path is GL (`SkiaGLRenderEngine`) to
+Ganesh-on-Vulkan (`GaneshVkRenderEngine`) to Graphite, and there is no Graphite GL
+backend. So the step that enables Graphite also retires the GL composition path on a device.
+
+This is the compositor side of Android 17's platform-wide move to Vulkan. The release also
+ships the ANGLE (GLES-over-Vulkan) drivers in every base image, and lets a product make
+ANGLE the default GLES implementation (13.4). So app GLES and the compositor's
+RenderEngine can both run on Vulkan, which leaves the vendor GL driver out of the hot
+path.
 
 ### 13.43.2 The Rollout Flags
 
@@ -5999,45 +6053,55 @@ so application rendering continues on Ganesh.
 
 ### 13.43.3 Pipeline Precompilation and Warmup
 
-Ganesh caches *compiled shaders* in a persistent blob cache (the persistent shader cache of
-13.19). Graphite instead compiles whole *pipelines* (pipeline state objects), and a cold
-pipeline compiled on first use is a jank source. Android 17 addresses this with two pieces.
+Ganesh caches *compiled shaders* in a persistent blob cache (the persistent shader cache
+of 13.19). Graphite instead compiles whole *pipelines* (pipeline state objects). A cold
+pipeline compiled on first use is a jank source. Android 17 addresses this with two
+pieces.
+
 `GraphitePipelineManager::PrecompilePipelines()`
-(`frameworks/native/libs/renderengine/skia/compat/GraphitePipelineManager.cpp`) precompiles a
-curated pipeline set -- the list is maintained upstream in Skia, where iterating and testing is
-easier -- through a Graphite `PrecompileContext`. The new `PipelineCallbackHandler`
-(`skia/compat/PipelineCallbackHandler.h`, new in 17) is the instrumentation around it: Skia
-invokes its callback on every pipeline-cache event (`PipelineCacheOp::kAddingPipeline` when a
-pipeline is compiled and added, `kPipelineFound` when a precompiled one is reused, with a
-`fromPrecompile` flag), bracketed by `beginWarmup()` / `endWarmup()`, optionally storing
-Base64-serialized cache keys (the new `skia/compat/Base64.{h,cpp}`). Its `report()` feeds
-dumpsys, so precompile coverage -- how many runtime compiles the warmup avoided -- is
-measurable.
+(`frameworks/native/libs/renderengine/skia/compat/GraphitePipelineManager.cpp`)
+precompiles a curated pipeline set through a Graphite `PrecompileContext`. The list is
+maintained upstream in Skia, where iterating and testing is easier.
+
+The new `PipelineCallbackHandler` (`skia/compat/PipelineCallbackHandler.h`, new in 17) is
+the instrumentation around it. Skia invokes its callback on every pipeline-cache event.
+`PipelineCacheOp::kAddingPipeline` marks a pipeline that is compiled and added.
+`kPipelineFound` marks a precompiled pipeline that is reused, with a `fromPrecompile`
+flag.
+
+The events are bracketed by `beginWarmup()` / `endWarmup()`. The handler can optionally
+store Base64-serialized cache keys (the new `skia/compat/Base64.{h,cpp}`). Its `report()`
+feeds dumpsys, so precompile coverage -- how many runtime compiles the warmup avoided --
+is measurable.
 
 ### 13.43.4 Cache-Management Policy
 
 A subtler but real performance fix is the new `CacheManagementPolicy` enum in
-`SkiaRenderEngine.h`. SurfaceFlinger now alternates between its *protected* and *unprotected*
-GPU contexts far more often than before -- sometimes between frames -- and the old behavior of
-purging purgeable resources on every context switch (`kUponContextSwitch`, which calls
-`purgeUnlockedScratchResources()`) threw away resources that were about to be reused, forcing
-costly recreation. Android 17 lets each context choose a policy:
-`kClearStaleResourcesPostRender` purges only resources unused for a duration after a render
-(`purgeResourcesNotUsedIn`), and `kOnlyWhenOverBudget` defers entirely to Skia's own budgeting
-(no RenderEngine action needed). `GraphiteVkRenderEngine` itself is the first backend to move off
-the default `kUponContextSwitch`, adopting `kClearStaleResourcesPostRender` for both its protected
-and unprotected contexts. A source `TODO` (b/471228757) tracks converging
-all backends on a single policy.
+`SkiaRenderEngine.h`. SurfaceFlinger now alternates between its *protected* and
+*unprotected* GPU contexts far more often than before -- sometimes between frames. The old
+behavior purged purgeable resources on every context switch (`kUponContextSwitch`, which
+calls `purgeUnlockedScratchResources()`). This threw away resources that were about to be
+reused, and forced costly recreation.
+
+Android 17 lets each context choose a policy. `kClearStaleResourcesPostRender` purges only
+resources unused for a duration after a render (`purgeResourcesNotUsedIn`).
+`kOnlyWhenOverBudget` defers entirely to Skia's own budgeting (no RenderEngine action
+needed). `GraphiteVkRenderEngine` itself is the first backend to move off the default
+`kUponContextSwitch`. It adopts `kClearStaleResourcesPostRender` for both its protected
+and unprotected contexts. A source `TODO` (b/471228757) tracks the work to converge all
+backends on a single policy.
 
 ### 13.43.5 HDR Tone Mapping and Blur
 
-Two smaller Skia threads round out the release. The layer paint gained an optional
+Two smaller Skia threads round out the release. First, the layer paint gained an optional
 `skhdr::AdaptiveGlobalToneMap` (AGTM) and `ColorSpaceOptions` (`SkiaRenderEngine.h`), Skia's
-adaptive global tone-mapping path that complements the display-LUT HDR work in 13.42. And the
-background-blur pipeline (the Kawase dual-filter, Gaussian filter, and `RuntimeEffectManager`
-under `skia/filters/`) picked up refinements gated by `small_blur_region_improvements` (new in
-17) and `restore_blur_step`, tightening blur quality and cost for small blur regions and the
-blur-input draw order.
+adaptive global tone-mapping path. It complements the display-LUT HDR work in 13.42.
+
+Second, the background-blur pipeline picked up refinements. The pipeline includes the Kawase
+dual-filter, the Gaussian filter, and `RuntimeEffectManager` under `skia/filters/`. The flags
+`small_blur_region_improvements` (new in 17) and `restore_blur_step` gate the refinements. They
+improve blur quality and lower the cost for small blur regions and for the blur-input draw
+order.
 
 ---
 
@@ -6045,10 +6109,10 @@ blur-input draw order.
 
 ### 13.44.1 The Modeset State Machine
 
-As Android grows beyond phones to connected and desktop displays, switching display modes
-(resolution and refresh rate) must be coordinated across several displays at once and
-must avoid the data races that a naive "set it on the next frame" approach invites.
-Android 17 reworks this around an explicit state machine in
+Android grows beyond phones to connected and desktop displays. As a result, switching
+display modes (resolution and refresh rate) must be coordinated across several displays at
+once. It must also avoid the data races that a naive "set it on the next frame" approach
+invites. Android 17 reworks this around an explicit state machine in
 `frameworks/native/services/surfaceflinger/Display/DisplayModeController.h` (line 46).
 
 Each physical display's mode request flows through three states -- *desired*, *pending*,
@@ -6065,11 +6129,11 @@ enum class DesiredModeAction {
 enum class ModeChangeResult { Changed, Rejected, Aborted };
 ```
 
-`setDesiredMode()` (line 82) records the request; multiple requests within a frame are
+`setDesiredMode()` (line 82) records the request. Multiple requests within a frame are
 merged into one desired request. On the next frame, the desired request is relayed to the
-HWC and becomes *pending* (tracked by `pendingModeOpt` and `isModeSetPending()`); it
-becomes *active* only once the HWC signals the present fence confirming the mode set.
-`initiateModeChange()` (line 112) has single- and multi-display overloads, and ultimately
+HWC and becomes *pending* (tracked by `pendingModeOpt` and `isModeSetPending()`). It
+becomes *active* only when the HWC signals the present fence that confirms the mode set.
+`initiateModeChange()` (line 112) has single- and multi-display overloads. It ultimately
 calls into the HWC:
 
 ```cpp
@@ -6097,15 +6161,15 @@ machinery (all in the `core_graphics` namespace):
 | `modeset_multi_display` | Allows multiple displays to be modeset at the same time |
 | `synced_resolution_switch` | Synchronizes a resolution modeset with framebuffer resizing |
 
-`modeset_state_machine` is checked at many points in `SurfaceFlinger.cpp`'s commit and
-mode-switch paths; when enabled it routes mode changes through `DisplayModeController`'s
-pending/finalize logic instead of the legacy code.
+`modeset_state_machine` is checked at many points in the commit and mode-switch paths
+of `SurfaceFlinger.cpp`. When the flag is enabled, it routes mode changes through
+`DisplayModeController`'s pending/finalize logic instead of the legacy code.
 
 ### 13.44.3 Atomic Modeset via DisplayCommand
 
 The new path can also batch a mode set into the same atomic HWC command stream as the
 rest of a frame. The composer3 `DisplayCommand.aidl` gained an `ActiveConfigCommand`
-field, and `ActiveConfigCommand.aidl` carries the target config plus a seamless
+field. `ActiveConfigCommand.aidl` carries the target config plus a seamless
 requirement:
 
 ```aidl
@@ -6117,9 +6181,9 @@ parcelable ActiveConfigCommand {
 ```
 
 If `seamlessRequired` is set and a seamless transition is not possible, the command
-fails; if not seamless, the display mode must be updated even when no present or validate
-command accompanies it. Batching the mode set into the display command lets several
-displays change mode in lockstep.
+fails. If the transition is not seamless, the display mode must be updated even when no
+present or validate command accompanies it. When the mode set is in the display command,
+several displays can change mode in lockstep.
 
 ```mermaid
 graph TD
@@ -6139,19 +6203,23 @@ graph TD
 
 ## 13.45 RenderScript (Deprecated)
 
-RenderScript was AOSP's data-parallel compute and image-processing framework: a C99-derived
-kernel language that the platform JIT-compiled and dispatched across CPU cores (and, on some
-devices, the GPU) for tasks like image filters and blur. Its runtime and HAL live in
-`frameworks/rs/` (the `libRS_internal` engine, the `libRSDriver` reference driver, the
-multicore CPU backend in `cpu_ref/`, and the GPU/driver glue in `driver/`), and its
-LLVM-based offline compiler chain lives in `frameworks/compile/{slang,libbcc,mclinker}`.
+RenderScript was AOSP's data-parallel compute and image-processing framework. It had a
+C99-derived kernel language. The platform JIT-compiled the kernels and dispatched them across
+CPU cores (and, on some devices, the GPU) for tasks like image filters and blur. Its runtime
+and HAL live in `frameworks/rs/`. This includes the `libRS_internal` engine, the
+`libRSDriver` reference driver, the multicore CPU backend in `cpu_ref/`, and the GPU/driver
+glue in `driver/`. Its LLVM-based offline compiler chain lives in
+`frameworks/compile/{slang,libbcc,mclinker}`.
+
 RenderScript is deprecated and has no in-tree successor runtime. Every public entry point in
 `frameworks/rs/rsApiStubs.h` carries an `__DEPRECATED_IN(31, "RenderScript is deprecated. See
 ...")` annotation, and the corresponding SDK `android.renderscript` classes have been
 `@Deprecated` since API 31 (Android 12). Developers are directed to platform alternatives
-instead: Vulkan compute for general-purpose GPU work, `RenderEffect` for blur and visual
-effects, and GPU shaders (AGSL/RuntimeShader, backed by SkSL) for custom image effects. The
-runtime and compiler chain remain in the tree only for legacy app compatibility; nothing in
+instead.
+
+Vulkan compute serves general-purpose GPU work. `RenderEffect` serves blur and visual
+effects. GPU shaders (AGSL/RuntimeShader, backed by SkSL) serve custom image effects. The
+runtime and compiler chain remain in the tree only for legacy app compatibility. Nothing in
 the modern pipeline described above depends on them.
 
 ---
@@ -6305,7 +6373,8 @@ The bars show (`FrameInfoVisualizer.cpp`):
 - **Red**: Process (RenderThread)
 - **Orange**: Execute (swap/completion)
 - **Threshold lines**: green, lime, and red horizontal lines at 80%, 100%, and
-  150% of the frame budget (the display's frame interval, not a fixed 16 ms)
+  150% of the frame budget. The frame budget is the display's frame interval, not a fixed
+  16 ms.
 
 ### 13.46.8 ANGLE Debugging
 
@@ -6587,10 +6656,10 @@ The architecture reflects decades of evolution:
    `ro.hwui.use_vulkan`)
 9. **Android 13.0+**: Skia Graphite backend development begins
 10. **Android 17**: Graphite reaches production in SurfaceFlinger RenderEngine
-    (`GraphiteVkRenderEngine`); display LUTs offload HDR tone mapping to per-layer Skia
-    shaders; a modeset state machine coordinates mode switches across multiple displays;
-    and a threaded RenderEngine offloads virtual-display GPU composition off the main
-    thread
+    (`GraphiteVkRenderEngine`). Display LUTs offload HDR tone mapping to per-layer Skia
+    shaders. A modeset state machine coordinates mode switches across multiple displays.
+    A threaded RenderEngine offloads virtual-display GPU composition off the main
+    thread.
 
 The key design principle throughout is **separation of concerns with minimal
 cross-thread synchronization**. The UI thread records, the RenderThread renders,

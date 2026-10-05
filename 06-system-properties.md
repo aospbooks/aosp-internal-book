@@ -1,22 +1,25 @@
 # Chapter 6: System Properties
 
 Android's system properties are a device-wide key-value store that provides the
-primary mechanism for communicating configuration data between processes. From the
-moment init sets `ro.build.fingerprint` during early boot to the instant a Java
-application reads `persist.sys.locale` to determine the user's locale, system
-properties permeate every layer of the Android stack. They are small (key up to 32
-bytes historically, value up to 91 bytes plus a NUL terminator for mutable
-properties -- `PROP_VALUE_MAX` is 92 including the terminator), fast (reads require
-no IPC -- just a shared memory lookup), and controlled (writes are mediated by init
-through a Unix domain socket and enforced by SELinux).
+primary mechanism for communicating configuration data between processes. Early in
+boot, init sets `ro.build.fingerprint`. Later, a Java application reads
+`persist.sys.locale` to determine the user's locale. System properties are present
+in every layer of the Android stack. They are small, fast, and controlled:
 
-Despite their apparent simplicity, system properties involve a sophisticated
-interplay of shared memory regions, trie data structures, SELinux mandatory access
-control, protobuf-serialized persistent storage, and a build-time type system. This
-chapter dissects each layer by reading the actual AOSP source code, from the bionic
-implementation in `bionic/libc/system_properties/` through the property service in
-`system/core/init/property_service.cpp`, up to the Java API in
-`frameworks/base/core/java/android/os/SystemProperties.java` and the Soong build
+- **Small.** The key is up to 32 bytes historically. The value is up to 91 bytes
+  plus a NUL terminator for mutable properties. `PROP_VALUE_MAX` is 92 including the
+  terminator.
+- **Fast.** Reads require no IPC. A read is only a shared memory lookup.
+- **Controlled.** Init mediates writes through a Unix domain socket. SELinux
+  enforces them.
+
+Despite their apparent simplicity, system properties combine several parts. These
+are shared memory regions, trie data structures, SELinux mandatory access control,
+protobuf-serialized persistent storage, and a build-time type system. This chapter
+dissects each layer with the actual AOSP source code. It starts at the bionic
+implementation in `bionic/libc/system_properties/`. It continues through the
+property service in `system/core/init/property_service.cpp`. It ends at the Java API
+in `frameworks/base/core/java/android/os/SystemProperties.java` and the Soong build
 system's `sysprop_library` module type.
 
 ---
@@ -30,8 +33,8 @@ its architecture:
 
 1. **Lock-free reads.** Any process must be able to read any property without
    acquiring a lock or performing IPC. This is critical because property reads happen
-   in hot paths -- every `getprop` call, every Java reflection of build
-   characteristics, every native daemon checking a debug flag.
+   in hot paths. Examples are every `getprop` call, every Java reflection of build
+   characteristics, and every native daemon that checks a debug flag.
 
 2. **Single writer.** Only the init process (PID 1) may modify the shared memory
    regions containing property data. All other processes must send a request to init
@@ -254,9 +257,9 @@ increment on every property change, and that `__system_property_area_serial()`
 reads. Readers can therefore detect changes without any locking, by polling this
 global serial number.
 
-The `data_[]` region begins with the root `prop_trie_node`, followed by a
-`PROP_VALUE_MAX`-sized "dirty backup area," and then all dynamically allocated trie
-nodes and property info entries.
+The `data_[]` region begins with the root `prop_trie_node`. A `PROP_VALUE_MAX`-sized
+"dirty backup area" follows it. After that come all dynamically allocated trie nodes
+and property info entries.
 
 ### 6.1.4 The Trie Structure
 
@@ -636,10 +639,10 @@ void SystemProperties::ReadCallback(const prop_info* pi,
 ### 6.1.7 Long Property Values
 
 Historically, property values were limited to `PROP_VALUE_MAX` (92 bytes). Starting
-with Android P, read-only (`ro.*`) properties can exceed this limit using the "long
+with Android P, read-only (`ro.*`) properties can exceed this limit with the "long
 property" mechanism. When a value exceeds `PROP_VALUE_MAX`, the `kLongFlag` (bit 16)
-is set in the serial, and the value is stored at a separate offset within the
-property area:
+is set in the serial. The value is stored at a separate offset within the property
+area:
 
 ```c
 // Source: bionic/libc/system_properties/prop_area.cpp
@@ -686,7 +689,7 @@ their full values without truncation.
 ### 6.1.8 The property_info Trie (SELinux Context Trie)
 
 Separate from the property value trie (which stores actual values), there is a second
-trie structure that maps property names to their SELinux contexts and type
+trie structure. It maps property names to their SELinux contexts and type
 information. This is the "property_info" trie, serialized into
 `/dev/__properties__/property_info`.
 
@@ -1133,7 +1136,7 @@ persist.profcollectd.enabled  u:object_r:profcollectd_enabled_prop:s0  exact  bo
 Notice the matching precedence: more specific prefixes override less specific ones.
 For example, `debug.db.uid` matches `debug.db.` (the `debuggerd_prop` context),
 not `debug.` (the `debug_prop` context). Note also that the `ro.build.*`
-properties are labeled with `exact` entries rather than a prefix rule, and they
+properties are labeled with `exact` entries rather than a prefix rule. They
 do not all share one context: `ro.build.fingerprint` maps to `fingerprint_prop`,
 not `build_prop`.
 
@@ -1197,10 +1200,10 @@ The check flow:
    target context.
 
 On failure, the denial is logged in the kernel audit log and the property set
-returns `PROP_ERROR_PERMISSION_DENIED`. In Android 17, `CheckPermissions()` was
-changed to embed the source and target contexts directly in the error string it
-returns to the caller, so a failed `setprop` reports both contexts even when the
-kernel's AVC log was suppressed by the audit ratelimiter:
+returns `PROP_ERROR_PERMISSION_DENIED`. In Android 17, `CheckPermissions()` changed.
+It now embeds the source and target contexts directly in the error string it
+returns to the caller. A failed `setprop` therefore reports both contexts, even when the
+audit ratelimiter suppressed the kernel's AVC log:
 
 ```c
 // Source: system/core/init/property_service.cpp, CheckPermissions()
@@ -1246,9 +1249,9 @@ sequenceDiagram
 
 ### 6.3.4 SELinux Enforcement on Property Reads
 
-Read access control is more subtle. Since reads are performed directly from shared
-memory without IPC, the enforcement occurs at the file level -- each SELinux context
-gets its own file under `/dev/__properties__/`, and the kernel's file access
+Read access control is more subtle. Reads go directly to shared memory without IPC,
+so the enforcement occurs at the file level. Each SELinux context
+gets its own file under `/dev/__properties__/`. The kernel's file access
 permissions determine which contexts a process can read.
 
 The `ContextsSerialized` implementation maps each context to its own property area
@@ -1270,9 +1273,9 @@ prop_area* ContextsSerialized::GetPropAreaForName(const char* name) {
 }
 ```
 
-When `Open()` attempts to mmap the property area file, the kernel checks whether the
-calling process's SELinux context has `file { read open map }` permission for the
-file's SELinux label. If the process lacks permission, the mmap fails and the
+When `Open()` attempts to mmap the property area file, the kernel checks the
+calling process's SELinux context. The context must have `file { read open map }`
+permission for the file's SELinux label. If the process lacks permission, the mmap fails and the
 property appears not to exist.
 
 ### 6.3.5 Type Checking
@@ -1320,11 +1323,13 @@ uint32_t CheckPermissions(const std::string& name, const std::string& value,
 }
 ```
 
-`CheckPermissions()` runs three gates in order: a legality check on the name
-(`IsLegalPropertyName`), then -- for `ctl.` properties -- a service-scoped
-permission check via `CheckControlPropertyPerms()` (which checks both the legacy
-`ctl.<service>` form and the newer `ctl.<action>$<service>` form), and finally
-the SELinux MAC check plus the type check for ordinary properties.
+`CheckPermissions()` runs three gates in order:
+
+1. A legality check on the name (`IsLegalPropertyName`).
+2. For `ctl.` properties, a service-scoped permission check via
+   `CheckControlPropertyPerms()`. It checks both the legacy
+   `ctl.<service>` form and the newer `ctl.<action>$<service>` form.
+3. For ordinary properties, the SELinux MAC check plus the type check.
 
 Supported type constraints:
 
@@ -1340,15 +1345,15 @@ Supported type constraints:
 
 ### 6.3.6 The Appcompat Override Mechanism
 
-Android provides an "appcompat override" mechanism that lets the platform present
+Android provides an "appcompat override" mechanism. It lets the platform present
 a different value for a property to a process that opts into compatibility
-overrides, without disturbing the value every other reader sees. It is split
+overrides. Every other reader still sees the original value. The mechanism is split
 across init and bionic.
 
 On the init side, the override is built only when the platform is compiled with
 `WRITE_APPCOMPAT_OVERRIDE_SYSTEM_PROPERTIES` defined. In that configuration,
 `CreateSerializedPropertyInfo()` writes the same serialized contexts trie a second
-time, into a parallel folder, so the override area shares the platform's SELinux
+time, into a parallel folder. The override area therefore shares the platform's SELinux
 context layout:
 
 ```c
@@ -1369,7 +1374,7 @@ context layout:
 
 The actual name rewriting happens in bionic. When a process enables overrides,
 `SystemProperties::Find()` first looks up an `ro.appcompat_override.`-prefixed
-shadow of the requested name and, if that shadow exists, returns it in place of
+shadow of the requested name. If that shadow exists, it returns the shadow in place of
 the real property:
 
 ```c
@@ -1396,8 +1401,8 @@ const prop_info* SystemProperties::Find(const char* name) {
 ```
 
 So a process that reads `ro.some.flag` with overrides enabled transparently
-receives the value of `ro.appcompat_override.ro.some.flag` when one was written,
-while every other process keeps seeing the unprefixed value. This is how the
+receives the value of `ro.appcompat_override.ro.some.flag` when one was written.
+Every other process keeps seeing the unprefixed value. This is how the
 platform can hand a per-app-compatibility value to a single opted-in reader.
 
 ---
@@ -1560,8 +1565,7 @@ static void ExportKernelBootProps() {
 ```
 
 The `UNSET` sentinel for `ro.boot.serialno` means init only creates the legacy
-`ro.serialno` alias when a serial number was actually supplied on the kernel
-command line; an empty serial leaves `ro.serialno` undefined rather than blank.
+`ro.serialno` alias when a serial number was actually supplied on the kernel command line. An empty serial leaves `ro.serialno` undefined rather than blank.
 
 ### 6.4.4 The Socket-Based Write API
 
@@ -1766,8 +1770,8 @@ PersistentProperties LoadPersistentProperties() {
 The Java interface to system properties is provided by
 `android.os.SystemProperties`, located at
 `frameworks/base/core/java/android/os/SystemProperties.java`. This class is annotated
-with `@SystemApi` and `@hide`, meaning it is not part of the public SDK but is
-available to platform code and apps using the system SDK:
+with `@SystemApi` and `@hide`. It is not part of the public SDK, but it is
+available to platform code and to apps that use the system SDK:
 
 ```java
 // Source: frameworks/base/core/java/android/os/SystemProperties.java
@@ -1866,8 +1870,8 @@ public static void set(@NonNull String key, @Nullable String val) {
 
 The `set()` method performs IPC to the property service through the Unix domain
 socket, so it can block. The value length validation (91 bytes) is enforced in Java
-before the native call, but only for non-`ro.*` properties (which can use the long
-property mechanism).
+before the native call. It is enforced only for non-`ro.*` properties, which can use the long
+property mechanism.
 
 ### 6.5.4 Handle-Based Optimized Access
 
@@ -1962,10 +1966,10 @@ private static void callChangeCallbacks() {
 The Java change-callback mechanism does not poll the property area or wait on a
 futex. `native_add_change_callback()` registers a libutils callback via
 `add_sysprop_change_callback()` (see
-`frameworks/base/core/jni/android_os_SystemProperties.cpp`), and that callback
+`frameworks/base/core/jni/android_os_SystemProperties.cpp`). That callback
 fires only when some component in the same process explicitly calls
-`report_sysprop_change()` -- exposed to Java as
-`SystemProperties.reportSyspropChanged()` -- which then calls back into
+`report_sysprop_change()`. It is exposed to Java as
+`SystemProperties.reportSyspropChanged()`. The call then calls back into
 `callChangeCallbacks()`.
 
 ### 6.5.6 Digest Method
@@ -2051,14 +2055,15 @@ private static native String native_get(String key, String def);
 ```
 
 The `maxTargetSdk` value names the highest target SDK for which the member
-remains accessible: apps targeting API 28 (Pie) or below can still reflectively
-call `native_get`, while apps targeting API 29 (Q) or above cannot. There is no
-public-SDK successor for third-party apps here: system properties were never
-public API for them, so the blocked reflection has nothing to migrate to. The
-`sysprop_library` mechanism (Section 6.6) serves a different audience. When a
+remains accessible. Apps that target API 28 (Pie) or below can still reflectively
+call `native_get`. Apps that target API 29 (Q) or above cannot. There is no
+public-SDK successor for third-party apps here. System properties were never
+public API for them, so the blocked reflection has nothing to migrate to.
+
+The `sysprop_library` mechanism (Section 6.6) serves a different audience. When a
 platform-owned library is installed in `/system` or `/system_ext`, Soong treats
-it as an API and emits a public stub that modules on any partition — including
-ones built with `sdk_version: system_*` — may link against
+it as an API and emits a public stub. Modules on any partition — including
+ones built with `sdk_version: system_*` — may link against the stub
 (`build/soong/sysprop/sysprop_library.go:510-548`). Its typed accessors are
 therefore the structured replacement for ad-hoc property reads in *platform,
 vendor, and product* code, not in apps.
@@ -2080,9 +2085,9 @@ communication:
 4. **No ownership model.** It is unclear which partition "owns" a property.
 
 The `sysprop_library` module type in Soong addresses all of these. It defines
-properties in `.sysprop` files, generates type-safe accessor libraries in Java, C++,
-and Rust, and scopes the exposed API surface through per-property `scope` and
-`property_owner` rules. (Earlier releases also enforced a checked-in-API-file
+properties in `.sysprop` files and generates type-safe accessor libraries in Java,
+C++, and Rust. It also scopes the exposed API surface through per-property `scope`
+and `property_owner` rules. (Earlier releases also enforced a checked-in-API-file
 compatibility check; Android 17 removed it -- see Section 6.6.8.)
 
 ### 6.6.2 The .sysprop File Format
@@ -2145,9 +2150,9 @@ Each `prop` block specifies:
 | `default_value` | Value returned when the property is unset | e.g., `true`, `123` |
 
 The full set of fields is declared in the `Property` message of
-`system/tools/sysprop/sysprop.proto`. Two of these fields are newer:
-`legacy_prop_name` lets a renamed property keep reading the old key as a fallback,
-and `default_value` (added as field 10) changes the shape of the generated getter,
+`system/tools/sysprop/sysprop.proto`. Two of these fields are newer.
+`legacy_prop_name` lets a renamed property keep reading the old key as a fallback.
+`default_value` (added as field 10) changes the shape of the generated getter,
 covered next.
 
 ### 6.6.3 Module Definition in Android.bp
@@ -2332,17 +2337,17 @@ The `access` field controls which methods are generated:
 
 ### 6.6.8 API Stability (Android 17 simplification)
 
-Historically, `sysprop_library` enforced API stability through a two-file check:
-each module checked in an `api/<name>-current.txt` and an `api/<name>-latest.txt`,
-and `GenerateAndroidBuildActions()` dumped the API from the `.sysprop` sources and
+Historically, `sysprop_library` enforced API stability through a two-file check.
+Each module checked in an `api/<name>-current.txt` and an `api/<name>-latest.txt`.
+`GenerateAndroidBuildActions()` dumped the API from the `.sysprop` sources and
 compared it against both files (identical to `current.txt`, backward-compatible
 with `latest.txt`). Renaming a property, changing its type, or dropping it failed
 the build unless the checked-in text files were regenerated.
 
 Android 17 removed that machinery. The "Remove sysprop as API txt files" change
 deleted the per-module `api/*-current.txt` / `*-latest.txt` files across
-`system/libsysprop` (there are now no such files in the tree) and stripped the
-dump-and-compare logic out of Soong. In 17, `sysprop_library`'s
+`system/libsysprop`. There are now no such files in the tree. The same change
+stripped the dump-and-compare logic out of Soong. In 17, `sysprop_library`'s
 `GenerateAndroidBuildActions()` does nothing beyond validating that every source
 really is a `.sysprop` file:
 
@@ -2364,9 +2369,9 @@ func (m *syspropLibrary) GenerateAndroidBuildActions(ctx android.ModuleContext) 
 }
 ```
 
-The build-time API surface a `sysprop_library` exposes is now governed entirely by
-the `scope` field in each `.sysprop` entry (Section 6.6.7) and by the cross-partition
-`property_owner` rules (Section 6.6.3), not by a checked-in API snapshot. The
+A `sysprop_library` exposes a build-time API surface. The `scope` field in each
+`.sysprop` entry (Section 6.6.7) and the cross-partition `property_owner` rules
+(Section 6.6.3) now govern it entirely. A checked-in API snapshot does not. The
 `Api_packages` property on the module still names the packages that are documented
 and publicized as API:
 
@@ -2383,9 +2388,9 @@ type syspropLibraryProperties struct {
 }
 ```
 
-A vestige of the old design remains in the source: the provider struct
+A vestige of the old design remains in the source. The provider struct
 `SyspropLibraryInfo` in `build/soong/sysprop/sysprop_library.go` still carries
-`CheckApiFileTimeStamp` (and `CurrentApiFile`) fields, but neither is wired to
+`CheckApiFileTimeStamp` (and `CurrentApiFile`) fields. Neither is wired to
 any dump-and-compare command. The practical effect for developers
 is that editing a `.sysprop` file no longer requires a separate
 `m <module>-dump-api` step to refresh checked-in API text.
@@ -2411,10 +2416,10 @@ constraints in property_contexts match those declared in `.sysprop` files.
 
 ### 6.6.10 Default Values in Generated Accessors
 
-A `.sysprop` property is, by definition, "unset" until something writes it, and
-historically every generated getter returned an `Optional`/`std::optional` that
-the caller had to unwrap with its own fallback. Android 17 adds a `default_value`
-field to the property schema so the fallback can live in the `.sysprop`
+A `.sysprop` property is, by definition, "unset" until something writes it.
+Historically, every generated getter returned an `Optional`/`std::optional`, and
+the caller had to unwrap it with its own fallback. Android 17 adds a `default_value`
+field to the property schema. The fallback can then live in the `.sysprop`
 definition itself, and the code generators bake it into the accessor.
 
 The field is `default_value` (field 10) in the `Property` message:
@@ -2436,9 +2441,9 @@ message Property {
 ```
 
 When `default_value` is set on a non-list property, the Java generator changes the
-getter's return type from `Optional<T>` to a bare `T`: it reads the property, and
-if the result is the empty string (the property is unset), it substitutes the
-default before parsing, then returns the parsed value directly via `.orElse(null)`:
+getter's return type from `Optional<T>` to a bare `T`. The getter reads the property.
+If the result is the empty string (the property is unset), it substitutes the
+default before parsing. Then it returns the parsed value directly via `.orElse(null)`:
 
 ```cpp
 // Source: system/tools/sysprop/JavaGen.cpp
@@ -2464,16 +2469,17 @@ if (!prop.default_value().empty()) {
 
 The same `default_value` substitution is wired into the C++ generator
 (`system/tools/sysprop/CppGen.cpp`) and the Rust generator
-(`system/tools/sysprop/RustGen.cpp`); each generator reads the field directly from
+(`system/tools/sysprop/RustGen.cpp`). Each generator reads the field directly from
 the parsed schema. (`SetDefaultValues()` in `system/tools/sysprop/Common.cpp`,
 despite its name, only fills in an empty `prop_name` and rewrites the deprecated
-`System` scope to `Public` -- it never touches `default_value`.) The net effect: a
-property declared with `default_value: "true"` exposes a getter that simply
-returns `true` when unset, removing the per-caller `orElse(...)` boilerplate that
-6.6.5's example still showed for properties without a default. This complements
-`legacy_prop_name` (Section 6.6.2): a renamed property can both fall back to its
-old key and, failing that, fall back to a declared default, all inside the
-generated accessor.
+`System` scope to `Public` -- it never touches `default_value`.)
+
+As a result, a property declared with `default_value: "true"` exposes a getter
+that simply returns `true` when unset. This removes the per-caller `orElse(...)`
+boilerplate that 6.6.5's example still showed for properties without a default.
+This complements `legacy_prop_name` (Section 6.6.2). A renamed property can fall
+back to its old key. If that key is unset too, the property can fall back to a
+declared default. All of this happens inside the generated accessor.
 
 ---
 
@@ -2575,10 +2581,10 @@ static void property_initialize_ro_vendor_api_level() {
 }
 ```
 
-The `is_frozen_chipset` flag is the key subtlety: a chipset that declares
+The `is_frozen_chipset` flag is the key subtlety. A chipset that declares
 `ro.board.first_api_level` has a frozen vendor image, so init may pin
 `ro.vendor.api_level` down to the board's API level. A non-frozen chipset instead
-uses `__ANDROID_VENDOR_API_MAX__` as the board contribution, and the final value
+uses `__ANDROID_VENDOR_API_MAX__` as the board contribution. The final value
 is the minimum of that and the API level derived from the product/SDK side via
 `AVendorSupport_getVendorApiLevelOf()`.
 
@@ -2621,7 +2627,7 @@ graph LR
 Key rules:
 
 - **Platform-owned** properties are consumed at `Internal` scope by code on
-  system/system_ext (the owner's own partition); only the `Public` scope surface
+  system/system_ext (the owner's own partition). Only the `Public` scope surface
   is exposed to vendor/odm and product consumers.
 - **Vendor-owned** properties cannot be accessed from the system partition.
 - **ODM-owned** properties can only be accessed from vendor/ODM partitions.
@@ -2925,9 +2931,11 @@ The largest change is the removal of the `sysprop_library` API snapshot files.
 Before 17, every module checked in `api/<name>-current.txt` and
 `api/<name>-latest.txt`, and Soong dumped the API from the `.sysprop` sources and
 compared against both on every build. Android 17 deleted those files from
-`system/libsysprop` (none remain in the tree) and stripped the dump-and-compare
-logic out of `build/soong/sysprop/sysprop_library.go`; the module's
-`GenerateAndroidBuildActions()` now only validates source extensions. The stable
+`system/libsysprop` (none remain in the tree). It also stripped the dump-and-compare
+logic out of `build/soong/sysprop/sysprop_library.go`. The module's
+`GenerateAndroidBuildActions()` now only validates source extensions.
+
+The stable
 surface a sysprop library exposes is governed by per-property `scope` and the
 `property_owner` cross-partition rules instead of a checked-in API file. Section
 6.6.8 walks the new code path.
@@ -2936,8 +2944,9 @@ surface a sysprop library exposes is governed by per-property `scope` and the
 
 The `.sysprop` schema in `system/tools/sysprop/sysprop.proto` gained a
 `default_value` field (field 10). When set, the generated Java/C++/Rust getter
-returns a concrete value rather than an `Optional` and substitutes the declared
-default when the property is unset, removing per-caller `orElse(...)` boilerplate.
+returns a concrete value rather than an `Optional`. It substitutes the declared
+default when the property is unset. This removes per-caller `orElse(...)` boilerplate.
+
 This pairs with `legacy_prop_name` (field 9), which lets a renamed property fall
 back to its old key. Both fields are consumed directly by `JavaGen.cpp`,
 `CppGen.cpp`, and `RustGen.cpp`. Section 6.6.10 shows the generated code.
@@ -2945,12 +2954,14 @@ back to its old key. Both fields are consumed directly by `JavaGen.cpp`,
 ### 6.9.3 More Informative SELinux Denials on Writes
 
 `CheckPermissions()` in `system/core/init/property_service.cpp` now embeds the
-source and target SELinux contexts in the error string it returns when a
+source and target SELinux contexts in the error string. It returns this string when a
 `property_service { set }` check fails ("init: enhance SELinux denial error
-message for set property service"). Because the kernel's AVC denial log can be
-dropped by the audit ratelimiter, having init itself report
-`source_context=...` / `target_context=...` makes property-set failures far
-easier to triage. The same function also makes its `ctl.` permission handling
+message for set property service"). The audit ratelimiter can
+drop the kernel's AVC denial log. For that reason, it helps when init itself reports
+`source_context=...` / `target_context=...`. Property-set failures are then far
+easier to triage.
+
+The same function also makes its `ctl.` permission handling
 explicit through `CheckControlPropertyPerms()`, which checks both the legacy
 `ctl.<service>` form and the newer `ctl.<action>$<service>` form. Sections 6.3.3
 and 6.3.5 cover the write-path checks.
@@ -2959,8 +2970,8 @@ and 6.3.5 cover the write-path checks.
 
 Two smaller init refinements round out the set. First, `LoadProperties()` -- the
 parser that `load_properties_from_file()` delegates to -- now runs `ExpandProps()`
-on both `import` filenames and property values it reads from a file, so
-`${ro.foo}`-style references in a `build.prop` are resolved as the file is loaded:
+on both `import` filenames and property values that it reads from a file. As a
+result, `${ro.foo}`-style references in a `build.prop` are resolved as the file is loaded:
 
 ```c
 // Source: system/core/init/property_service.cpp, LoadProperties()
@@ -2968,8 +2979,8 @@ auto expanded_value = ExpandProps(value);
 ```
 
 Second, `property_initialize_ro_vendor_api_level()` gained the
-`is_frozen_chipset` logic described in Section 6.7.3: a chipset that declares
-`ro.board.first_api_level` is treated as frozen and may lower
+`is_frozen_chipset` logic described in Section 6.7.3. A chipset that declares
+`ro.board.first_api_level` is treated as frozen. It may lower
 `ro.vendor.api_level` to the board API level, instead of always contributing
 `__ANDROID_VENDOR_API_MAX__`.
 
@@ -2980,9 +2991,9 @@ aconfig flag (Chapter 3). They solve different problems and the boundary matters
 for new code:
 
 - **System properties / `sysprop_library`** are a runtime, device-wide key-value
-  store. Values can be read and (for mutable namespaces) written at runtime,
-  persisted across reboots (`persist.*`), set by the bootloader (`ro.boot.*`), and
-  partitioned by SELinux context and Treble ownership. Use them for device
+  store. Values can be read and (for mutable namespaces) written at runtime.
+  Values can persist across reboots (`persist.*`). They are set by the bootloader
+  (`ro.boot.*`). SELinux context and Treble ownership partition them. Use them for device
   configuration, build identity, runtime state, and vendor/HAL tunables -- things
   that vary per device or per boot.
 - **aconfig flags** are build-time-declared feature flags with a generated, typed
@@ -2994,7 +3005,7 @@ for new code:
 In practice a `sysprop_library` answers "what is this device configured to do
 right now," while aconfig answers "is this feature turned on for this build."
 Android 17 continues to migrate one-off boolean `ro.*`/`persist.*` debug toggles
-toward aconfig where the goal is feature gating, while leaving genuine device
+toward aconfig where the goal is feature gating. It leaves genuine device
 configuration on the property store. The two are complementary, not
 interchangeable.
 
@@ -3002,21 +3013,22 @@ interchangeable.
 
 ## 6.10 The Rust System-Properties API: librustutils
 
-The Java `SystemProperties` class (Section 6.5) and the bionic C entry points
-(Section 6.1) are not the only first-class clients of the property store.
-Android now ships a growing tier of platform components written in Rust --
-keystore2, the Rust zygote, parts of init, the KeyMint HAL, the eBPF loader --
-and those components do not link against bionic's C API directly. They read,
-write, and watch properties through a small Rust crate, `librustutils`, living
-at `system/librustutils/`. It is the Rust-side complement to the C and Java
-APIs this chapter has covered, and it is worth understanding because it is *the*
-way Rust platform code touches the property store.
+The property store has more first-class clients than the Java `SystemProperties`
+class (Section 6.5) and the bionic C entry points (Section 6.1).
+Android now ships a growing tier of platform components written in Rust. Examples
+are keystore2, the Rust zygote, parts of init, the KeyMint HAL, and the eBPF
+loader. Those components do not link against bionic's C API directly.
+
+They read, write, and watch properties through a small Rust crate, `librustutils`,
+that lives at `system/librustutils/`. It is the Rust-side complement to the C and
+Java APIs that this chapter has covered. It is worth understanding because it is
+*the* way Rust platform code touches the property store.
 
 ### 6.10.1 What the Crate Is
 
 `librustutils` is a roughly 1.75K-line Rust crate of safe wrappers over a
-handful of bionic facilities that Rust components would otherwise have to call
-through raw FFI. Its module map is declared in
+handful of bionic facilities. Rust components would otherwise have to call these
+facilities through raw FFI. Its module map is declared in
 `system/librustutils/rustutils/src/lib.rs` and
 `system/librustutils/rustutils/src/android.rs`:
 
@@ -3031,20 +3043,20 @@ through raw FFI. Its module map is declared in
 
 The crate is built as `librustutils` in
 `system/librustutils/rustutils/Android.bp`. The system-properties module reaches
-bionic through an auto-generated bindgen wrapper, `libsystem_properties_bindgen`,
-whose allowlist (in the same `Android.bp`) pins exactly the five bionic symbols
-the crate needs: `__system_property_find`, `__system_property_foreach`,
-`__system_property_read_callback`, `__system_property_set`, and
-`__system_property_wait`. Every call below is, underneath the safe Rust surface,
-one of those bionic calls -- the same shared-memory read path and
-property-service write path described earlier in this chapter, with no new IPC
-mechanism of its own.
+bionic through an auto-generated bindgen wrapper, `libsystem_properties_bindgen`.
+The allowlist of this wrapper (in the same `Android.bp`) pins exactly the five
+bionic symbols that the crate needs: `__system_property_find`,
+`__system_property_foreach`, `__system_property_read_callback`,
+`__system_property_set`, and `__system_property_wait`. Underneath the safe Rust
+surface, every call below is one of those bionic calls. It uses the same
+shared-memory read path and property-service write path that this chapter
+described earlier. It adds no new IPC mechanism of its own.
 
 ### 6.10.2 Reading, Writing, and Iterating
 
 The free functions in
 `system/librustutils/rustutils/src/android/system_properties.rs` cover the common
-cases without the caller ever touching a pointer:
+cases. The caller never touches a pointer:
 
 ```rust
 // Source: system/librustutils/rustutils/src/android/system_properties.rs
@@ -3066,22 +3078,22 @@ pub fn foreach<F>(mut f: F) -> Result<()> where F: FnMut(&str, &str);
 `read()` and `read_bool()` reflect the same boolean-parsing vocabulary that the
 Java `getBoolean()` accepts (Section 6.5.2). `write()` returns
 `PropertyWatcherError::SetPropertyFailed` when `__system_property_set` returns
-`-1`, which is how a Rust caller observes an SELinux denial or a write-once
-violation surfaced by the property service (Section 6.3.3). `foreach()` returns
-`PropertyWatcherError::Uninitialized` if the property area has not been set up.
+`-1`. This is how a Rust caller sees an SELinux denial or a write-once
+violation that the property service reports (Section 6.3.3). `foreach()` returns
+`PropertyWatcherError::Uninitialized` if the property area is not set up.
 
 Errors are a typed `enum`, `PropertyWatcherError`, defined in
-`system/librustutils/rustutils/src/android/system_properties/error.rs`, with
+`system/librustutils/rustutils/src/android/system_properties/error.rs`. It has
 variants for an absent property, an uninitialized area, a wait timeout, a NUL
-byte in a name or value, and a non-UTF-8 value -- so failures that the C API
+byte in a name or value, and a non-UTF-8 value. So failures that the C API
 reports as a bare `-1` become matchable Rust values.
 
 ### 6.10.3 PropertyWatcher: Observing Changes
 
 The most distinctive type is `PropertyWatcher`. The C API exposes
-`__system_property_wait`, which blocks on a futex until a property's serial
-number changes (the wait-free protocol of Section 6.1.6 is what bumps that
-serial). `PropertyWatcher` wraps that loop in a safe, serial-tracking object so
+`__system_property_wait`, which blocks on a futex until the serial number of a
+property changes. The wait-free protocol of Section 6.1.6 bumps that serial.
+`PropertyWatcher` wraps that loop in a safe object that tracks the serial. So
 Rust code can wait for a property to appear, change, or reach a specific value
 without races:
 
@@ -3106,12 +3118,12 @@ impl PropertyWatcher {
 }
 ```
 
-Internally, `wait()` records the serial number of the last change it saw and
-passes it back into `__system_property_wait`, so a change that happens between
-two waits is not missed. If the watched property does not yet exist, the watcher
-first waits on the *global* serial (a null `prop_info`) until the property is
-created, then switches to watching that property's own serial. This is exactly
-how keystore2 blocks on boot milestones -- for instance
+Internally, `wait()` records the serial number of the last change it saw. It
+passes that number back into `__system_property_wait`, so a change that happens
+between two waits is not missed. If the watched property does not yet exist, the
+watcher first waits on the *global* serial (a null `prop_info`) until the
+property is created. Then it switches to the own serial of that property. This
+is exactly how keystore2 blocks on boot milestones. For instance, see
 `PropertyWatcher::new("sys.boot_completed")` and a watcher on
 `keystore.boot_level` in `system/security/keystore2/src/globals.rs` and
 `system/security/keystore2/src/super_key.rs`.
@@ -3119,34 +3131,36 @@ how keystore2 blocks on boot milestones -- for instance
 ### 6.10.4 Where It Fits and Who Uses It
 
 Two things make `librustutils` the natural Rust counterpart to the APIs earlier
-in this chapter. First, it is broadly depended on: about 87 build modules across
-the tree list `librustutils` in their `Android.bp`, including
+in this chapter. First, many modules depend on it: about 87 build modules across
+the tree list `librustutils` in their `Android.bp`. They include
 `system/security/keystore2/Android.bp`, the Rust zygote in
 `system/zygote/zygote/Android.bp`, the KeyMint HAL in
 `system/keymint/hal/Android.bp`, and the eBPF loader in
-`system/bpf/loader/Android.bp`. Second, it is the runtime that the Soong
+`system/bpf/loader/Android.bp`.
+
+Second, it is the runtime that the Soong
 `sysprop_library` generator targets for Rust. The `parsers_formatters` module in
 `system/librustutils/rustutils/src/android/system_properties/parsers_formatters.rs`
-is documented as "should only be used in the system properties generated code,"
-and the `SysPropError` enum in the crate's `error.rs` is what the generated Rust
-accessors return -- the same `.sysprop`-driven `RustGen.cpp` path described in
-Section 6.6. So a typed `sysprop_library` accessor used from Rust ultimately
-reads and writes through this crate, just as the Java accessor goes through
-`android.os.SystemProperties`.
+is documented as "should only be used in the system properties generated code."
+The `SysPropError` enum in the `error.rs` file of the crate is what the generated
+Rust accessors return. This is the same `.sysprop`-driven `RustGen.cpp` path
+described in Section 6.6. So a typed `sysprop_library` accessor used from Rust
+ultimately reads and writes through this crate. The Java accessor goes through
+`android.os.SystemProperties` in the same way.
 
 The takeaway: when a Rust component on the platform needs a property, it does
 not reinvent the socket protocol or the shared-memory read. It calls
-`rustutils::android::system_properties::{read, write, read_bool, foreach}` or constructs
-a `PropertyWatcher`, and the crate funnels that down to the very same bionic
-primitives and property-service path that the C and Java APIs use.
+`rustutils::android::system_properties::{read, write, read_bool, foreach}` or
+constructs a `PropertyWatcher`. The crate funnels that down to the very same
+bionic primitives and property-service path that the C and Java APIs use.
 
 ---
 
 ## 6.11 Try It: Exploring System Properties
 
-This section provides hands-on exercises for understanding the system properties
-mechanism. All exercises assume you have an `adb`-connected device or emulator
-running a `userdebug` or `eng` build.
+This section provides hands-on exercises to help you understand the system
+properties mechanism. All exercises assume you have an `adb`-connected device or
+emulator that runs a `userdebug` or `eng` build.
 
 ### 6.11.1 Exercise: Listing and Inspecting Properties
 
@@ -3249,8 +3263,8 @@ adb shell setprop debug.mytest.signal go
 
 **Block on a property change with `__system_property_wait()`:**
 
-The old `watchprops` tool was removed after Android 6.0 (Marshmallow), so there is
-no stock shell command that streams property changes. To wait without polling,
+The old `watchprops` tool was removed after Android 6.0 (Marshmallow). So there
+is no stock shell command that streams property changes. To wait without polling,
 build a small native program around bionic's `__system_property_wait()`:
 
 ```c
@@ -3271,9 +3285,10 @@ int main(int argc, char** argv) {
 }
 ```
 
-(Rust code can use `rustutils::android::system_properties::PropertyWatcher` for the same
-purpose.) Push the binary to the device, run it against `debug.mytest.signal`, and
-`setprop` the property from another terminal to see it wake up.
+(Rust code can use `rustutils::android::system_properties::PropertyWatcher` for
+the same purpose.) Push the binary to the device and run it against
+`debug.mytest.signal`. Then `setprop` the property from another terminal to see
+it wake up.
 
 ### 6.11.4 Exercise: Examining Property Contexts
 
@@ -3462,9 +3477,9 @@ adb shell "
 "
 ```
 
-Note that `getprop` involves process creation overhead. The actual shared memory
-lookup is much faster (typically under 1 microsecond). A more accurate benchmark would
-use a native program that calls `__system_property_find()` and
+Note that `getprop` has process creation overhead. The actual shared memory
+lookup is much faster (typically under 1 microsecond). A more accurate benchmark
+would use a native program that calls `__system_property_find()` and
 `__system_property_read_callback()` directly.
 
 ### 6.11.10 Exercise: Exploring the Property Trie in Memory
@@ -3481,38 +3496,38 @@ PID=$(adb shell pidof com.android.systemui)
 adb shell "cat /proc/$PID/maps | grep __properties__"
 ```
 
-This exercise reveals that every process has the property areas mapped at potentially
-different virtual addresses, but they all reference the same physical pages through
-the shared memory-mapped files.
+This exercise shows that every process has the property areas mapped at
+potentially different virtual addresses. But they all reference the same
+physical pages through the shared memory-mapped files.
 
 ---
 
 ## Summary
 
-Android's system properties are a deceptively simple-looking mechanism that hides
-considerable complexity beneath its key-value interface. The architecture achieves its
-design goals through several interacting subsystems:
+Android's system properties look simple, but they hide considerable complexity
+beneath a key-value interface. The architecture meets its design goals through
+several subsystems that interact:
 
-1. **Lock-free reads** via memory-mapped files with a trie-based lookup structure,
-   using atomic operations and a dirty-backup-area protocol to ensure consistency
-   without locks.
+1. **Lock-free reads** via memory-mapped files with a trie-based lookup structure.
+   Atomic operations and a dirty-backup-area protocol make sure the data stays
+   consistent without locks.
 
-2. **Centralized writes** through init's property service, which accepts requests
+2. **Centralized writes** through init's property service. It accepts requests
    over Unix domain sockets and mediates all mutations to the shared memory.
 
-3. **SELinux enforcement** through per-context property area files, where each
+3. **SELinux enforcement** through per-context property area files. Each
    SELinux context gets its own memory-mapped file with kernel-enforced access
    control.
 
 4. **Typed properties** through the `sysprop_library` build system module, which
    generates type-safe accessors in Java, C++, and Rust. In Android 17 the old
-   checked-in API text-file compatibility check was removed, and `.sysprop`
+   checked-in API text-file compatibility check was removed. Also, `.sysprop`
    schemas gained `default_value` and `legacy_prop_name` fields that the
    generators bake into the accessors.
 
-5. **Partition isolation** through the Treble-aligned ownership model, where
-   platform, vendor, and ODM properties have clearly defined boundaries and
-   access rules, and where init derives `ro.vendor.api_level` with frozen-chipset
+5. **Partition isolation** through the Treble-aligned ownership model. In this
+   model, platform, vendor, and ODM properties have clearly defined boundaries and
+   access rules. Also, init derives `ro.vendor.api_level` with frozen-chipset
    awareness.
 
 The key source files for system properties are:

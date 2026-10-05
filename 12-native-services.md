@@ -1,14 +1,14 @@
 # Chapter 12: Native Services
 
-Android's system functionality is not delivered by a single monolithic process. While
+Android's system functionality is not delivered by a single monolithic process.
 `system_server` hosts the Java-based system services (ActivityManagerService,
-WindowManagerService, PackageManagerService, and dozens of others), a significant
+WindowManagerService, PackageManagerService, and dozens of others). A significant
 portion of the platform's critical functionality runs in **standalone native
 processes** written in C++. These native services handle everything from compositing
 pixels on screen, to routing touch events, to installing APKs on disk.
 
-This chapter explores the architecture and implementation of these native services,
-examining how they register with `servicemanager`, communicate over Binder, and
+This chapter explores the architecture and implementation of these native services.
+It shows how they register with `servicemanager`, communicate over Binder, and
 interact with both hardware (via HALs) and the rest of the framework. We will
 walk through actual AOSP source code, trace data flows through complete
 pipelines, and understand the design decisions that shaped each service.
@@ -28,8 +28,8 @@ A **native service** is a C++ process that:
 
 Unlike Java system services that all live inside the `system_server` JVM,
 native services run in their own address spaces. This provides process
-isolation -- a crash in SurfaceFlinger does not bring down AudioFlinger -- and
-allows each service to run with the minimum set of Linux capabilities and
+isolation -- a crash in SurfaceFlinger does not bring down AudioFlinger.
+It also lets each service run with the minimum set of Linux capabilities and
 SELinux permissions it needs.
 
 ### 12.1.2 The servicemanager Registry Pattern
@@ -189,8 +189,8 @@ Here are the thread pool configurations from actual source code:
 The `setThreadPoolMaxThreadCount(0)` call in servicemanager deserves special
 attention. With zero threads in the pool, all Binder processing happens on
 the main thread through the Looper. This is deliberate: servicemanager must
-never call synchronously into another service (which could deadlock), so
-all its outgoing calls are one-way, and incoming calls are processed
+never call synchronously into another service (which could deadlock). So
+all its outgoing calls are one-way, and it processes incoming calls
 sequentially.
 
 ### 12.1.7 Death Notifications and Service Recovery
@@ -316,7 +316,7 @@ graph TB
 
 Each arrow represents a Binder connection, with one exception: InputFlinger
 is not a standalone process but a set of native threads inside
-`system_server`, and InputManagerService reaches it through JNI in-process
+`system_server`. InputManagerService reaches it through JNI in-process
 calls rather than Binder (see 12.3). The native services sit between the
 Java framework above and the HAL implementations below, translating high-level
 API calls into hardware operations.
@@ -327,8 +327,8 @@ API calls into hardware operations.
 
 SurfaceFlinger is the **display composition service** -- arguably the most
 complex and performance-critical native service in Android. It takes graphical
-buffers from every application and system UI component, composites them
-together, and presents the result on the display at the correct time
+buffers from every application and system UI component, and composites them
+together. It presents the result on the display at the correct time,
 synchronized to the vertical sync (VSYNC) signal.
 
 ### 12.2.1 Source Layout
@@ -456,7 +456,7 @@ A **Layer** represents a rectangular region of graphical content.
 Each layer has:
 
 - A **buffer delivered by transaction**: since the BLAST rework, the client
-  attaches each graphic buffer with `Transaction::setBuffer()`, and the layer
+  attaches each graphic buffer with `Transaction::setBuffer()`. The layer
   stores it in its drawing state (`mDrawingState.buffer`). The
   producer/consumer `BufferQueue` pair lives in the app's `BLASTBufferQueue`,
   not inside SurfaceFlinger.
@@ -640,9 +640,9 @@ composition. RenderEngine is implemented using:
 - **Threaded rendering**: RenderEngine can operate on a dedicated thread to
   avoid blocking the main composition thread.
 
-The key RenderEngine operation is `drawLayers()`, which takes a set of layer
+The key RenderEngine operation is `drawLayers()`. It takes a set of layer
 settings (source buffer, geometry, blend mode, color matrix) and composites
-them into a single output buffer that is then passed to HWC as a "client
+them into a single output buffer. That buffer is then passed to HWC as a "client
 target" layer.
 
 ### 12.2.9 Transaction Model
@@ -749,9 +749,9 @@ interface. Key method categories include:
 
 **Layer Operations**:
 
-- `setTransactionState()` (the primary channel for all layer changes;
-  per-surface properties such as the `Transaction::setFrameRate()` frame rate
-  preference travel inside it rather than as standalone interface methods)
+- `setTransactionState()` (the primary channel for all layer changes).
+  Per-surface properties such as the `Transaction::setFrameRate()` frame rate
+  preference travel inside it. They are not standalone interface methods.
 - `setGameModeFrameRateOverride()` (game-specific overrides)
 
 **Screen Capture**:
@@ -801,12 +801,11 @@ The `VsyncSchedule` class manages VRR-aware scheduling:
   (`frameworks/native/services/surfaceflinger/Scheduler/ISchedulerCallback.h:35`,
   fired from `Scheduler.cpp:176`/`180`). SurfaceFlinger's override
   (`SurfaceFlinger.cpp:8022`) forwards the state to the display's
-  refresh-rate overlay via `onVrrIdle()`; suppressing the unnecessary
-  wakeups happens inside the Scheduler's timer itself, not in this
-  callback.
+  refresh-rate overlay via `onVrrIdle()`. The unnecessary wakeups are
+  suppressed inside the Scheduler's timer itself, not in this callback.
 - The `KernelIdleTimerController` enum (in `RefreshRateSelector`) selects how
   the kernel's display idle timer is driven -- via a sysprop (`Sysprop`) or
-  the HWC API (`HwcApi`) -- with `RefreshRateSelector`/SurfaceFlinger applying
+  the HWC API (`HwcApi`). `RefreshRateSelector`/SurfaceFlinger applies
   the timeout through the chosen mechanism.
 
 The `VsyncModulator` adjusts VSYNC offsets based on workload. It holds a
@@ -834,8 +833,8 @@ class VsyncModulator {
 
 The `early` configuration wakes SurfaceFlinger up earlier (for example when
 a touch event arrives and new frames are expected, or during a refresh-rate
-change), `earlyGpu` applies while frames fall back to GPU composition, and
-`late` is the default for predictable workloads.
+change). `earlyGpu` applies while frames fall back to GPU composition. `late`
+is the default for predictable workloads.
 
 ### 12.2.13 Latch Unsignaled
 
@@ -876,8 +875,8 @@ SurfaceFlinger integrates with Android's power management through:
      (the display controller shows a static image).
 
 3. **CPU Load Notification**: The `ICEPowerCallback::notifyCpuLoadUp()`
-   callback warns the power system when the CPU load is about to increase
-   (e.g., a burst of transactions is being processed).
+   callback warns the power system about a coming CPU load increase
+   (e.g., a burst of transactions is in process).
 
 ### 12.2.15 Display Brightness and Color Management
 
@@ -896,7 +895,7 @@ SurfaceFlinger manages the display's color pipeline:
   daltonizer for color blindness).
 
 - **Region sampling**: The `RegionSamplingThread` samples pixel values from
-  a specified screen region, used by the status bar to adjust its text color
+  a specified screen region. The status bar uses this to adjust its text color
   for readability against the background content.
 
 ### 12.2.16 Boot Stages
@@ -923,9 +922,9 @@ SurfaceFlinger is deeply intertwined with the graphics pipeline covered in
 other chapters:
 
 - **Chapter 13 (Graphics Render Pipeline)**: The BufferQueue producer-consumer
-  model that feeds buffers to SurfaceFlinger, plus detailed coverage of the
+  model that feeds buffers to SurfaceFlinger. It also covers the
   CompositionEngine, RenderEngine (Skia), and the frame-by-frame compositing
-  algorithm.
+  algorithm in detail.
 - **Chapter 10 (HAL)**: The HWComposer HAL interface and its AIDL definition.
 
 ---
@@ -972,9 +971,9 @@ The comment in `InputManager.cpp` describes the complete pipeline:
  */
 ```
 
-This comment is stale with respect to the code just below it, though: the
-constructor builds the listener chain bottom-up, each stage wrapping the one
-constructed before it, and it places `InputFilter` after the
+This comment is stale with respect to the code just below it, though. The
+constructor builds the listener chain bottom-up, and each stage wraps the one
+constructed before it. It places `InputFilter` after the
 `InputDeviceMetricsCollector`, not right after the
 `UnwantedInteractionBlocker`. The wiring that actually results is:
 
@@ -1163,9 +1162,9 @@ system's telemetry pipeline.
 
 **InputFilter**
 
-Applies filtering rules defined by the system. This is used for accessibility
-features (e.g., slow keys, sticky keys) and for the `InputFilter` AIDL
-interface that allows the Rust component to apply additional filtering logic:
+Applies filtering rules defined by the system. It serves accessibility
+features (e.g., slow keys, sticky keys). It also serves the `InputFilter` AIDL
+interface, which lets the Rust component apply additional filtering logic:
 
 ```cpp
 mInputFilter = std::make_unique<InputFilter>(
@@ -1354,7 +1353,7 @@ default ANR timeout), the dispatcher notifies the policy:
 
 1. The policy (InputManagerService in system_server) shows the ANR dialog.
 2. The user can choose to wait or force-close the application.
-3. If force-closed, all pending events for that window are cancelled.
+3. If force-closed, all pending events for that window are canceled.
 
 ### 12.3.10 Touch State Tracking
 
@@ -1474,9 +1473,9 @@ The Rust implementation is bootstrapped through a C++ callback pattern:
 3. The Rust side creates the `IInputFlingerRust` implementation.
 4. Passes it back to C++ through the callback.
 
-This hybrid approach allows new input filtering and processing logic to be
-written in Rust (with its memory safety guarantees) while maintaining the
-existing C++ infrastructure.
+This hybrid approach lets new input filtering and processing logic be
+written in Rust, with its memory safety guarantees. The existing C++
+infrastructure stays in place.
 
 ### 12.3.15 The InputManager Binding
 
@@ -1529,8 +1528,8 @@ pipeline runs in native threads within `system_server`'s process.
 ## 12.4 AudioFlinger Overview
 
 AudioFlinger is the native service responsible for mixing and routing audio
-streams. It runs as a standalone process (`audioserver`) and is one of the
-most mature native services in Android, with roots going back to the earliest
+streams. It runs as a standalone process (`audioserver`). It is one of the
+most mature native services in Android, and its roots go back to the earliest
 versions of the platform.
 
 ### 12.4.1 Source Location
@@ -1586,10 +1585,10 @@ graph TB
     RT -->|Shared memory| AR
 ```
 
-Note that the `PatchPanel` sits on the control path, not the data path: it
+Note that the `PatchPanel` sits on the control path, not the data path. It
 creates and tears down audio patches that decide which HAL device each
-thread is connected to, while the mixed PCM data is written by the playback
-thread directly to its HAL output stream.
+thread is connected to. The playback thread writes the mixed PCM data
+directly to its HAL output stream.
 
 AudioFlinger uses shared memory (ashmem/memfd) buffers for zero-copy audio
 data transfer between applications and the mixer threads. This is critical
@@ -1778,9 +1777,9 @@ graph TB
 CameraService enforces strict resource arbitration:
 
 - By default only one client can use a camera device at a time (with
-  priority-based eviction for foreground vs. background apps), though
-  CameraService also supports a shared mode (the `sharedMode` flag on
-  connect) in which several clients share one camera device.
+  priority-based eviction for foreground vs. background apps).
+  However, CameraService also supports a shared mode (the `sharedMode` flag on
+  connect). In this mode several clients share one camera device.
 - The `CameraServiceWatchdog` monitors HAL responses and triggers recovery
   if the HAL becomes unresponsive.
 - Camera access is subject to `android.permission.CAMERA` and AppOps checks.
@@ -1809,10 +1808,10 @@ graph TD
     BG --> IDLE
 ```
 
-These levels are not a hand-rolled ladder inside CameraService: each
-client's priority is the pair `(oom priority score, process state)`
-obtained from ActivityManager via `ProcessInfoService`, where a lower
-process-state value wins. `PROCESS_STATE_TOP` and
+These levels are not a hand-rolled ladder inside CameraService. Each
+client's priority is the pair `(oom priority score, process state)`.
+CameraService gets the pair from ActivityManager via `ProcessInfoService`.
+A lower process-state value wins. `PROCESS_STATE_TOP` and
 `PROCESS_STATE_BOUND_TOP` outrank `PROCESS_STATE_FOREGROUND_SERVICE`, and
 the persistent states outrank all of them.
 
@@ -1827,9 +1826,9 @@ The eviction algorithm:
 5. The old client receives a `disconnect()` callback and must release all
    resources.
 
-This ensures that a foreground camera app always gets priority over background
-processes, and that system-level camera access (e.g., face unlock) takes
-priority over all user applications.
+This makes sure that a foreground camera app always gets priority over
+background processes. It also makes sure that system-level camera access
+(e.g., face unlock) takes priority over all user applications.
 
 ### 12.5.4 The CameraServiceWatchdog
 
@@ -1897,7 +1896,7 @@ its own process with restricted permissions (using seccomp sandboxing).
 
 This is the legacy codec service. The binary is named
 `android.hardware.media.omx@1.0-service` and only renames its `argv[0]` to
-`media.codec` at startup; it is a vendor-only, 32-bit HIDL HAL that registers
+`media.codec` at startup. It is a vendor-only, 32-bit HIDL HAL that registers
 the `IOmx`/`IOmxStore` interfaces, so it has nothing to do with the modern
 Codec2 path. It uses seccomp-bpf sandboxing to restrict system calls:
 
@@ -1932,9 +1931,10 @@ Key observations:
 
 OMX is legacy and deprecated; this service survives only for older vendor codec
 HALs. The current path is the `mediaswcodec` binary (`main_swcodecservice.cpp`,
-`argv[0]` renamed to `media.swcodec`), which calls `RegisterCodecServices()` to
+`argv[0]` renamed to `media.swcodec`). It calls `RegisterCodecServices()` to
 expose software codecs through the Codec2 (C2) framework described in
-Section 12.6.3, keeping them isolated from hardware codec drivers.
+Section 12.6.3. This keeps the software codecs isolated from hardware codec
+drivers.
 
 ### 12.6.2 MediaExtractorService
 
@@ -2048,8 +2048,8 @@ stateDiagram-v2
     released --> [*]
 ```
 
-The self-transition on running is where the component does its work: it
-processes queued work items there, and there is no separate flushing state
+The self-transition on running is where the component does its work. It
+processes queued work items there. There is no separate flushing state,
 because `flush()` is invoked while the component stays in the running state.
 
 The component processes work items from an input queue:
@@ -2402,23 +2402,27 @@ graph TB
 The `freeCache()` method is called when disk space runs low, and it picks
 its victims per-UID rather than globally by age
 (`frameworks/native/cmds/installd/InstalldNativeService.cpp:2439`). It
-builds one `CacheTracker` per known UID, loads each tracker's stats, and
-pushes them into a priority queue ordered by `getCacheRatio()` -- how far
-that UID is over its allocated cache quota. It then bounces across the
-queue, purging items from whichever UID is currently the most over quota
-and re-checking after each step, until the target free space is reached.
-Unless the caller passes `FLAG_FREE_CACHE_V2_DEFY_QUOTA`, the loop stops
-as soon as the active tracker's ratio drops below quota, so apps living
-within their allowance are left alone. Modification timestamps still
+builds one `CacheTracker` per known UID and loads the stats of each
+tracker. It pushes the trackers into a priority queue ordered by
+`getCacheRatio()` -- how far that UID is over its allocated cache quota.
+
+Next it bounces across the queue. It purges items from whichever UID is
+currently the most over quota and re-checks after each step, until the
+target free space is reached. Unless the caller passes
+`FLAG_FREE_CACHE_V2_DEFY_QUOTA`, the loop stops as soon as the ratio of
+the active tracker drops below quota. As a result, apps that stay within their
+allowance are left alone.
+
+Modification timestamps still
 matter, but only *inside* a tracker: `CacheTracker::loadItems()` sorts
 that UID's items newest-first so the oldest ones are deleted first. The
 old non-quota code path is gone -- without `FLAG_FREE_CACHE_V2` the call
 now returns `"Legacy cache logic no longer supported"`.
 
 Disk quotas are managed through the `QuotaUtils` module
-(`frameworks/native/cmds/installd/QuotaUtils.h`), a set of free helper
-functions over the Linux filesystem quota system (when supported by the
-filesystem):
+(`frameworks/native/cmds/installd/QuotaUtils.h`). It is a set of free helper
+functions over the Linux filesystem quota system, when the filesystem
+supports it:
 
 ```cpp
 // From QuotaUtils.h
@@ -2720,10 +2724,10 @@ This data is used for:
 - Performance analysis: Identifying apps with excessive GPU usage.
 - Debugging: Understanding GPU scheduling behavior.
 
-Both eBPF programs are compiled from restricted C and loaded and pinned
-into the kernel by `bpfloader` at boot; at service startup GpuService
-merely waits for the programs to be loaded (`waitForProgsLoaded()`),
-retrieves the pinned program from `/sys/fs/bpf/`, and attaches it to its
+Both eBPF programs are compiled from restricted C. `bpfloader` loads them
+and pins them into the kernel at boot. At service startup GpuService
+merely waits for the programs to be loaded (`waitForProgsLoaded()`). Then
+it retrieves the pinned program from `/sys/fs/bpf/` and attaches it to its
 tracepoint. They run with minimal overhead because they
 execute directly in kernel context, avoiding context switches.
 
@@ -3127,7 +3131,7 @@ latency for applications like VR that need immediate sensor data.
 ### 12.10.1 servicemanager: The Foundation
 
 `servicemanager` is among the first services `init` starts in the `core`
-class (after early services such as `ueventd` and `logd`) and is the
+class (after early services such as `ueventd` and `logd`). It is the
 cornerstone of Android's service infrastructure. Every other
 service -- both native and Java -- depends on it for registration and
 discovery.
@@ -3467,7 +3471,8 @@ itimerspec timespec {
 ```
 
 When the reference count drops to zero (no more clients), the callback
-notifies the service, which can then decide to stop or enter an idle state.
+notifies the service. The service can then decide to stop or enter an idle
+state.
 
 ### 12.10.9 The tryUnregisterService Method
 
@@ -3521,10 +3526,9 @@ PERFETTO_TE_CATEGORIES_DECLARE(PERFETTO_SM_CATEGORIES);
 #endif
 ```
 
-This allows developers to see service registration and lookup events in
-Perfetto traces, helping diagnose boot-time performance issues (e.g., a
-service taking too long to start because a HAL it depends on is slow to
-register).
+Developers can see service registration and lookup events in Perfetto traces.
+This helps to diagnose boot-time performance issues. For example, a service
+can take too long to start because a HAL it depends on is slow to register.
 
 ### 12.10.12 dumpsys: The Diagnostic Swiss Army Knife
 
@@ -3763,8 +3767,8 @@ static status_t dumpClientsToFd(const sp<IBinder>& service,
 General service-name validation is done by `isValidServiceName()` in
 `ServiceManager.cpp`. Separately, `NameUtil.h` provides a `NativeName`
 parser for *native* (non-AIDL) VINTF instance names of the form
-`{package}/{instance}` -- with no dots allowed in the package part -- used
-for the `hasNativeInstance()` VINTF lookups:
+`{package}/{instance}`. The package part cannot contain dots. The
+`hasNativeInstance()` VINTF lookups use this parser:
 
 > `frameworks/native/cmds/servicemanager/NameUtil.h`
 
@@ -3787,10 +3791,9 @@ struct NativeName {
 };
 ```
 
-A native HAL instance name like `mapper/default` parses as `NativeName`
-(note that a dotted AIDL-style name such as
-`android.hardware.sensors.ISensors/default` is explicitly rejected by the
-`rfind('.', slash)` check above). Framework services use simple names
+A native HAL instance name like `mapper/default` parses as `NativeName`.
+Note that the `rfind('.', slash)` check above explicitly rejects a dotted
+AIDL-style name such as `android.hardware.sensors.ISensors/default`. Framework services use simple names
 (e.g., `SurfaceFlinger`, `installd`, `gpu`).
 
 ---
@@ -3822,10 +3825,10 @@ constexpr const char* kPccDataSuffix = "-pcc";
 
 So a package `com.example.app` gets PCC directories such as
 `/data/user/{userId}/com.example.app-pcc/` (CE) and
-`/data/user_de/{userId}/com.example.app-pcc/` (DE), owned by a separate PCC
-UID derived from the PCC app id that `PackageManagerService` supplies. The
-PCC directories follow the same
-CE/DE split as ordinary app data (12.7.5), so privacy-sensitive state can be
+`/data/user_de/{userId}/com.example.app-pcc/` (DE). A separate PCC UID owns
+them. `PackageManagerService` supplies the PCC app id, and the UID is derived
+from it. The PCC directories follow the same
+CE/DE split as ordinary app data (12.7.5). So privacy-sensitive state can be
 device-encrypted (available at Direct Boot) or credential-encrypted as needed.
 
 The `IInstalld` AIDL surface was extended to carry the PCC identity. The
@@ -3856,10 +3859,10 @@ binder::Status destroyPccData(const std::optional<std::string>& uuid,
 The behavior, from the implementation in `InstalldNativeService.cpp`:
 
 - **`createAppData`** creates the `{pkg}-pcc` CE and DE directories when a
-  valid PCC app id (`pccId`) is supplied in `CreateAppDataArgs` -- installd
-  derives the owning UID via `multiuser_get_uid(userId, pccId)`; if the PCC
-  app id is invalid (the package no longer needs PCC), any existing
-  `{pkg}-pcc` directories are removed.
+  valid PCC app id (`pccId`) is supplied in `CreateAppDataArgs`. installd
+  derives the owning UID with `multiuser_get_uid(userId, pccId)`. If the PCC
+  app id is invalid (the package no longer needs PCC), installd removes any
+  existing `{pkg}-pcc` directories.
 - **`clearAppData`** clears the contents of the `{pkg}-pcc` directories.
 - **`destroyAppData`** (and the dedicated `destroyPccData`) deletes them.
 
@@ -3867,8 +3870,8 @@ The whole feature is gated behind the
 `android.app.privatecompute.flags.enable_pcc_framework_support` aconfig flag.
 
 A related pair of operations, `moveAppDataPath()` and `copyAppDataPath()`, was
-added to move or copy data between application directories (used when migrating
-data into or out of the PCC directories):
+added. They move or copy data between application directories. They are used
+when data moves into or out of the PCC directories:
 
 > `frameworks/native/cmds/installd/InstalldNativeService.h`
 
@@ -3885,17 +3888,17 @@ binder::Status moveAppDataPath(const std::optional<std::string>& uuid,
                                const android::sp<IAppDataOperationCallback>& callback);
 ```
 
-The implementation is deliberately written with the `*at()` family of syscalls
-operating on open file descriptors rather than `std::filesystem`, specifically
-to avoid TOCTOU attacks: a path checked to not be a symlink could be swapped for
-one mid-operation, so working through fds keeps the operation pinned to the
-inode that was verified. The only structural restriction these methods enforce
+The implementation deliberately uses the `*at()` family of syscalls on open
+file descriptors rather than `std::filesystem`. This is specifically to avoid TOCTOU attacks. A
+path that was checked to not be a symlink could be swapped for one
+mid-operation. Work through fds keeps the operation pinned to the inode that was
+verified. The only structural restriction that these methods enforce
 themselves is that both source and destination paths must live under the CE or
-DE app-data roots; the caller is responsible for the higher-level policy.
+DE app-data roots. The caller is responsible for the higher-level policy.
 
-`installd` also tightened storage hygiene in 17: it now verifies source
-ownership in app-data operations, restricts inode quota setup to application
-UIDs, and disables hard inode quotas by default. These are defense-in-depth
+`installd` also tightened storage hygiene in 17. It now verifies source
+ownership in app-data operations. It restricts inode quota setup to application
+UIDs. It disables hard inode quotas by default. These are defense-in-depth
 fixes to the quota and ownership handling described in 12.7.9, not new APIs.
 
 ### 12.11.2 InputFlinger: the InteractionReporter Stage
@@ -3919,10 +3922,10 @@ InputReader
 `InteractionReporter` (in `frameworks/native/services/inputflinger/InteractionReporter.cpp`,
 listed in `Android.bp` at line 93)
 observes the event stream and reports user-interaction signals to interested
-system components -- for example, linking the interaction provider with the
-attention service's wake-up API so that user activity can keep attention-aware
-features awake. It is a pure observer: it sits in the pipeline as a
-`TracedInputListener` and forwards every event unchanged to the dispatcher, so
+system components. For example, it links the interaction provider with the
+attention service's wake-up API, so that user activity can keep attention-aware
+features awake. It is a pure observer. It sits in the pipeline as a
+`TracedInputListener` and forwards every event unchanged to the dispatcher. So
 it adds no behavioral change to event routing.
 
 Correspondingly, `InputManager` owns it as a dedicated member:
@@ -3955,22 +3958,22 @@ class ClientStateRecipient : public IBinder::DeathRecipient,
 };
 ```
 
-When a client process is frozen, `onStateChanged()` fires and the corresponding
+When a client process is frozen, `onStateChanged()` fires. The corresponding
 sensor connection is disabled with a dedicated reason
-(`DISABLED_REASON_PID_FROZEN`, defined in `SensorDevice.h`), pausing event
-delivery; when the process is unfrozen, the connection is re-enabled. The
+(`DISABLED_REASON_PID_FROZEN`, defined in `SensorDevice.h`), and event
+delivery pauses. When the process is unfrozen, the connection is re-enabled. The
 feature is gated by
 `android.hardware.flags.suspend_sensor_event_delivery_on_frozen_pid`.
 
-SensorService also added **per-sensor active-time tracking** in 17: the old
-per-connection `FlushInfo` was refactored into a `SensorConnectionRecord`, and a
+SensorService also added **per-sensor active-time tracking** in 17. The old
+per-connection `FlushInfo` was refactored into a `SensorConnectionRecord`. A
 `UsageStats` struct now tracks each sensor's activation time and total active
-duration, accounting for UID idle suspensions. This surfaces in
+duration, and it accounts for UID idle suspensions. This surfaces in
 `dumpsys sensorservice` and feeds the platform's power-attribution story.
 
 ### 12.11.4 SurfaceFlinger: Mirror with Crop, Display LUTs, and Content Filtering
 
-SurfaceFlinger's internal `mirrorLayer()` gained a crop handle so a mirrored
+SurfaceFlinger's internal `mirrorLayer()` gained a crop handle. With it, a mirrored
 surface can be clipped to a sub-region of the source instead of mirroring the
 whole layer subtree:
 
@@ -3986,9 +3989,9 @@ In 16 this method took only `mirrorFromHandle` and `stopAtHandle`; the
 `cropByHandle` parameter is the 17 addition.
 
 On the color-management side (12.2.15), 17 carries forward per-layer **display
-LUTs** (look-up tables): a layer can opt into a LUT, tracked by the
-`useLuts` flag in its drawing state, and SurfaceFlinger can generate a LUT from
-**SMPTE ST 2094-50** dynamic tone-mapping metadata. The composition path and
+LUTs** (look-up tables). A layer can opt into a LUT, which the
+`useLuts` flag in its drawing state tracks. SurfaceFlinger can also generate a
+LUT from **SMPTE ST 2094-50** dynamic tone-mapping metadata. The composition path and
 `dumpsys SurfaceFlinger` now log both the app-provided and generated LUTs and
 the 2094-50 metadata, which helps diagnose HDR tone-mapping decisions.
 
@@ -4018,26 +4021,30 @@ flags that have not yet been folded into the long-lived
 
 **servicemanager: isolated apps can wait for lazy services.** Earlier releases
 rejected `registerForNotifications()` from isolated app processes outright with
-`EX_SECURITY`, which broke `AServiceManager_waitForService()` for isolated
-clients (such as AICore) trying to reach a lazy service. In 17,
+`EX_SECURITY`. This broke `AServiceManager_waitForService()` for isolated
+clients (such as AICore) that tried to reach a lazy service.
+
+In 17,
 `servicemanager` allows isolated apps to register for notifications and instead
 defers the security decision to registration time. A new `RegistrationCallback`
-struct records the waiting client's UID, and the `allowIsolated` checks live in
+struct records the waiting client's UID. The `allowIsolated` checks live in
 the service-lookup path (`tryGetBinder()`, used by `getService()` and
-`checkService()`) and in `dispatchRegistrationCallbacks()`, which both
-`addService()` and `registerForNotifications()` go through before firing any
-callback. If a service registered with `allowIsolated=false`, notifications are
+`checkService()`). They also live in `dispatchRegistrationCallbacks()`. Both
+`addService()` and `registerForNotifications()` go through it before they fire
+any callback.
+
+If a service registered with `allowIsolated=false`, notifications are
 silently dropped for isolated clients, so no restricted service is exposed. The
-net effect: an isolated client can now successfully wait for and connect to a
-lazy service that opts into isolated access, without leaking services that do
-not.
+net effect is that an isolated client can now wait for and connect to a
+lazy service that opts into isolated access. Services that do not opt in
+are not leaked.
 
 > `frameworks/native/cmds/servicemanager/ServiceManager.cpp`
 
 **dumpsys: `-w` waits for a lazy service.** `dumpsys` gained a `-w` flag,
 mirroring `cmd -w`. With it, `dumpsys` waits indefinitely for a lazy (on-demand)
-service to become ready before dumping, instead of failing fast when the service
-is not yet registered:
+service to become ready before dumping. Without this flag, the command fails fast when
+the service is not yet registered:
 
 > `frameworks/native/cmds/dumpsys/dumpsys.cpp`
 
@@ -4045,16 +4052,16 @@ is not yet registered:
 -w: wait for service indefinitely to be ready before dumping
 ```
 
-This pairs naturally with the lazy-service lifecycle described in 12.10.9: a
-service that only starts on demand can now be dumped with
+This pairs naturally with the lazy-service lifecycle described in 12.10.9.
+A service that only starts on demand can now be dumped with
 `dumpsys -w <service>` without a race against its first client.
 
 **GpuService: GPU work tracking on laptops.** The eBPF GPU-work tracker (12.8.4)
 no longer hard-requires the `power/gpu_work_period` kernel tracepoint on the
 laptop form factor, where that tracepoint may be absent. GpuService also moved
-its BPF maps to `BpfMap::init` (rather than constructing them) so that a load
-failure is handled gracefully instead of aborting, and dropped a stale ANGLE
-`angle_feature_overrides` flag reference. These are robustness changes to the
+its BPF maps to `BpfMap::init` (rather than constructing them). A load
+failure is therefore handled gracefully instead of aborting. GpuService also
+dropped a stale ANGLE `angle_feature_overrides` flag reference. These are robustness changes to the
 monitoring subsystem; the GpuStats, GpuMem, GpuWork, and ANGLE-as-system-driver
 features described in 12.8 are otherwise unchanged.
 
@@ -4196,10 +4203,10 @@ In the output, identify:
 
 ### Exercise 7: servicemanager Internals
 
-Note that `dumpsys manager` prints nothing: `ServiceManager` never
+Note that `dumpsys manager` prints nothing. `ServiceManager` never
 overrides `dump()`, so it inherits `BBinder::dump()`
-(`frameworks/native/libs/binder/Binder.cpp:608`), which writes no output
-and returns `NO_ERROR`. Inspect the registry through the service list
+(`frameworks/native/libs/binder/Binder.cpp:608`). That method writes no
+output and returns `NO_ERROR`. Inspect the registry through the service list
 instead.
 
 ```bash
@@ -4437,8 +4444,8 @@ adb shell cat /proc/$(pidof vndservicemanager)/cmdline | tr '\0' ' '
 ```
 
 The vendor servicemanager is compiled with `-DVENDORSERVICEMANAGER`, which
-disables VINTF manifest checking and Perfetto tracing, and changes the
-SELinux context lookup to use `vendor_service_contexts` instead of
+disables VINTF manifest checking and Perfetto tracing. It also changes
+the SELinux context lookup to use `vendor_service_contexts` instead of
 `service_contexts`.
 
 ---
@@ -4476,9 +4483,9 @@ adb shell dumpsys sensorservice | grep "active"
 adb shell dumpsys sensorservice | grep "direct"
 ```
 
-Use a compass or level app on the device. Then dump the sensor service
-to see which physical sensors (accelerometer, gyroscope, magnetometer) are
-activated and how they feed into the virtual rotation vector sensor.
+Use a compass or level app on the device. Then dump the sensor service.
+See which physical sensors (accelerometer, gyroscope, magnetometer) are
+activated. See also how they feed into the virtual rotation vector sensor.
 
 ### Exercise 18: servicemanager SELinux Policy
 
@@ -4570,8 +4577,7 @@ In the trace, follow a single touch event through:
 9. **Display**: The frame appears on screen.
 
 The total end-to-end latency from touch to photons is typically 40-100ms
-on modern devices, with the pipeline contributing approximately 4-8ms of
-that total.
+on modern devices. The pipeline contributes about 4-8ms of that total.
 
 ---
 
@@ -4693,6 +4699,6 @@ All source paths referenced in this chapter are relative to the AOSP root:
 | SensorService | `frameworks/native/services/sensorservice/` |
 | dumpsys | `frameworks/native/cmds/dumpsys/` |
 
-In the next chapters, we will dive deeper into specific subsystems: the
-graphics composition pipeline (Chapter 13), the audio pipeline
+The next chapters describe specific subsystems in more detail. They cover
+the graphics composition pipeline (Chapter 13), the audio pipeline
 (Chapter 15), and the media/camera pipeline (Chapter 16).

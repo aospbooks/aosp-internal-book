@@ -4404,27 +4404,30 @@ in this chapter:
 # Chapter 5: Kernel
 
 The Linux kernel is the foundation of every Android device. It manages hardware,
-enforces security boundaries, schedules processes, and provides the low-level
-primitives -- such as Binder IPC and shared memory -- on which the entire Android
-framework is built. Yet the kernel running on an Android device is not a stock
-upstream Linux kernel. Over more than fifteen years, Android has accumulated a
-set of kernel modifications, out-of-tree drivers, and configuration requirements
-that distinguish it from any desktop or server Linux distribution.
+enforces security boundaries, and schedules processes. It also provides the
+low-level primitives, such as Binder IPC and shared memory, on which the entire
+Android framework is built. Yet the kernel running on an Android device is not a stock
+upstream Linux kernel. Over more than fifteen years, Android has collected a
+set of kernel modifications, out-of-tree drivers, and configuration requirements.
+These make it different from any desktop or server Linux distribution.
 
-This chapter examines the Android kernel in depth: what Android adds to upstream
-Linux, how the Generic Kernel Image (GKI) architecture reduces fragmentation,
-how individual Android-specific subsystems work at the driver level, how device
-trees describe hardware, how kernel configuration is managed across releases, how
-the kernel integrates into the AOSP build system, and how to debug kernel-level
-problems on real and emulated devices.
+This chapter examines the Android kernel in depth. It covers these topics:
+
+- What Android adds to upstream Linux.
+- How the Generic Kernel Image (GKI) architecture reduces fragmentation.
+- How individual Android-specific subsystems work at the driver level.
+- How device trees describe hardware.
+- How kernel configuration is managed across releases.
+- How the kernel integrates into the AOSP build system.
+- How to debug kernel-level problems on real and emulated devices.
 
 Throughout this chapter, we reference real files in the AOSP source tree. Every
 path, config fragment, and module name cited here can be found in that tree. The
 chapter is current as of Android 17, whose Android Common Kernel branch is
 `android17-6.18` (upstream LTS 6.18). Section 5.8 collects the kernel-layer
-changes that landed with Android 17, including the new GKI branch, the maturing
-16 KB page size story, and the relocation of `fs_mgr` and its sibling libraries
-out of `system/core` into the new `system/fs/` tree.
+changes that landed with Android 17. These include the new GKI branch and the
+maturing 16 KB page size story. They also include the relocation of `fs_mgr` and
+its sibling libraries out of `system/core` into the new `system/fs/` tree.
 
 ---
 
@@ -4451,7 +4454,7 @@ categories:
 5. **Test and debug infrastructure** integrated with Android's testing pipeline
 
 The goal is to minimize the delta from upstream. Many patches that originated in
-the Android tree have been upstreamed over the years -- wakelocks (now
+the Android tree have been upstreamed over the years. Wakelocks (now
 `PM_WAKELOCKS`), the low memory killer (replaced by PSI-based userspace lmkd),
 and `ashmem` (being superseded by `memfd`) are all examples of this convergence.
 
@@ -4559,9 +4562,9 @@ base config fragments. In the Android 16 (branch `b`) config for kernel 6.12:
 
 **Source**: `kernel/configs/b/android-6.12/android-base.config`, line 2.
 
-This single line tells the story of a multi-year migration: the kernel's
-in-process OOM killer has been replaced by a sophisticated userspace daemon that
-uses PSI events for more intelligent memory management decisions.
+This single line tells the story of a multi-year migration. The kernel's in-process OOM killer
+has been replaced by a sophisticated userspace daemon. The daemon uses
+PSI events for more intelligent memory management decisions.
 
 ---
 
@@ -4570,9 +4573,9 @@ uses PSI events for more intelligent memory management decisions.
 ### 5.2.1 The Fragmentation Problem
 
 Before GKI, every Android device shipped a unique kernel. SoC vendors (Qualcomm,
-MediaTek, Samsung LSI, etc.) would take an Android Common Kernel branch, apply
-hundreds of patches for their SoC, and pass it to device OEMs who would apply
-yet more patches for their specific hardware. The result was a deeply fragmented
+MediaTek, Samsung LSI, etc.) would take an Android Common Kernel branch and apply
+hundreds of patches for their SoC. They would then pass it to device OEMs, who
+would apply more patches for their specific hardware. The result was a deeply fragmented
 ecosystem:
 
 - Security patches could not be delivered to kernels without vendor cooperation
@@ -4680,8 +4683,8 @@ consists of:
 
 1. **A symbol list** -- the set of kernel functions and variables that vendor
    modules are allowed to call. The size of this list varies by branch as the
-   KMI is curated; for kernel 6.6 it contains approximately 38,840 entries, while
-   the newer 6.18 branch ships a tighter list of roughly 22,961 entries.
+   KMI is curated. For kernel 6.6 it contains about 38,840 entries. The newer
+   6.18 branch ships a tighter list of roughly 22,961 entries.
 
     **Source**: `kernel/prebuilts/6.6/arm64/abi_symbollist`,
     `kernel/prebuilts/6.18/arm64/abi_symbollist`
@@ -4723,10 +4726,10 @@ independently of kernel updates, and vice versa.
 
 ### 5.2.4 KMI Symbol Stability Guarantees
 
-The config option `CONFIG_MODVERSIONS=y` (present in every non-empty Android
-base config fragment through `b/android-6.12`; the Android 17 fragments under
-`c/` and `d/` are deliberately empty -- see Section 5.5.2)
-enables compile-time CRC generation for every exported symbol. When a module is
+The config option `CONFIG_MODVERSIONS=y` enables compile-time CRC generation
+for every exported symbol. It is present in every non-empty Android base config
+fragment through `b/android-6.12`. The Android 17 fragments under `c/` and `d/`
+are deliberately empty (see Section 5.5.2). When a module is
 loaded, the kernel checks that the CRCs in the module match the CRCs in the
 running kernel. If they do not match, the module load fails with an error like:
 
@@ -4747,8 +4750,8 @@ hooks** -- lightweight tracepoints that vendors can register callbacks for:
   can be attached and detached at runtime, but must not be called from atomic
   context.
 - **`android_rvh_*`** (restricted vendor hooks) -- hooks placed in
-  performance-critical or atomic paths (scheduler, IRQ handling) that can only
-  be registered once at boot and can never be detached.
+  performance-critical or atomic paths (scheduler, IRQ handling). They can
+  be registered only once at boot, and can never be detached.
 
 The KMI symbol list includes vendor hook registration functions:
 
@@ -4843,7 +4846,7 @@ BOARD_KERNEL_VERSION := 6.18.16-android17-1-gb61cd7ae4209-ab15097451
 **Source**: `kernel/prebuilts/6.18/arm64/16k/kernel_version.mk`
 
 For comparison, the older Android 15 / kernel 6.6 prebuilt reads
-`6.6.119-android15-8-gf79a8f9ddb6e-ab14880967-4k`, which decodes the same way
+`6.6.119-android15-8-gf79a8f9ddb6e-ab14880967-4k`. This decodes the same way
 (LTS 6.6 patch level 119, Android 15 ACK branch, eighth release).
 
 **Source**: `kernel/prebuilts/6.6/arm64/kernel_version.mk`
@@ -4901,10 +4904,10 @@ The complete lineage of supported kernel versions:
 | android17-6.18 | 6.18 | 17 | 2025-11 | 2030-07 |
 
 The `android17-6.18` branch is the newest entry. At the time the Android 17
-source tree was cut it was still in its pre-release phase: its entry carries a
+source tree was cut it was still in its pre-release phase. Its entry carries a
 `<no-releases reason="branch in pre-release phase"/>` marker rather than a list
-of individual LTS releases, because no quarterly GKI release had been published
-for it yet. Note also that the Android 11 (`r/`) kernel config fragments were
+of individual LTS releases. This is because no quarterly GKI release had been
+published for it yet. Note also that the Android 11 (`r/`) kernel config fragments were
 removed in this cycle, retiring the oldest still-tracked config directory.
 
 ### 5.2.8 How Vendors Extend Without Forking
@@ -4997,9 +5000,8 @@ Key aspects of the transaction model:
    shared memory region in the server process's address space. When a client
    sends a transaction, the driver copies data directly from the client's
    user-space buffer into the server's mmap'ed region. This means data is
-   copied only once (client user-space to server kernel-mapped buffer), rather
-   than the two copies required by traditional IPC mechanisms (client to kernel,
-   kernel to server).
+   copied only once (client user-space to server kernel-mapped buffer). Traditional
+   IPC mechanisms require two copies (client to kernel, kernel to server).
 
 2. **Object translation**: Binder handles (references to remote objects) are
    translated by the driver as transactions cross process boundaries. The driver
@@ -5090,8 +5092,8 @@ own isolated Binder namespaces.
 #### From ION to DMA-BUF Heaps
 
 The ION memory allocator was Android's original solution for allocating
-physically contiguous or otherwise specially-constrained memory buffers for use
-by GPUs, cameras, video codecs, and display hardware. ION was an
+physically contiguous or otherwise specially-constrained memory buffers. GPUs,
+cameras, video codecs, and display hardware used these buffers. ION was an
 Android-specific driver carried in the mainline kernel's staging area
 (`drivers/staging/android/ion`); it was never promoted out of staging before
 being removed.
@@ -5208,16 +5210,16 @@ graph TB
 
 #### How FUSE Passthrough Works
 
-FUSE passthrough allows the FUSE daemon (MediaProvider) to indicate that certain
-file operations should be handled directly by the kernel, bypassing the FUSE
+FUSE passthrough lets the FUSE daemon (MediaProvider) indicate that certain file
+operations should be handled directly by the kernel. These operations bypass the FUSE
 userspace daemon for data transfer:
 
 1. The app opens a file through the FUSE mount (e.g.,
    `/storage/emulated/0/Download/photo.jpg`).
 2. The FUSE kernel module sends an `OPEN` request to MediaProvider.
-3. MediaProvider checks permissions and, if authorized, opens the underlying file
-   on the real filesystem and tells the FUSE kernel module to use passthrough for
-   this file.
+3. MediaProvider checks permissions. If the app is authorized, MediaProvider
+   opens the underlying file on the real filesystem. It then tells the FUSE
+   kernel module to use passthrough for this file.
 4. Subsequent `read()` and `write()` calls from the app go directly from the
    FUSE kernel module to the lower filesystem, bypassing MediaProvider entirely.
 
@@ -5292,7 +5294,7 @@ Key design characteristics:
    can be independently present or absent.
 
 2. **Demand paging**: When a process reads a block that has not yet been
-   delivered, the kernel blocks the read and signals the userspace data loader
+   delivered, the kernel blocks the read. It signals the userspace data loader
    (via the `.pending_reads` special file) to fetch that block.
 
 3. **Compression support**: Blocks can be stored compressed using LZ4 or Zstd:
@@ -5355,13 +5357,13 @@ Ashmem differs from standard POSIX shared memory (`shm_open`) in several ways:
   pages under memory pressure
 - Regions are reference-counted by file descriptors -- when the last fd is
   closed, the memory is freed
-- A region's protection can only ever be narrowed via the
-  `ASHMEM_SET_PROT_MASK` ioctl (true file seals with `F_ADD_SEALS` exist only
-  on the `memfd` replacement path in `system/core/libcutils/ashmem-dev.cpp`)
+- A region's protection can only ever be narrowed, through the
+  `ASHMEM_SET_PROT_MASK` ioctl. True file seals with `F_ADD_SEALS` exist only
+  on the `memfd` replacement path in `system/core/libcutils/ashmem-dev.cpp`.
 
-While ashmem remains required for backward compatibility, new code is encouraged
-to use `memfd_create()`, which is the upstream Linux equivalent and provides
-similar functionality through the standard kernel API.
+Ashmem remains required for backward compatibility. New code is encouraged to use
+`memfd_create()`. It is the upstream Linux equivalent and provides similar
+functionality through the standard kernel API.
 
 ### 5.3.6 Wakelocks and Power Management
 
@@ -5392,8 +5394,8 @@ The wakelock interface is exposed through:
 - `/sys/power/wake_unlock` -- write a wakelock name to release
 
 The userspace PowerManager service (in system_server) uses these interfaces to
-implement Android's opportunistic suspend model, where the system aggressively
-tries to enter suspend unless something holds a wakelock.
+implement Android's opportunistic suspend model. In this model the system
+aggressively tries to enter suspend unless something holds a wakelock.
 
 ### 5.3.7 Low Memory Killer Daemon (lmkd)
 
@@ -5591,8 +5593,8 @@ mapped to the kernel's dm-verity error-handling modes by
 - **Logging** (`ignore_corruption`): verification failures are logged but
   reads succeed. Used during development.
 - **EIO** (`androidboot.veritymode=eio`): no dm-verity error-mode argument is
-  passed, so the kernel's default behavior applies -- the read of a corrupted
-  block returns `EIO`, and the device continues operating. Note that when
+  passed, so the kernel's default behavior applies. The read of a corrupted
+  block returns `EIO`, and the device continues to run. Note that when
   `androidboot.veritymode` is absent entirely, `fs_mgr` defaults to
   *enforcing* (`restart_on_corruption`), not EIO.
 
@@ -5626,9 +5628,9 @@ CONFIG_BLK_INLINE_ENCRYPTION=y   # Block-level inline encryption
 #### File-Based Encryption (FBE)
 
 Android uses file-based encryption rather than full-disk encryption. This allows
-different files to be encrypted with different keys, enabling features like
-Direct Boot (where the device can show the lock screen and receive phone calls
-before the user unlocks the device).
+different files to be encrypted with different keys. This makes features like
+Direct Boot possible. With Direct Boot, the device can show the lock screen and
+receive phone calls before the user unlocks the device.
 
 The encryption configuration is visible in the emulator's fstab:
 
@@ -5728,19 +5730,19 @@ graph TB
 ```
 
 The BPF loader (`bpfloader`) is one of the first services started during boot.
-It loads a fixed list of `.bpf` ELF objects from `/system/etc/bpf/` (the list is
-hard-coded in `system/bpf/loader/bpfloader.rs` -- entries like
-`/system/etc/bpf/gpuMem.bpf` and `/system/etc/bpf/cputimeinstate/timeInState.bpf`)
-and additionally scans `/vendor/etc/bpf/` for vendor-supplied `.o` files
-(`loadAllElfObjects()` in `system/bpf/loader/Loader.cpp`), pinning the results
+It loads a fixed list of `.bpf` ELF objects from `/system/etc/bpf/`. The list is
+hard-coded in `system/bpf/loader/bpfloader.rs`, with entries like
+`/system/etc/bpf/gpuMem.bpf` and `/system/etc/bpf/cputimeinstate/timeInState.bpf`.
+It also scans `/vendor/etc/bpf/` for vendor-supplied `.o` files
+(`loadAllElfObjects()` in `system/bpf/loader/Loader.cpp`). It pins the results
 into the BPF filesystem at `/sys/fs/bpf/`. Other services like `netd` and the
 tethering service then attach to these pinned programs.
 
 Key eBPF use cases on Android:
 
 1. **Per-UID traffic accounting**: BPF programs attached to cgroup socket hooks
-   count bytes sent and received per UID, enabling the Settings app's data usage
-   display and per-app data limits.
+   count bytes sent and received per UID. This supports the Settings app's data
+   usage display and per-app data limits.
 
 2. **Network firewall**: BPF programs implement the iptables replacement for
    per-app network access control, providing both better performance and more
@@ -5769,7 +5771,7 @@ CONFIG_DEFAULT_SECURITY_SELINUX=y
 **Source**: `kernel/configs/b/android-6.12/android-base.config`, lines 224-226, 57
 
 Android runs SELinux in enforcing mode on production devices. Every process,
-file, socket, and kernel object is assigned a security label, and the SELinux
+file, socket, and kernel object is assigned a security label. The SELinux
 policy (compiled from `.te` files in the AOSP tree) defines which operations are
 allowed between labeled objects.
 
@@ -5802,10 +5804,10 @@ process is killed with SIGSYS. This provides defense in depth: even if an
 attacker escapes the SELinux sandbox, they still cannot invoke dangerous system
 calls.
 
-Android's seccomp policies are defined per-architecture and are installed in
-the forked child during process specialization: `SpecializeCommon()` in
+Android's seccomp policies are defined per-architecture. They are installed in
+the forked child during process specialization. `SpecializeCommon()` in
 `frameworks/base/core/jni/com_android_internal_os_Zygote.cpp` calls
-`SetUpSeccompFilter()` after the fork, choosing the app, app-zygote, or system
+`SetUpSeccompFilter()` after the fork. It chooses the app, app-zygote, or system
 filter based on the new process's UID.
 
 ### 5.3.12 Cgroups and Resource Control
@@ -5861,9 +5863,9 @@ The device tree is a data structure that describes the hardware topology of a
 system. On ARM and RISC-V platforms, the bootloader passes a device tree blob
 (DTB) to the kernel, which uses it to discover and configure hardware devices.
 
-The device tree is necessary because, unlike x86 systems (which use ACPI for
-hardware discovery), ARM and RISC-V systems do not have a standard mechanism for
-the kernel to probe hardware. The device tree fills this gap.
+The device tree is necessary because ARM and RISC-V systems do not have a
+standard mechanism for the kernel to probe hardware. x86 systems are different,
+because they use ACPI for hardware discovery. The device tree fills this gap.
 
 The Android base config enforces that at least one hardware description mechanism
 is present:
@@ -5965,17 +5967,17 @@ graph TB
 ```
 
 The DTBO partition is a standard Android partition that contains one or more
-overlays. During boot, the bootloader reads the base DTB (typically compiled into
-the kernel image or stored in a separate partition), reads the overlays from the
-DTBO partition, applies them using the libufdt library, and passes the merged
-result to the kernel.
+overlays. During boot, the bootloader reads the base DTB. The base DTB is
+typically compiled into the kernel image or stored in a separate partition. The
+bootloader reads the overlays from the DTBO partition and applies them with the
+libufdt library. Then it passes the merged result to the kernel.
 
 ### 5.4.4 Emulator (Goldfish) Device Tree
 
 The Android emulator uses device tree to describe its virtual hardware, but it
 does not carry a checked-in DTB of its own. The one precompiled DTB shipped
-alongside the virtual-device common modules belongs to a different target: it
-is the device tree for Arm's Fixed Virtual Platform (FVP) Base RevC model,
+alongside the virtual-device common modules belongs to a different target. It
+is the device tree for Arm's Fixed Virtual Platform (FVP) Base RevC model. It is
 distributed together with FVP-specific modules such as `vexpress-config.ko` and
 `pl111_drm.ko`:
 
@@ -6112,7 +6114,7 @@ sequenceDiagram
 
 For example, the virtio MMIO transport driver matches the `"virtio,mmio"`
 compatible string. When the device tree contains a `virtio_mmio` node, the
-kernel automatically loads and probes the virtio MMIO driver, which then
+kernel automatically loads and probes the virtio MMIO driver. This driver then
 discovers individual virtio devices (network, block, GPU, etc.) through the
 virtio device negotiation protocol.
 
@@ -6287,21 +6289,24 @@ kernel/configs/
 
 **Source**: `kernel/configs/`
 
-The directory naming convention uses successive release letters, roughly
-tracking the first letter of the Android dessert codename: `v` for Vanilla Ice
-Cream (Android 15), `b` for Baklava (Android 16), and `c` for Android 17
-(kernel 6.18); `d/android-6.18` is a placeholder for the next release letter,
-pre-created by `tools/bump.py`. In both directories the `android-base.config`
-fragment is empty -- deliberately so, not as pending work: for the 6.18 branch
-AOSP declares no config requirements (the GKI tests already enforce that a GKI
-kernel is running on the device), and the TV-specific requirements were later
-explicitly removed as well. Only the conditional fragment's
-`<kernel minlts="6.18.0" />` pin remains, so the VTS tests and the framework
-compatibility matrix, which consume these same fragments, enforce no 6.18
-config-option requirements (see Section 5.8.1). At
-the same time the oldest tracked directory, `r/` (the Android 11 fragments),
-was removed in this cycle, so the tree no longer carries pre-android12 config
-sets.
+The directory naming convention uses successive release letters. They roughly
+follow the first letter of the Android dessert codename. `v` is for Vanilla Ice
+Cream (Android 15), `b` is for Baklava (Android 16), and `c` is for Android 17
+(kernel 6.18). `d/android-6.18` is a placeholder for the next release letter,
+pre-created by `tools/bump.py`.
+
+In both directories the `android-base.config` fragment is empty. This is
+deliberate, not pending work. For the 6.18 branch AOSP declares no config
+requirements, because the GKI tests already enforce that a GKI kernel is running
+on the device. The TV-specific requirements were later explicitly removed as
+well.
+
+Only the conditional fragment's `<kernel minlts="6.18.0" />` pin remains.
+As a result, the VTS tests and the framework compatibility matrix enforce no
+6.18 config-option requirements (see Section 5.8.1). They consume these same
+fragments. At the same time the oldest tracked directory, `r/` (the Android 11
+fragments), was removed in this cycle. So the tree no longer carries pre-android12
+config sets.
 
 ### 5.5.3 Base Configuration Fragment
 
@@ -6416,8 +6421,8 @@ Spectre (Retpoline).
 
 ### 5.5.5 Configuration Differences Across Kernel Versions
 
-Comparing the Android 15 (v) config for kernel 6.6 with the Android 16 (b)
-config for kernel 6.12 reveals the evolution of Android's kernel requirements:
+The Android 15 (v) config for kernel 6.6 differs from the Android 16 (b) config
+for kernel 6.12. The differences show how Android's kernel requirements changed:
 
 | Config Option | 6.6 (Android 15) | 6.12 (Android 16) | Notes |
 |--------------|-------------------|---------------------|-------|
@@ -6507,10 +6512,10 @@ kernel/configs/b/android-6.12/
 
 The TV base config is nearly identical to the standard base config, reflecting
 Android TV's convergence with the mainline Android platform. The actual
-differences are small: the TV base config omits the unconditional
-`CONFIG_SCHED_DEBUG=y` line (its conditional XML instead requires
-`CONFIG_SCHED_DEBUG=y` only when `CONFIG_DEBUG_FS=y`), and the TV conditional
-XML drops the ARM64 `CONFIG_SHADOW_CALL_STACK` requirement that the standard
+differences are small. The TV base config omits the unconditional
+`CONFIG_SCHED_DEBUG=y` line. Its conditional XML instead requires
+`CONFIG_SCHED_DEBUG=y` only when `CONFIG_DEBUG_FS=y`. The TV conditional
+XML also drops the ARM64 `CONFIG_SHADOW_CALL_STACK` requirement that the standard
 `android-base-conditional.xml` imposes.
 
 ### 5.5.9 Configuration Validation
@@ -6537,10 +6542,10 @@ The build rules are generated from the config fragments through
 
 The `kernel/configs/tools/check_fragments.sh` script checks that the config
 fragments are consistent with the Kconfig files of an Android Common Kernel
-checkout (supplied via `-k path-to-kernel`): for each architecture it runs
-`make allnoconfig`, merges the fragments in with `scripts/kconfig/merge_config.sh`,
-and verifies that every option from each fragment survives in the resulting
-`.config`. It does not check the conditional XML fragments.
+checkout. The checkout is supplied with `-k path-to-kernel`. For each
+architecture the script runs `make allnoconfig`. Then it merges the fragments in
+with `scripts/kconfig/merge_config.sh`. Last, it verifies that every option from
+each fragment survives in the resulting `.config`. It does not check the conditional XML fragments.
 
 **Source**: `kernel/configs/tools/check_fragments.sh`
 
@@ -6600,8 +6605,8 @@ EMULATOR_KERNEL_FILE := $(KERNEL_ARTIFACTS_PATH)/kernel-$(TARGET_KERNEL_USE)-gz
 Note the `?=` assignment: `TARGET_KERNEL_USE` defaults to 6.12 and can in
 principle be overridden on the command line to select a different kernel
 version. In practice, `prebuilts/qemu-kernel/arm64/` (like its `x86_64` and
-`arm64_16k` siblings) currently contains only `6.12`, so the override only
-becomes useful once another version is checked into that prebuilt tree.
+`arm64_16k` siblings) currently contains only `6.12`. So the override becomes
+useful only once another version is checked into that prebuilt tree.
 
 #### Building from Source with Kleaf
 
@@ -6682,9 +6687,10 @@ graph TB
 ```
 
 The emulator's arm64 board config defines this categorization explicitly. Both
-ramdisk lists ship in the vendor ramdisk and are loaded during first-stage init
-so that boot can reach second-stage init; they differ only in where the `.ko`
-files come from (the goldfish device modules vs the GKI modules directory):
+ramdisk lists ship in the vendor ramdisk. They are loaded during first-stage
+init, so that boot can reach second-stage init. The two lists differ only in
+where the `.ko` files come from (the goldfish device modules or the GKI modules
+directory):
 
 ```makefile
 # Boot-critical modules taken from the goldfish device modules directory
@@ -6753,7 +6759,7 @@ BOARD_RAMDISK_USE_LZ4 := true
 
 **Source**: `device/generic/goldfish/board/BoardConfigCommon.mk`, lines 76-80
 
-Boot image version 4 is the latest format, supporting:
+Boot image version 4 is the latest format. It supports:
 
 - Separate vendor boot image (`vendor_boot.img`)
 - Generic ramdisk in `boot.img`
@@ -7097,7 +7103,7 @@ recompiling the kernel. They work by inserting a breakpoint instruction at the
 target address and executing a handler when it is hit.
 
 kprobes require `CONFIG_KPROBES=y`, which the Android base config does not
-mandate -- whether a given GKI kernel enables it is a defconfig decision, not a
+mandate. Whether a given GKI kernel enables it is a defconfig decision, not a
 compliance requirement. When available and combined with eBPF
 (`CONFIG_BPF_SYSCALL=y`, `CONFIG_BPF_JIT=y`), kprobes become a powerful tool
 for custom kernel instrumentation.
@@ -7123,8 +7129,8 @@ eBPF programs loaded at boot from `/system/etc/bpf/` provide:
 ### 5.7.6 Kernel Crash Analysis with debuggerd
 
 When a process crashes on Android, `debuggerd` (specifically `crash_dump`)
-captures a tombstone -- a detailed crash report containing register state, stack
-traces, memory maps, and signal information.
+captures a tombstone. A tombstone is a detailed crash report that contains
+register state, stack traces, memory maps, and signal information.
 
 The crash dump mechanism is implemented at:
 
@@ -7397,12 +7403,12 @@ Several kernel features assist with memory debugging:
 ## 5.8 Android 17 Kernel Changes
 
 Android 17 carries several changes that touch the kernel layer directly. The most
-visible is a new Generic Kernel Image branch built on a newer upstream LTS; the
+visible is a new Generic Kernel Image branch built on a newer upstream LTS. The
 most structural is the relocation of the filesystem-management libraries
 (`fs_mgr`, `liblp`, `libsnapshot`, `libdm`, and friends) out of `system/core`
 into a dedicated `system/fs/` tree. This section gathers those changes in one
-place so the rest of the chapter can keep using the stable Android 16 / kernel
-6.12 fragments as worked examples while remaining accurate for Android 17.
+place. So the rest of the chapter can keep the stable Android 16 / kernel 6.12
+fragments as worked examples. Those examples stay accurate for Android 17.
 
 ### 5.8.1 The android17-6.18 GKI Branch
 
@@ -7426,9 +7432,9 @@ Two details are worth calling out:
 
 1. **Pre-release status.** Unlike the older branches, `android17-6.18` carries a
    `<no-releases reason="branch in pre-release phase"/>` marker instead of a list
-   of quarterly LTS releases. At the point the Android 17 tree was cut, no
-   stabilized GKI release had been published for the branch yet, so there were no
-   per-release launch and EOL dates to track.
+   of quarterly LTS releases. When the Android 17 tree was cut, the
+   branch had no stabilized GKI release yet. So there were no per-release launch
+   and EOL dates to track.
 
 2. **Minimum LTS.** The matching conditional fragment pins the minimum LTS
    version for the branch:
@@ -7450,12 +7456,12 @@ BOARD_KERNEL_VERSION := 6.18.16-android17-1-gb61cd7ae4209-ab15097451-4k
 
 **Source**: `kernel/prebuilts/6.18/arm64/kernel_version.mk`
 
-This is upstream LTS 6.18 patch level 16, the Android 17 ACK branch, the first
-release from that branch, a git commit hash, an Android build ID, and the 4 KB
-page size variant. The 6.18 prebuilt ships roughly 104 GKI `.ko` modules and a
-trimmed KMI: its `abi_symbollist` holds about 22,961 entries, noticeably smaller
-than the ~38,840 of the 6.6 branch, reflecting Google's continued curation of
-the stable symbol surface.
+This is upstream LTS 6.18 patch level 16 on the Android 17 ACK branch. It is
+the first release from that branch. The string also includes a git commit hash,
+an Android build ID, and the 4 KB page size variant. The 6.18 prebuilt ships
+roughly 104 GKI `.ko` modules and a trimmed KMI. Its `abi_symbollist` holds
+about 22,961 entries, noticeably smaller than the ~38,840 of the 6.6 branch.
+This reflects Google's continued curation of the stable symbol surface.
 
 **Source**: `kernel/prebuilts/6.18/arm64/abi_symbollist`,
 `kernel/prebuilts/6.18/arm64/abi.stg`
@@ -7476,39 +7482,42 @@ kernel/configs/
 **Source**: `kernel/configs/d/android-6.18/`, `kernel/configs/c/android-6.18/`
 
 The `android-base.config` files under `c/android-6.18` and `d/android-6.18`
-are empty by design: AOSP declares no config-option requirements for the 6.18
-branch (the GKI tests already enforce that a GKI kernel is running), and the
-TV requirements were explicitly removed as well, leaving only the conditional
+are empty by design. AOSP declares no config-option requirements for the 6.18
+branch (the GKI tests already enforce that a GKI kernel is running). The TV
+requirements were explicitly removed as well, which leaves only the conditional
 XML's `minlts="6.18.0"` declaration. Because of that, the substantive config
-citations in this
-chapter continue to use the fully populated Android 16 / kernel 6.12 fragments
-under `kernel/configs/b/android-6.12/`, which remain in the tree and unchanged.
+citations in this chapter continue to use the fully populated Android 16 /
+kernel 6.12 fragments under `kernel/configs/b/android-6.12/`. Those fragments
+remain in the tree and are unchanged.
+
 In the same cycle the Android 11 fragments under `kernel/configs/r/` were
-removed, retiring the oldest tracked config set.
+removed. This retired the oldest tracked config set.
 
 **Source**: `kernel/configs/d/android-6.18/Android.bp`
 
 The `Android.bp` for the new directory wires the fragments into Soong with the
-`kernel_config_d_6.18` rule, and (like the other directories) supports a Google
-TV variant selected by the `using_tv_gki` Soong config variable.
+`kernel_config_d_6.18` rule. Like the other directories, it supports a Google TV
+variant. The `using_tv_gki` Soong config variable selects that variant.
 
 The build-system order that pairs the emulator with a kernel version is
 unchanged for Android 17. The goldfish emulator still defaults to the kernel 6.12
 prebuilts under `prebuilts/qemu-kernel/` (`TARGET_KERNEL_USE ?= 6.12` in
-`device/generic/goldfish/board/kernel/arm64.mk`); the 6.18 image lives in the
-GKI prebuilt tree (`kernel/prebuilts/6.18/`) ahead of the emulator switching to
+`device/generic/goldfish/board/kernel/arm64.mk`). The 6.18 image lives in the
+GKI prebuilt tree (`kernel/prebuilts/6.18/`) before the emulator switches to
 it. The mechanics in Section 5.6 therefore apply unchanged.
 
 ### 5.8.2 16 KB Page Size Matures
 
-Section 5.6.6 introduced 16 KB page size kernels. The GKI prebuilts have
-shipped complete 16 KB variants next to the 4 KB ones for several releases:
-`kernel/prebuilts/6.6/arm64/16k/` and `kernel/prebuilts/6.12/arm64/16k/` each
-already contain a full parallel module set (roughly 100 `.ko` files) with its
-own `kernel_version.mk`. The 6.18 GKI prebuilt continues that pattern. Under
-`kernel/prebuilts/6.18/arm64/` there is a `16k/` subtree containing its own
-kernel image and a full set of `.ko` modules, distinct from the 4 KB modules in
-the parent directory.
+Section 5.6.6 introduced 16 KB page size kernels. Several releases
+ago, the GKI prebuilts started to ship complete 16 KB variants next to the 4 KB
+ones. `kernel/prebuilts/6.6/arm64/16k/` and `kernel/prebuilts/6.12/arm64/16k/`
+each already contain a full parallel module set (roughly 100 `.ko` files) with
+its own `kernel_version.mk`. The 6.18 GKI prebuilt continues that pattern.
+
+Under
+`kernel/prebuilts/6.18/arm64/` there is a `16k/` subtree. The subtree holds its
+own kernel image and a full set of `.ko` modules. These are distinct from the
+4 KB modules in the parent directory.
 
 ```
 kernel/prebuilts/6.18/arm64/
@@ -7532,21 +7541,21 @@ The version strings differ only in the page size suffix. The 4 KB build appends
 **Source**: `kernel/prebuilts/6.18/arm64/16k/kernel_version.mk`
 
 On the emulator side, the page size variants remain selected by separate board
-makefiles, but only `arm64_16k.mk` points at a dedicated `*_16k` prebuilt path
-(`prebuilts/qemu-kernel/arm64_16k/`), as described in Section 5.6.6;
+makefiles. However, only `arm64_16k.mk` points at a dedicated `*_16k` prebuilt
+path (`prebuilts/qemu-kernel/arm64_16k/`), as described in Section 5.6.6.
 `x86_64_16k.mk` still uses the ordinary `prebuilts/qemu-kernel/x86_64/` tree,
-and no `x86_64_16k` prebuilt directory exists. A device or emulator running the
-16 KB kernel needs all of its loadable modules compiled for 16 KB pages, which is
-why the 6.18 prebuilt ships a parallel `16k/` module set rather than reusing the
+and no `x86_64_16k` prebuilt directory exists. A device or emulator that runs the
+16 KB kernel needs all of its loadable modules compiled for 16 KB pages. This is
+why the 6.18 prebuilt ships a parallel `16k/` module set and does not reuse the
 4 KB `.ko` files.
 
 ### 5.8.3 fs_mgr Moves to system/fs
 
 Historically the partition- and filesystem-management code lived under
-`system/core`: `fs_mgr` (mounting and fstab handling), `liblp` (logical/dynamic
-partition metadata), `libsnapshot` (snapshot-based, "virtual A/B" OTA),
-`libdm` (a device-mapper wrapper), and supporting libraries such as `libfiemap`,
-`libfs_avb`, `libfstab`, and `libvbmeta`. Android 17 relocates this entire family
+`system/core`. It included `fs_mgr` (mounting and fstab handling), `liblp`
+(logical/dynamic partition metadata), `libsnapshot` (snapshot-based, "virtual
+A/B" OTA), and `libdm` (a device-mapper wrapper). Supporting libraries such as
+`libfiemap`, `libfs_avb`, `libfstab`, and `libvbmeta` lived there too. Android 17 relocates this entire family
 into a new top-level tree, `system/fs/`.
 
 ```
@@ -7570,11 +7579,11 @@ system/fs/
 
 The corresponding directories under `system/core` (`system/core/fs_mgr`,
 `system/core/liblp`, `system/core/libsnapshot`, `system/core/libdm`) no longer
-exist in the Android 17 tree. This is a relocation, not a rewrite: the
+exist in the Android 17 tree. This is a relocation, not a rewrite. The
 `Android.bp` under `system/fs/fs_mgr` still carries the original 2017 copyright
-header and the `system_core_fs_mgr_license` name, and the module names
-(`libfs_mgr`, `liblp`, `libsnapshot`, `libdm`) are unchanged, so consumers that
-depend on those Soong modules build without modification.
+header and the `system_core_fs_mgr_license` name. The module names (`libfs_mgr`,
+`liblp`, `libsnapshot`, `libdm`) are unchanged, so consumers that depend on those
+Soong modules build without modification.
 
 **Source**: `system/fs/fs_mgr/Android.bp`
 
@@ -7592,10 +7601,11 @@ directly on top of the kernel's storage stack:
   all of the above rely on.
 
 So the device-mapper and dynamic-partition machinery described throughout this
-chapter is now driven by code under `system/fs/` rather than `system/core/`. When
-following a verified-boot or OTA code path in the Android 17 source, look for it
-under `system/fs/fs_mgr/` (for example, `system/fs/fs_mgr/libsnapshot/` for the
-snapshot/OTA logic and `system/fs/fs_mgr/liblp/` for super-partition metadata).
+chapter is now driven by code under `system/fs/` rather than `system/core/`. To
+follow a verified-boot or OTA code path in the Android 17 source, look for it
+under `system/fs/fs_mgr/`. For example, use `system/fs/fs_mgr/libsnapshot/` for
+the snapshot/OTA logic and `system/fs/fs_mgr/liblp/` for super-partition
+metadata.
 
 ### 5.8.4 mmd: Centralized ZRAM and Memory Tuning
 
@@ -7616,12 +7626,12 @@ mmd takes over two responsibilities that touch the kernel directly:
    **Source**: `system/memory/mmd/mmd.rc`
 
 2. **ZRAM maintenance.** Once running, mmd performs ZRAM writeback and
-   recompression on its own schedule, accepting Binder requests from
-   `system_server` via an `IMmd` AIDL interface rather than having
-   `system_server` poke the kernel's zram sysfs files directly.
+   recompression on its own schedule. It accepts Binder requests from
+   `system_server` via an `IMmd` AIDL interface. `system_server` does not poke
+   the kernel's zram sysfs files directly.
 
-The handoff is visible in the relocated `fs_mgr`: the legacy `swapon_all` path is
-now explicitly deprecated in favor of mmd, and it skips zram setup when mmd is
+The handoff is visible in the relocated `fs_mgr`. The legacy `swapon_all` path
+is now explicitly deprecated in favor of mmd. It skips zram setup when mmd is
 configured to own it.
 
 ```cpp
@@ -7632,9 +7642,9 @@ configured to own it.
 
 **Source**: `system/fs/fs_mgr/fs_mgr.cpp` (swapon_all handling)
 
-For the emulator, the older flow still applies: `init.ranchu.rc` loads `zram.ko`
+For the emulator, the older flow still applies. `init.ranchu.rc` loads `zram.ko`
 via `modprobe` during early init and writes the zram compression algorithm
-directly (the Section 5.9 exercises reference these lines), so the emulator does
+directly (the Section 5.9 exercises reference these lines). So the emulator does
 not yet depend on mmd to bring up swap.
 
 ### 5.8.5 casefolding_remover: A New system/fs Tool
@@ -7646,9 +7656,9 @@ configuration changes.
 
 **Source**: `system/fs/casefolding_remover/src/main.rs`
 
-Case folding is a kernel ext4/f2fs feature (the `FS_CASEFOLD_FL` inode flag) that
-makes a directory perform case-insensitive name lookups, which Android can use
-for external-storage emulation. The tool's job, when the requested casefolding
+Case folding is a kernel ext4/f2fs feature (the `FS_CASEFOLD_FL` inode flag).
+It makes a directory perform case-insensitive name lookups, which Android can
+use for external-storage emulation. The tool's job, when the requested casefolding
 state no longer matches what is on disk, is to:
 
 1. Set the correct casefolding flag on a fresh `/data/media_temp` directory.
@@ -7673,7 +7683,7 @@ service casefolding_remover /system/bin/casefolding_remover
 **Source**: `system/fs/casefolding_remover/casefolding_remover.rc`
 
 The tool's `Android.bp` header still reads `// system/core/casefolding_remover`,
-a leftover from before the directory was placed under `system/fs/`, which is a
+a leftover from before the directory was placed under `system/fs/`. It is a
 useful reminder that the `system/fs/` consolidation happened late in the cycle.
 
 **Source**: `system/fs/casefolding_remover/Android.bp`
@@ -7696,8 +7706,8 @@ useful reminder that the `system/fs/` consolidation happened late in the cycle.
 ## 5.9 Try It: Examine the Emulator Kernel
 
 This section provides hands-on exercises for exploring the Android emulator's
-kernel. These exercises assume you have an AOSP source tree synced and an
-emulator image built (or the ability to use prebuilt images).
+kernel. These exercises assume that you have a synced AOSP source tree and a
+built emulator image. You can use prebuilt images instead.
 
 ### Exercise 1: Inspect the Prebuilt Kernel
 
@@ -7843,10 +7853,10 @@ grep -c "<build" kernel/configs/approved-ogki-builds.xml
 - Each branch has a defined EOL years in the future (4-6 years of support)
 - LTS releases within a branch have shorter individual lifetimes (mostly 12-17
   months, with recent entries around 15-16)
-- The android17-6.18 branch is the newest -- registered but still in the
-  pre-release phase, marked with a `<no-releases .../>` entry -- while
-  android16-6.12 is the newest branch with published LTS releases, starting
-  in 2025
+- The android17-6.18 branch is the newest. It is registered but still in the
+  pre-release phase, marked with a `<no-releases .../>` entry. The
+  android16-6.12 branch is the newest branch with published LTS releases,
+  which start in 2025.
 - The approved-ogki-builds.xml file has far more android15-6.6 entries than
   android16-6.12, reflecting the maturity difference
 
@@ -7881,7 +7891,7 @@ adb shell cat /proc/pressure/io
 ```
 
 The `CONFIG_IKCONFIG=y` and `CONFIG_IKCONFIG_PROC=y` options in the base config
-ensure that the kernel's configuration is always accessible at runtime through
+make the kernel's configuration always accessible at runtime through
 `/proc/config.gz`. This is invaluable for debugging configuration-related issues.
 
 ### Exercise 7: Explore Binder on the Emulator
@@ -7935,10 +7945,10 @@ on early-init
 
 This shows:
 
-1. The `vendor.dlkm_loader` service runs `/vendor/bin/dlkm_loader`, which
-   modprobes the modules listed in `modules.load` under `/vendor/lib/modules`
-   on the vendor partition (the emulator does not use a `vendor_dlkm`
-   partition)
+1. The `vendor.dlkm_loader` service runs `/vendor/bin/dlkm_loader`. This
+   program modprobes the modules listed in `modules.load` under
+   `/vendor/lib/modules` on the vendor partition. The emulator does not use a
+   `vendor_dlkm` partition.
 2. `zram.ko` is loaded from `system_dlkm` via modprobe during early init
 3. The modprobe command runs in the `modprobe` SELinux domain (`u:r:modprobe:s0`)
 
@@ -7986,10 +7996,11 @@ Notable observations:
 
 ## 5.10 Summary
 
-The Android kernel is a carefully managed extension of the Linux kernel, with
-additions that support Android's unique requirements for IPC (Binder), memory
-management (lmkd + PSI), storage (FUSE passthrough, incremental FS), security
-(dm-verity, file-based encryption, SELinux), and power management (wakelocks).
+The Android kernel is a carefully managed extension of the Linux kernel. Its
+additions support Android's unique requirements for IPC (Binder), memory
+management (lmkd + PSI), and storage (FUSE passthrough, incremental FS). They
+also support security (dm-verity, file-based encryption, SELinux) and power
+management (wakelocks).
 
 The GKI architecture represents a fundamental shift in how Android kernels are
 managed. By splitting the kernel into a Google-built core image and
@@ -8000,19 +8011,19 @@ vendor-supplied modules with a stable interface (KMI), GKI enables:
 - Longer kernel support lifetimes (4-6 years per branch)
 - Verified, approved kernel builds for production devices
 
-The kernel configuration system ensures that all Android devices meet a minimum
-set of requirements, verified at build time, test time (VTS), and OTA/update
-time (`checkvintf` against the framework compatibility matrix). The lifecycle
-management system
+The kernel configuration system makes sure that all Android devices meet a
+minimum set of requirements. The requirements are verified at build time, at
+test time (VTS), and at OTA/update time (`checkvintf` against the framework
+compatibility matrix). The lifecycle management system
 (`kernel-lifetimes.xml`) provides transparency about which kernels are supported
 and for how long.
 
 Android 17 advances this picture in a few concrete ways, collected in Section
-5.8: a new `android17-6.18` GKI branch (upstream LTS 6.18) with its own prebuilt
-and a trimmed KMI; a fully fledged 16 KB page size build shipping next to the
-4 KB one; the relocation of the `fs_mgr`/`liblp`/`libsnapshot`/`libdm` family out
-of `system/core` into the new `system/fs/` tree; and the new `mmd` daemon taking
-over ZRAM setup and maintenance from `init` and `fs_mgr`.
+5.8. First, a new `android17-6.18` GKI branch (upstream LTS 6.18) has its own
+prebuilt and a trimmed KMI. Second, a fully fledged 16 KB page size build ships
+next to the 4 KB one. Third, the `fs_mgr`/`liblp`/`libsnapshot`/`libdm` family
+moved out of `system/core` into the new `system/fs/` tree. Fourth, the new
+`mmd` daemon takes over ZRAM setup and maintenance from `init` and `fs_mgr`.
 
 For developers working with AOSP, understanding the kernel layer is essential
 for:
@@ -8024,28 +8035,30 @@ for:
 - Maintaining and updating kernels for devices in the field
 
 The exercises in section 5.9 provide a starting point for hands-on kernel
-exploration using the Android emulator, which includes a fully functional GKI
-kernel with the same architecture as production devices.
+exploration on the Android emulator. The emulator includes a fully functional
+GKI kernel with the same architecture as production devices.
 
 A few points are worth holding onto. The Android kernel is upstream Linux plus
-targeted extensions, and that delta keeps shrinking as former Android-only
-features are upstreamed. GKI is now mandatory: starting with Android 12 and
-kernel 5.10, every new device ships the GKI architecture behind a stable KMI,
-which is what makes independent kernel updates and reduced fragmentation
-possible. Configuration lives in fragments under `kernel/configs/` rather than
-monolithic defconfigs, validated at build, test (VTS), and OTA/update time
-(`checkvintf` against the framework compatibility matrix).
-Security is enforced at every layer, from dm-verity and file-based encryption
-through SELinux, seccomp, CFI, and SCS. The debugging story is rich, combining
-ftrace, Perfetto, eBPF, debuggerd, and pstore. And the goldfish emulator is a
-fully functional GKI target running the same architecture as production
-hardware, which makes it a good platform for kernel work.
+targeted extensions. That delta keeps shrinking as former Android-only
+features are upstreamed. GKI is now mandatory. From Android 12 and kernel 5.10
+onward, every new device ships the GKI architecture behind a stable KMI. This
+is what makes independent kernel updates and reduced fragmentation possible.
 
-Several other chapters build on this material: Chapter 2 covers Kleaf, the
-Bazel-based kernel build system; Chapter 4 covers how the kernel is loaded and
-init begins; Chapter 10 covers HALs that depend on kernel drivers; Chapter 40
-covers SELinux policy, seccomp filters, and the verified boot chain; and Chapter
-58 covers Perfetto tracing, CPU scheduling, and memory tuning.
+Configuration lives in fragments under `kernel/configs/` rather than
+monolithic defconfigs. The configuration is validated at build, test (VTS), and
+OTA/update time (`checkvintf` against the framework compatibility matrix).
+
+Security is enforced at every layer, from dm-verity and file-based encryption
+through SELinux, seccomp, CFI, and SCS. The debugging story is rich. It includes
+ftrace, Perfetto, eBPF, debuggerd, and pstore. The goldfish emulator is a
+fully functional GKI target. It runs the same architecture as production
+hardware, so it is a good platform for kernel work.
+
+Several other chapters build on this material. Chapter 2 covers Kleaf, the
+Bazel-based kernel build system. Chapter 4 covers how the kernel is loaded and
+init begins. Chapter 10 covers HALs that depend on kernel drivers. Chapter 40
+covers SELinux policy, seccomp filters, and the verified boot chain. Chapter 58
+covers Perfetto tracing, CPU scheduling, and memory tuning.
 
 ### Key File Reference
 
@@ -8084,22 +8097,25 @@ covers SELinux policy, seccomp filters, and the verified boot chain; and Chapter
 # Chapter 6: System Properties
 
 Android's system properties are a device-wide key-value store that provides the
-primary mechanism for communicating configuration data between processes. From the
-moment init sets `ro.build.fingerprint` during early boot to the instant a Java
-application reads `persist.sys.locale` to determine the user's locale, system
-properties permeate every layer of the Android stack. They are small (key up to 32
-bytes historically, value up to 91 bytes plus a NUL terminator for mutable
-properties -- `PROP_VALUE_MAX` is 92 including the terminator), fast (reads require
-no IPC -- just a shared memory lookup), and controlled (writes are mediated by init
-through a Unix domain socket and enforced by SELinux).
+primary mechanism for communicating configuration data between processes. Early in
+boot, init sets `ro.build.fingerprint`. Later, a Java application reads
+`persist.sys.locale` to determine the user's locale. System properties are present
+in every layer of the Android stack. They are small, fast, and controlled:
 
-Despite their apparent simplicity, system properties involve a sophisticated
-interplay of shared memory regions, trie data structures, SELinux mandatory access
-control, protobuf-serialized persistent storage, and a build-time type system. This
-chapter dissects each layer by reading the actual AOSP source code, from the bionic
-implementation in `bionic/libc/system_properties/` through the property service in
-`system/core/init/property_service.cpp`, up to the Java API in
-`frameworks/base/core/java/android/os/SystemProperties.java` and the Soong build
+- **Small.** The key is up to 32 bytes historically. The value is up to 91 bytes
+  plus a NUL terminator for mutable properties. `PROP_VALUE_MAX` is 92 including the
+  terminator.
+- **Fast.** Reads require no IPC. A read is only a shared memory lookup.
+- **Controlled.** Init mediates writes through a Unix domain socket. SELinux
+  enforces them.
+
+Despite their apparent simplicity, system properties combine several parts. These
+are shared memory regions, trie data structures, SELinux mandatory access control,
+protobuf-serialized persistent storage, and a build-time type system. This chapter
+dissects each layer with the actual AOSP source code. It starts at the bionic
+implementation in `bionic/libc/system_properties/`. It continues through the
+property service in `system/core/init/property_service.cpp`. It ends at the Java API
+in `frameworks/base/core/java/android/os/SystemProperties.java` and the Soong build
 system's `sysprop_library` module type.
 
 ---
@@ -8113,8 +8129,8 @@ its architecture:
 
 1. **Lock-free reads.** Any process must be able to read any property without
    acquiring a lock or performing IPC. This is critical because property reads happen
-   in hot paths -- every `getprop` call, every Java reflection of build
-   characteristics, every native daemon checking a debug flag.
+   in hot paths. Examples are every `getprop` call, every Java reflection of build
+   characteristics, and every native daemon that checks a debug flag.
 
 2. **Single writer.** Only the init process (PID 1) may modify the shared memory
    regions containing property data. All other processes must send a request to init
@@ -8337,9 +8353,9 @@ increment on every property change, and that `__system_property_area_serial()`
 reads. Readers can therefore detect changes without any locking, by polling this
 global serial number.
 
-The `data_[]` region begins with the root `prop_trie_node`, followed by a
-`PROP_VALUE_MAX`-sized "dirty backup area," and then all dynamically allocated trie
-nodes and property info entries.
+The `data_[]` region begins with the root `prop_trie_node`. A `PROP_VALUE_MAX`-sized
+"dirty backup area" follows it. After that come all dynamically allocated trie nodes
+and property info entries.
 
 ### 6.1.4 The Trie Structure
 
@@ -8719,10 +8735,10 @@ void SystemProperties::ReadCallback(const prop_info* pi,
 ### 6.1.7 Long Property Values
 
 Historically, property values were limited to `PROP_VALUE_MAX` (92 bytes). Starting
-with Android P, read-only (`ro.*`) properties can exceed this limit using the "long
+with Android P, read-only (`ro.*`) properties can exceed this limit with the "long
 property" mechanism. When a value exceeds `PROP_VALUE_MAX`, the `kLongFlag` (bit 16)
-is set in the serial, and the value is stored at a separate offset within the
-property area:
+is set in the serial. The value is stored at a separate offset within the property
+area:
 
 ```c
 // Source: bionic/libc/system_properties/prop_area.cpp
@@ -8769,7 +8785,7 @@ their full values without truncation.
 ### 6.1.8 The property_info Trie (SELinux Context Trie)
 
 Separate from the property value trie (which stores actual values), there is a second
-trie structure that maps property names to their SELinux contexts and type
+trie structure. It maps property names to their SELinux contexts and type
 information. This is the "property_info" trie, serialized into
 `/dev/__properties__/property_info`.
 
@@ -9216,7 +9232,7 @@ persist.profcollectd.enabled  u:object_r:profcollectd_enabled_prop:s0  exact  bo
 Notice the matching precedence: more specific prefixes override less specific ones.
 For example, `debug.db.uid` matches `debug.db.` (the `debuggerd_prop` context),
 not `debug.` (the `debug_prop` context). Note also that the `ro.build.*`
-properties are labeled with `exact` entries rather than a prefix rule, and they
+properties are labeled with `exact` entries rather than a prefix rule. They
 do not all share one context: `ro.build.fingerprint` maps to `fingerprint_prop`,
 not `build_prop`.
 
@@ -9280,10 +9296,10 @@ The check flow:
    target context.
 
 On failure, the denial is logged in the kernel audit log and the property set
-returns `PROP_ERROR_PERMISSION_DENIED`. In Android 17, `CheckPermissions()` was
-changed to embed the source and target contexts directly in the error string it
-returns to the caller, so a failed `setprop` reports both contexts even when the
-kernel's AVC log was suppressed by the audit ratelimiter:
+returns `PROP_ERROR_PERMISSION_DENIED`. In Android 17, `CheckPermissions()` changed.
+It now embeds the source and target contexts directly in the error string it
+returns to the caller. A failed `setprop` therefore reports both contexts, even when the
+audit ratelimiter suppressed the kernel's AVC log:
 
 ```c
 // Source: system/core/init/property_service.cpp, CheckPermissions()
@@ -9329,9 +9345,9 @@ sequenceDiagram
 
 ### 6.3.4 SELinux Enforcement on Property Reads
 
-Read access control is more subtle. Since reads are performed directly from shared
-memory without IPC, the enforcement occurs at the file level -- each SELinux context
-gets its own file under `/dev/__properties__/`, and the kernel's file access
+Read access control is more subtle. Reads go directly to shared memory without IPC,
+so the enforcement occurs at the file level. Each SELinux context
+gets its own file under `/dev/__properties__/`. The kernel's file access
 permissions determine which contexts a process can read.
 
 The `ContextsSerialized` implementation maps each context to its own property area
@@ -9353,9 +9369,9 @@ prop_area* ContextsSerialized::GetPropAreaForName(const char* name) {
 }
 ```
 
-When `Open()` attempts to mmap the property area file, the kernel checks whether the
-calling process's SELinux context has `file { read open map }` permission for the
-file's SELinux label. If the process lacks permission, the mmap fails and the
+When `Open()` attempts to mmap the property area file, the kernel checks the
+calling process's SELinux context. The context must have `file { read open map }`
+permission for the file's SELinux label. If the process lacks permission, the mmap fails and the
 property appears not to exist.
 
 ### 6.3.5 Type Checking
@@ -9403,11 +9419,13 @@ uint32_t CheckPermissions(const std::string& name, const std::string& value,
 }
 ```
 
-`CheckPermissions()` runs three gates in order: a legality check on the name
-(`IsLegalPropertyName`), then -- for `ctl.` properties -- a service-scoped
-permission check via `CheckControlPropertyPerms()` (which checks both the legacy
-`ctl.<service>` form and the newer `ctl.<action>$<service>` form), and finally
-the SELinux MAC check plus the type check for ordinary properties.
+`CheckPermissions()` runs three gates in order:
+
+1. A legality check on the name (`IsLegalPropertyName`).
+2. For `ctl.` properties, a service-scoped permission check via
+   `CheckControlPropertyPerms()`. It checks both the legacy
+   `ctl.<service>` form and the newer `ctl.<action>$<service>` form.
+3. For ordinary properties, the SELinux MAC check plus the type check.
 
 Supported type constraints:
 
@@ -9423,15 +9441,15 @@ Supported type constraints:
 
 ### 6.3.6 The Appcompat Override Mechanism
 
-Android provides an "appcompat override" mechanism that lets the platform present
+Android provides an "appcompat override" mechanism. It lets the platform present
 a different value for a property to a process that opts into compatibility
-overrides, without disturbing the value every other reader sees. It is split
+overrides. Every other reader still sees the original value. The mechanism is split
 across init and bionic.
 
 On the init side, the override is built only when the platform is compiled with
 `WRITE_APPCOMPAT_OVERRIDE_SYSTEM_PROPERTIES` defined. In that configuration,
 `CreateSerializedPropertyInfo()` writes the same serialized contexts trie a second
-time, into a parallel folder, so the override area shares the platform's SELinux
+time, into a parallel folder. The override area therefore shares the platform's SELinux
 context layout:
 
 ```c
@@ -9452,7 +9470,7 @@ context layout:
 
 The actual name rewriting happens in bionic. When a process enables overrides,
 `SystemProperties::Find()` first looks up an `ro.appcompat_override.`-prefixed
-shadow of the requested name and, if that shadow exists, returns it in place of
+shadow of the requested name. If that shadow exists, it returns the shadow in place of
 the real property:
 
 ```c
@@ -9479,8 +9497,8 @@ const prop_info* SystemProperties::Find(const char* name) {
 ```
 
 So a process that reads `ro.some.flag` with overrides enabled transparently
-receives the value of `ro.appcompat_override.ro.some.flag` when one was written,
-while every other process keeps seeing the unprefixed value. This is how the
+receives the value of `ro.appcompat_override.ro.some.flag` when one was written.
+Every other process keeps seeing the unprefixed value. This is how the
 platform can hand a per-app-compatibility value to a single opted-in reader.
 
 ---
@@ -9643,8 +9661,7 @@ static void ExportKernelBootProps() {
 ```
 
 The `UNSET` sentinel for `ro.boot.serialno` means init only creates the legacy
-`ro.serialno` alias when a serial number was actually supplied on the kernel
-command line; an empty serial leaves `ro.serialno` undefined rather than blank.
+`ro.serialno` alias when a serial number was actually supplied on the kernel command line. An empty serial leaves `ro.serialno` undefined rather than blank.
 
 ### 6.4.4 The Socket-Based Write API
 
@@ -9849,8 +9866,8 @@ PersistentProperties LoadPersistentProperties() {
 The Java interface to system properties is provided by
 `android.os.SystemProperties`, located at
 `frameworks/base/core/java/android/os/SystemProperties.java`. This class is annotated
-with `@SystemApi` and `@hide`, meaning it is not part of the public SDK but is
-available to platform code and apps using the system SDK:
+with `@SystemApi` and `@hide`. It is not part of the public SDK, but it is
+available to platform code and to apps that use the system SDK:
 
 ```java
 // Source: frameworks/base/core/java/android/os/SystemProperties.java
@@ -9949,8 +9966,8 @@ public static void set(@NonNull String key, @Nullable String val) {
 
 The `set()` method performs IPC to the property service through the Unix domain
 socket, so it can block. The value length validation (91 bytes) is enforced in Java
-before the native call, but only for non-`ro.*` properties (which can use the long
-property mechanism).
+before the native call. It is enforced only for non-`ro.*` properties, which can use the long
+property mechanism.
 
 ### 6.5.4 Handle-Based Optimized Access
 
@@ -10045,10 +10062,10 @@ private static void callChangeCallbacks() {
 The Java change-callback mechanism does not poll the property area or wait on a
 futex. `native_add_change_callback()` registers a libutils callback via
 `add_sysprop_change_callback()` (see
-`frameworks/base/core/jni/android_os_SystemProperties.cpp`), and that callback
+`frameworks/base/core/jni/android_os_SystemProperties.cpp`). That callback
 fires only when some component in the same process explicitly calls
-`report_sysprop_change()` -- exposed to Java as
-`SystemProperties.reportSyspropChanged()` -- which then calls back into
+`report_sysprop_change()`. It is exposed to Java as
+`SystemProperties.reportSyspropChanged()`. The call then calls back into
 `callChangeCallbacks()`.
 
 ### 6.5.6 Digest Method
@@ -10134,14 +10151,15 @@ private static native String native_get(String key, String def);
 ```
 
 The `maxTargetSdk` value names the highest target SDK for which the member
-remains accessible: apps targeting API 28 (Pie) or below can still reflectively
-call `native_get`, while apps targeting API 29 (Q) or above cannot. There is no
-public-SDK successor for third-party apps here: system properties were never
-public API for them, so the blocked reflection has nothing to migrate to. The
-`sysprop_library` mechanism (Section 6.6) serves a different audience. When a
+remains accessible. Apps that target API 28 (Pie) or below can still reflectively
+call `native_get`. Apps that target API 29 (Q) or above cannot. There is no
+public-SDK successor for third-party apps here. System properties were never
+public API for them, so the blocked reflection has nothing to migrate to.
+
+The `sysprop_library` mechanism (Section 6.6) serves a different audience. When a
 platform-owned library is installed in `/system` or `/system_ext`, Soong treats
-it as an API and emits a public stub that modules on any partition — including
-ones built with `sdk_version: system_*` — may link against
+it as an API and emits a public stub. Modules on any partition — including
+ones built with `sdk_version: system_*` — may link against the stub
 (`build/soong/sysprop/sysprop_library.go:510-548`). Its typed accessors are
 therefore the structured replacement for ad-hoc property reads in *platform,
 vendor, and product* code, not in apps.
@@ -10163,9 +10181,9 @@ communication:
 4. **No ownership model.** It is unclear which partition "owns" a property.
 
 The `sysprop_library` module type in Soong addresses all of these. It defines
-properties in `.sysprop` files, generates type-safe accessor libraries in Java, C++,
-and Rust, and scopes the exposed API surface through per-property `scope` and
-`property_owner` rules. (Earlier releases also enforced a checked-in-API-file
+properties in `.sysprop` files and generates type-safe accessor libraries in Java,
+C++, and Rust. It also scopes the exposed API surface through per-property `scope`
+and `property_owner` rules. (Earlier releases also enforced a checked-in-API-file
 compatibility check; Android 17 removed it -- see Section 6.6.8.)
 
 ### 6.6.2 The .sysprop File Format
@@ -10228,9 +10246,9 @@ Each `prop` block specifies:
 | `default_value` | Value returned when the property is unset | e.g., `true`, `123` |
 
 The full set of fields is declared in the `Property` message of
-`system/tools/sysprop/sysprop.proto`. Two of these fields are newer:
-`legacy_prop_name` lets a renamed property keep reading the old key as a fallback,
-and `default_value` (added as field 10) changes the shape of the generated getter,
+`system/tools/sysprop/sysprop.proto`. Two of these fields are newer.
+`legacy_prop_name` lets a renamed property keep reading the old key as a fallback.
+`default_value` (added as field 10) changes the shape of the generated getter,
 covered next.
 
 ### 6.6.3 Module Definition in Android.bp
@@ -10415,17 +10433,17 @@ The `access` field controls which methods are generated:
 
 ### 6.6.8 API Stability (Android 17 simplification)
 
-Historically, `sysprop_library` enforced API stability through a two-file check:
-each module checked in an `api/<name>-current.txt` and an `api/<name>-latest.txt`,
-and `GenerateAndroidBuildActions()` dumped the API from the `.sysprop` sources and
+Historically, `sysprop_library` enforced API stability through a two-file check.
+Each module checked in an `api/<name>-current.txt` and an `api/<name>-latest.txt`.
+`GenerateAndroidBuildActions()` dumped the API from the `.sysprop` sources and
 compared it against both files (identical to `current.txt`, backward-compatible
 with `latest.txt`). Renaming a property, changing its type, or dropping it failed
 the build unless the checked-in text files were regenerated.
 
 Android 17 removed that machinery. The "Remove sysprop as API txt files" change
 deleted the per-module `api/*-current.txt` / `*-latest.txt` files across
-`system/libsysprop` (there are now no such files in the tree) and stripped the
-dump-and-compare logic out of Soong. In 17, `sysprop_library`'s
+`system/libsysprop`. There are now no such files in the tree. The same change
+stripped the dump-and-compare logic out of Soong. In 17, `sysprop_library`'s
 `GenerateAndroidBuildActions()` does nothing beyond validating that every source
 really is a `.sysprop` file:
 
@@ -10447,9 +10465,9 @@ func (m *syspropLibrary) GenerateAndroidBuildActions(ctx android.ModuleContext) 
 }
 ```
 
-The build-time API surface a `sysprop_library` exposes is now governed entirely by
-the `scope` field in each `.sysprop` entry (Section 6.6.7) and by the cross-partition
-`property_owner` rules (Section 6.6.3), not by a checked-in API snapshot. The
+A `sysprop_library` exposes a build-time API surface. The `scope` field in each
+`.sysprop` entry (Section 6.6.7) and the cross-partition `property_owner` rules
+(Section 6.6.3) now govern it entirely. A checked-in API snapshot does not. The
 `Api_packages` property on the module still names the packages that are documented
 and publicized as API:
 
@@ -10466,9 +10484,9 @@ type syspropLibraryProperties struct {
 }
 ```
 
-A vestige of the old design remains in the source: the provider struct
+A vestige of the old design remains in the source. The provider struct
 `SyspropLibraryInfo` in `build/soong/sysprop/sysprop_library.go` still carries
-`CheckApiFileTimeStamp` (and `CurrentApiFile`) fields, but neither is wired to
+`CheckApiFileTimeStamp` (and `CurrentApiFile`) fields. Neither is wired to
 any dump-and-compare command. The practical effect for developers
 is that editing a `.sysprop` file no longer requires a separate
 `m <module>-dump-api` step to refresh checked-in API text.
@@ -10494,10 +10512,10 @@ constraints in property_contexts match those declared in `.sysprop` files.
 
 ### 6.6.10 Default Values in Generated Accessors
 
-A `.sysprop` property is, by definition, "unset" until something writes it, and
-historically every generated getter returned an `Optional`/`std::optional` that
-the caller had to unwrap with its own fallback. Android 17 adds a `default_value`
-field to the property schema so the fallback can live in the `.sysprop`
+A `.sysprop` property is, by definition, "unset" until something writes it.
+Historically, every generated getter returned an `Optional`/`std::optional`, and
+the caller had to unwrap it with its own fallback. Android 17 adds a `default_value`
+field to the property schema. The fallback can then live in the `.sysprop`
 definition itself, and the code generators bake it into the accessor.
 
 The field is `default_value` (field 10) in the `Property` message:
@@ -10519,9 +10537,9 @@ message Property {
 ```
 
 When `default_value` is set on a non-list property, the Java generator changes the
-getter's return type from `Optional<T>` to a bare `T`: it reads the property, and
-if the result is the empty string (the property is unset), it substitutes the
-default before parsing, then returns the parsed value directly via `.orElse(null)`:
+getter's return type from `Optional<T>` to a bare `T`. The getter reads the property.
+If the result is the empty string (the property is unset), it substitutes the
+default before parsing. Then it returns the parsed value directly via `.orElse(null)`:
 
 ```cpp
 // Source: system/tools/sysprop/JavaGen.cpp
@@ -10547,16 +10565,17 @@ if (!prop.default_value().empty()) {
 
 The same `default_value` substitution is wired into the C++ generator
 (`system/tools/sysprop/CppGen.cpp`) and the Rust generator
-(`system/tools/sysprop/RustGen.cpp`); each generator reads the field directly from
+(`system/tools/sysprop/RustGen.cpp`). Each generator reads the field directly from
 the parsed schema. (`SetDefaultValues()` in `system/tools/sysprop/Common.cpp`,
 despite its name, only fills in an empty `prop_name` and rewrites the deprecated
-`System` scope to `Public` -- it never touches `default_value`.) The net effect: a
-property declared with `default_value: "true"` exposes a getter that simply
-returns `true` when unset, removing the per-caller `orElse(...)` boilerplate that
-6.6.5's example still showed for properties without a default. This complements
-`legacy_prop_name` (Section 6.6.2): a renamed property can both fall back to its
-old key and, failing that, fall back to a declared default, all inside the
-generated accessor.
+`System` scope to `Public` -- it never touches `default_value`.)
+
+As a result, a property declared with `default_value: "true"` exposes a getter
+that simply returns `true` when unset. This removes the per-caller `orElse(...)`
+boilerplate that 6.6.5's example still showed for properties without a default.
+This complements `legacy_prop_name` (Section 6.6.2). A renamed property can fall
+back to its old key. If that key is unset too, the property can fall back to a
+declared default. All of this happens inside the generated accessor.
 
 ---
 
@@ -10658,10 +10677,10 @@ static void property_initialize_ro_vendor_api_level() {
 }
 ```
 
-The `is_frozen_chipset` flag is the key subtlety: a chipset that declares
+The `is_frozen_chipset` flag is the key subtlety. A chipset that declares
 `ro.board.first_api_level` has a frozen vendor image, so init may pin
 `ro.vendor.api_level` down to the board's API level. A non-frozen chipset instead
-uses `__ANDROID_VENDOR_API_MAX__` as the board contribution, and the final value
+uses `__ANDROID_VENDOR_API_MAX__` as the board contribution. The final value
 is the minimum of that and the API level derived from the product/SDK side via
 `AVendorSupport_getVendorApiLevelOf()`.
 
@@ -10704,7 +10723,7 @@ graph LR
 Key rules:
 
 - **Platform-owned** properties are consumed at `Internal` scope by code on
-  system/system_ext (the owner's own partition); only the `Public` scope surface
+  system/system_ext (the owner's own partition). Only the `Public` scope surface
   is exposed to vendor/odm and product consumers.
 - **Vendor-owned** properties cannot be accessed from the system partition.
 - **ODM-owned** properties can only be accessed from vendor/ODM partitions.
@@ -11008,9 +11027,11 @@ The largest change is the removal of the `sysprop_library` API snapshot files.
 Before 17, every module checked in `api/<name>-current.txt` and
 `api/<name>-latest.txt`, and Soong dumped the API from the `.sysprop` sources and
 compared against both on every build. Android 17 deleted those files from
-`system/libsysprop` (none remain in the tree) and stripped the dump-and-compare
-logic out of `build/soong/sysprop/sysprop_library.go`; the module's
-`GenerateAndroidBuildActions()` now only validates source extensions. The stable
+`system/libsysprop` (none remain in the tree). It also stripped the dump-and-compare
+logic out of `build/soong/sysprop/sysprop_library.go`. The module's
+`GenerateAndroidBuildActions()` now only validates source extensions.
+
+The stable
 surface a sysprop library exposes is governed by per-property `scope` and the
 `property_owner` cross-partition rules instead of a checked-in API file. Section
 6.6.8 walks the new code path.
@@ -11019,8 +11040,9 @@ surface a sysprop library exposes is governed by per-property `scope` and the
 
 The `.sysprop` schema in `system/tools/sysprop/sysprop.proto` gained a
 `default_value` field (field 10). When set, the generated Java/C++/Rust getter
-returns a concrete value rather than an `Optional` and substitutes the declared
-default when the property is unset, removing per-caller `orElse(...)` boilerplate.
+returns a concrete value rather than an `Optional`. It substitutes the declared
+default when the property is unset. This removes per-caller `orElse(...)` boilerplate.
+
 This pairs with `legacy_prop_name` (field 9), which lets a renamed property fall
 back to its old key. Both fields are consumed directly by `JavaGen.cpp`,
 `CppGen.cpp`, and `RustGen.cpp`. Section 6.6.10 shows the generated code.
@@ -11028,12 +11050,14 @@ back to its old key. Both fields are consumed directly by `JavaGen.cpp`,
 ### 6.9.3 More Informative SELinux Denials on Writes
 
 `CheckPermissions()` in `system/core/init/property_service.cpp` now embeds the
-source and target SELinux contexts in the error string it returns when a
+source and target SELinux contexts in the error string. It returns this string when a
 `property_service { set }` check fails ("init: enhance SELinux denial error
-message for set property service"). Because the kernel's AVC denial log can be
-dropped by the audit ratelimiter, having init itself report
-`source_context=...` / `target_context=...` makes property-set failures far
-easier to triage. The same function also makes its `ctl.` permission handling
+message for set property service"). The audit ratelimiter can
+drop the kernel's AVC denial log. For that reason, it helps when init itself reports
+`source_context=...` / `target_context=...`. Property-set failures are then far
+easier to triage.
+
+The same function also makes its `ctl.` permission handling
 explicit through `CheckControlPropertyPerms()`, which checks both the legacy
 `ctl.<service>` form and the newer `ctl.<action>$<service>` form. Sections 6.3.3
 and 6.3.5 cover the write-path checks.
@@ -11042,8 +11066,8 @@ and 6.3.5 cover the write-path checks.
 
 Two smaller init refinements round out the set. First, `LoadProperties()` -- the
 parser that `load_properties_from_file()` delegates to -- now runs `ExpandProps()`
-on both `import` filenames and property values it reads from a file, so
-`${ro.foo}`-style references in a `build.prop` are resolved as the file is loaded:
+on both `import` filenames and property values that it reads from a file. As a
+result, `${ro.foo}`-style references in a `build.prop` are resolved as the file is loaded:
 
 ```c
 // Source: system/core/init/property_service.cpp, LoadProperties()
@@ -11051,8 +11075,8 @@ auto expanded_value = ExpandProps(value);
 ```
 
 Second, `property_initialize_ro_vendor_api_level()` gained the
-`is_frozen_chipset` logic described in Section 6.7.3: a chipset that declares
-`ro.board.first_api_level` is treated as frozen and may lower
+`is_frozen_chipset` logic described in Section 6.7.3. A chipset that declares
+`ro.board.first_api_level` is treated as frozen. It may lower
 `ro.vendor.api_level` to the board API level, instead of always contributing
 `__ANDROID_VENDOR_API_MAX__`.
 
@@ -11063,9 +11087,9 @@ aconfig flag (Chapter 3). They solve different problems and the boundary matters
 for new code:
 
 - **System properties / `sysprop_library`** are a runtime, device-wide key-value
-  store. Values can be read and (for mutable namespaces) written at runtime,
-  persisted across reboots (`persist.*`), set by the bootloader (`ro.boot.*`), and
-  partitioned by SELinux context and Treble ownership. Use them for device
+  store. Values can be read and (for mutable namespaces) written at runtime.
+  Values can persist across reboots (`persist.*`). They are set by the bootloader
+  (`ro.boot.*`). SELinux context and Treble ownership partition them. Use them for device
   configuration, build identity, runtime state, and vendor/HAL tunables -- things
   that vary per device or per boot.
 - **aconfig flags** are build-time-declared feature flags with a generated, typed
@@ -11077,7 +11101,7 @@ for new code:
 In practice a `sysprop_library` answers "what is this device configured to do
 right now," while aconfig answers "is this feature turned on for this build."
 Android 17 continues to migrate one-off boolean `ro.*`/`persist.*` debug toggles
-toward aconfig where the goal is feature gating, while leaving genuine device
+toward aconfig where the goal is feature gating. It leaves genuine device
 configuration on the property store. The two are complementary, not
 interchangeable.
 
@@ -11085,21 +11109,22 @@ interchangeable.
 
 ## 6.10 The Rust System-Properties API: librustutils
 
-The Java `SystemProperties` class (Section 6.5) and the bionic C entry points
-(Section 6.1) are not the only first-class clients of the property store.
-Android now ships a growing tier of platform components written in Rust --
-keystore2, the Rust zygote, parts of init, the KeyMint HAL, the eBPF loader --
-and those components do not link against bionic's C API directly. They read,
-write, and watch properties through a small Rust crate, `librustutils`, living
-at `system/librustutils/`. It is the Rust-side complement to the C and Java
-APIs this chapter has covered, and it is worth understanding because it is *the*
-way Rust platform code touches the property store.
+The property store has more first-class clients than the Java `SystemProperties`
+class (Section 6.5) and the bionic C entry points (Section 6.1).
+Android now ships a growing tier of platform components written in Rust. Examples
+are keystore2, the Rust zygote, parts of init, the KeyMint HAL, and the eBPF
+loader. Those components do not link against bionic's C API directly.
+
+They read, write, and watch properties through a small Rust crate, `librustutils`,
+that lives at `system/librustutils/`. It is the Rust-side complement to the C and
+Java APIs that this chapter has covered. It is worth understanding because it is
+*the* way Rust platform code touches the property store.
 
 ### 6.10.1 What the Crate Is
 
 `librustutils` is a roughly 1.75K-line Rust crate of safe wrappers over a
-handful of bionic facilities that Rust components would otherwise have to call
-through raw FFI. Its module map is declared in
+handful of bionic facilities. Rust components would otherwise have to call these
+facilities through raw FFI. Its module map is declared in
 `system/librustutils/rustutils/src/lib.rs` and
 `system/librustutils/rustutils/src/android.rs`:
 
@@ -11114,20 +11139,20 @@ through raw FFI. Its module map is declared in
 
 The crate is built as `librustutils` in
 `system/librustutils/rustutils/Android.bp`. The system-properties module reaches
-bionic through an auto-generated bindgen wrapper, `libsystem_properties_bindgen`,
-whose allowlist (in the same `Android.bp`) pins exactly the five bionic symbols
-the crate needs: `__system_property_find`, `__system_property_foreach`,
-`__system_property_read_callback`, `__system_property_set`, and
-`__system_property_wait`. Every call below is, underneath the safe Rust surface,
-one of those bionic calls -- the same shared-memory read path and
-property-service write path described earlier in this chapter, with no new IPC
-mechanism of its own.
+bionic through an auto-generated bindgen wrapper, `libsystem_properties_bindgen`.
+The allowlist of this wrapper (in the same `Android.bp`) pins exactly the five
+bionic symbols that the crate needs: `__system_property_find`,
+`__system_property_foreach`, `__system_property_read_callback`,
+`__system_property_set`, and `__system_property_wait`. Underneath the safe Rust
+surface, every call below is one of those bionic calls. It uses the same
+shared-memory read path and property-service write path that this chapter
+described earlier. It adds no new IPC mechanism of its own.
 
 ### 6.10.2 Reading, Writing, and Iterating
 
 The free functions in
 `system/librustutils/rustutils/src/android/system_properties.rs` cover the common
-cases without the caller ever touching a pointer:
+cases. The caller never touches a pointer:
 
 ```rust
 // Source: system/librustutils/rustutils/src/android/system_properties.rs
@@ -11149,22 +11174,22 @@ pub fn foreach<F>(mut f: F) -> Result<()> where F: FnMut(&str, &str);
 `read()` and `read_bool()` reflect the same boolean-parsing vocabulary that the
 Java `getBoolean()` accepts (Section 6.5.2). `write()` returns
 `PropertyWatcherError::SetPropertyFailed` when `__system_property_set` returns
-`-1`, which is how a Rust caller observes an SELinux denial or a write-once
-violation surfaced by the property service (Section 6.3.3). `foreach()` returns
-`PropertyWatcherError::Uninitialized` if the property area has not been set up.
+`-1`. This is how a Rust caller sees an SELinux denial or a write-once
+violation that the property service reports (Section 6.3.3). `foreach()` returns
+`PropertyWatcherError::Uninitialized` if the property area is not set up.
 
 Errors are a typed `enum`, `PropertyWatcherError`, defined in
-`system/librustutils/rustutils/src/android/system_properties/error.rs`, with
+`system/librustutils/rustutils/src/android/system_properties/error.rs`. It has
 variants for an absent property, an uninitialized area, a wait timeout, a NUL
-byte in a name or value, and a non-UTF-8 value -- so failures that the C API
+byte in a name or value, and a non-UTF-8 value. So failures that the C API
 reports as a bare `-1` become matchable Rust values.
 
 ### 6.10.3 PropertyWatcher: Observing Changes
 
 The most distinctive type is `PropertyWatcher`. The C API exposes
-`__system_property_wait`, which blocks on a futex until a property's serial
-number changes (the wait-free protocol of Section 6.1.6 is what bumps that
-serial). `PropertyWatcher` wraps that loop in a safe, serial-tracking object so
+`__system_property_wait`, which blocks on a futex until the serial number of a
+property changes. The wait-free protocol of Section 6.1.6 bumps that serial.
+`PropertyWatcher` wraps that loop in a safe object that tracks the serial. So
 Rust code can wait for a property to appear, change, or reach a specific value
 without races:
 
@@ -11189,12 +11214,12 @@ impl PropertyWatcher {
 }
 ```
 
-Internally, `wait()` records the serial number of the last change it saw and
-passes it back into `__system_property_wait`, so a change that happens between
-two waits is not missed. If the watched property does not yet exist, the watcher
-first waits on the *global* serial (a null `prop_info`) until the property is
-created, then switches to watching that property's own serial. This is exactly
-how keystore2 blocks on boot milestones -- for instance
+Internally, `wait()` records the serial number of the last change it saw. It
+passes that number back into `__system_property_wait`, so a change that happens
+between two waits is not missed. If the watched property does not yet exist, the
+watcher first waits on the *global* serial (a null `prop_info`) until the
+property is created. Then it switches to the own serial of that property. This
+is exactly how keystore2 blocks on boot milestones. For instance, see
 `PropertyWatcher::new("sys.boot_completed")` and a watcher on
 `keystore.boot_level` in `system/security/keystore2/src/globals.rs` and
 `system/security/keystore2/src/super_key.rs`.
@@ -11202,34 +11227,36 @@ how keystore2 blocks on boot milestones -- for instance
 ### 6.10.4 Where It Fits and Who Uses It
 
 Two things make `librustutils` the natural Rust counterpart to the APIs earlier
-in this chapter. First, it is broadly depended on: about 87 build modules across
-the tree list `librustutils` in their `Android.bp`, including
+in this chapter. First, many modules depend on it: about 87 build modules across
+the tree list `librustutils` in their `Android.bp`. They include
 `system/security/keystore2/Android.bp`, the Rust zygote in
 `system/zygote/zygote/Android.bp`, the KeyMint HAL in
 `system/keymint/hal/Android.bp`, and the eBPF loader in
-`system/bpf/loader/Android.bp`. Second, it is the runtime that the Soong
+`system/bpf/loader/Android.bp`.
+
+Second, it is the runtime that the Soong
 `sysprop_library` generator targets for Rust. The `parsers_formatters` module in
 `system/librustutils/rustutils/src/android/system_properties/parsers_formatters.rs`
-is documented as "should only be used in the system properties generated code,"
-and the `SysPropError` enum in the crate's `error.rs` is what the generated Rust
-accessors return -- the same `.sysprop`-driven `RustGen.cpp` path described in
-Section 6.6. So a typed `sysprop_library` accessor used from Rust ultimately
-reads and writes through this crate, just as the Java accessor goes through
-`android.os.SystemProperties`.
+is documented as "should only be used in the system properties generated code."
+The `SysPropError` enum in the `error.rs` file of the crate is what the generated
+Rust accessors return. This is the same `.sysprop`-driven `RustGen.cpp` path
+described in Section 6.6. So a typed `sysprop_library` accessor used from Rust
+ultimately reads and writes through this crate. The Java accessor goes through
+`android.os.SystemProperties` in the same way.
 
 The takeaway: when a Rust component on the platform needs a property, it does
 not reinvent the socket protocol or the shared-memory read. It calls
-`rustutils::android::system_properties::{read, write, read_bool, foreach}` or constructs
-a `PropertyWatcher`, and the crate funnels that down to the very same bionic
-primitives and property-service path that the C and Java APIs use.
+`rustutils::android::system_properties::{read, write, read_bool, foreach}` or
+constructs a `PropertyWatcher`. The crate funnels that down to the very same
+bionic primitives and property-service path that the C and Java APIs use.
 
 ---
 
 ## 6.11 Try It: Exploring System Properties
 
-This section provides hands-on exercises for understanding the system properties
-mechanism. All exercises assume you have an `adb`-connected device or emulator
-running a `userdebug` or `eng` build.
+This section provides hands-on exercises to help you understand the system
+properties mechanism. All exercises assume you have an `adb`-connected device or
+emulator that runs a `userdebug` or `eng` build.
 
 ### 6.11.1 Exercise: Listing and Inspecting Properties
 
@@ -11332,8 +11359,8 @@ adb shell setprop debug.mytest.signal go
 
 **Block on a property change with `__system_property_wait()`:**
 
-The old `watchprops` tool was removed after Android 6.0 (Marshmallow), so there is
-no stock shell command that streams property changes. To wait without polling,
+The old `watchprops` tool was removed after Android 6.0 (Marshmallow). So there
+is no stock shell command that streams property changes. To wait without polling,
 build a small native program around bionic's `__system_property_wait()`:
 
 ```c
@@ -11354,9 +11381,10 @@ int main(int argc, char** argv) {
 }
 ```
 
-(Rust code can use `rustutils::android::system_properties::PropertyWatcher` for the same
-purpose.) Push the binary to the device, run it against `debug.mytest.signal`, and
-`setprop` the property from another terminal to see it wake up.
+(Rust code can use `rustutils::android::system_properties::PropertyWatcher` for
+the same purpose.) Push the binary to the device and run it against
+`debug.mytest.signal`. Then `setprop` the property from another terminal to see
+it wake up.
 
 ### 6.11.4 Exercise: Examining Property Contexts
 
@@ -11545,9 +11573,9 @@ adb shell "
 "
 ```
 
-Note that `getprop` involves process creation overhead. The actual shared memory
-lookup is much faster (typically under 1 microsecond). A more accurate benchmark would
-use a native program that calls `__system_property_find()` and
+Note that `getprop` has process creation overhead. The actual shared memory
+lookup is much faster (typically under 1 microsecond). A more accurate benchmark
+would use a native program that calls `__system_property_find()` and
 `__system_property_read_callback()` directly.
 
 ### 6.11.10 Exercise: Exploring the Property Trie in Memory
@@ -11564,38 +11592,38 @@ PID=$(adb shell pidof com.android.systemui)
 adb shell "cat /proc/$PID/maps | grep __properties__"
 ```
 
-This exercise reveals that every process has the property areas mapped at potentially
-different virtual addresses, but they all reference the same physical pages through
-the shared memory-mapped files.
+This exercise shows that every process has the property areas mapped at
+potentially different virtual addresses. But they all reference the same
+physical pages through the shared memory-mapped files.
 
 ---
 
 ## Summary
 
-Android's system properties are a deceptively simple-looking mechanism that hides
-considerable complexity beneath its key-value interface. The architecture achieves its
-design goals through several interacting subsystems:
+Android's system properties look simple, but they hide considerable complexity
+beneath a key-value interface. The architecture meets its design goals through
+several subsystems that interact:
 
-1. **Lock-free reads** via memory-mapped files with a trie-based lookup structure,
-   using atomic operations and a dirty-backup-area protocol to ensure consistency
-   without locks.
+1. **Lock-free reads** via memory-mapped files with a trie-based lookup structure.
+   Atomic operations and a dirty-backup-area protocol make sure the data stays
+   consistent without locks.
 
-2. **Centralized writes** through init's property service, which accepts requests
+2. **Centralized writes** through init's property service. It accepts requests
    over Unix domain sockets and mediates all mutations to the shared memory.
 
-3. **SELinux enforcement** through per-context property area files, where each
+3. **SELinux enforcement** through per-context property area files. Each
    SELinux context gets its own memory-mapped file with kernel-enforced access
    control.
 
 4. **Typed properties** through the `sysprop_library` build system module, which
    generates type-safe accessors in Java, C++, and Rust. In Android 17 the old
-   checked-in API text-file compatibility check was removed, and `.sysprop`
+   checked-in API text-file compatibility check was removed. Also, `.sysprop`
    schemas gained `default_value` and `legacy_prop_name` fields that the
    generators bake into the accessors.
 
-5. **Partition isolation** through the Treble-aligned ownership model, where
-   platform, vendor, and ODM properties have clearly defined boundaries and
-   access rules, and where init derives `ro.vendor.api_level` with frozen-chipset
+5. **Partition isolation** through the Treble-aligned ownership model. In this
+   model, platform, vendor, and ODM properties have clearly defined boundaries and
+   access rules. Also, init derives `ro.vendor.api_level` with frozen-chipset
    awareness.
 
 The key source files for system properties are:

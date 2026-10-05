@@ -3,14 +3,15 @@
 The Android Runtime (ART) is the managed execution environment at the heart of
 every Android application. It loads, verifies, and executes DEX bytecode --
 the compiled output of Java and Kotlin source files. ART replaced Dalvik in
-Android 5.0 (Lollipop) and has since undergone a dramatic transformation: from
-a simple interpreter-plus-AOT model into a sophisticated, multi-tier
-compilation engine with concurrent garbage collection, on-device profile-guided
+Android 5.0 (Lollipop). Since then it has changed in a dramatic way. It was a simple
+interpreter-plus-AOT model. It is now a sophisticated, multi-tier compilation
+engine with concurrent garbage collection, on-device profile-guided
 optimization, and modular delivery through Project Mainline.
 
-This chapter traces the entire lifecycle of managed code on Android -- from the
-DEX file format, through ahead-of-time and just-in-time compilation, into
-memory management and native interop -- all grounded in the AOSP source.
+This chapter traces the entire lifecycle of managed code on Android. It starts
+with the DEX file format. It then covers ahead-of-time and just-in-time
+compilation, memory management, and native interop. The text is based on the AOSP
+source.
 
 ---
 
@@ -138,8 +139,8 @@ ART relies heavily on the Zygote process model for efficient process creation:
    - Starting the JIT thread pool
 
 This model means that the ART runtime's startup cost is paid only once
-(in the Zygote), and all apps share the memory pages of the boot image
-through copy-on-write semantics.
+(in the Zygote). All apps share the memory pages of the boot image through
+copy-on-write semantics.
 
 ```mermaid
 flowchart TD
@@ -388,8 +389,8 @@ implemented through the monitor system (`art/runtime/monitor.h`).
 ART uses a two-tier locking scheme:
 
 1. **Thin lock** -- For uncontended synchronization, a thin lock is stored
-   directly in the object's lock word (the second word of every object,
-   after the class pointer). Thin lock acquisition is a single CAS
+   directly in the object's lock word. The lock word is the second word of
+   every object, after the class pointer. Thin lock acquisition is a single CAS
    (compare-and-swap) operation:
 
       ```
@@ -401,8 +402,8 @@ ART uses a two-tier locking scheme:
       [15:0]  Owner thread ID (for thin locks)
       ```
 
-2. **Fat lock** -- When contention is detected (another thread tries to
-   acquire a thin lock held by a different thread), the thin lock is
+2. **Fat lock** -- Contention is detected when another thread tries to
+   acquire a thin lock that a different thread holds. Then the thin lock is
    "inflated" to a fat lock. Fat locks use a `Monitor` object with a
    condition variable for `wait()` / `notify()` support.
 
@@ -527,9 +528,9 @@ Key fields include:
 - `ptr_sized_fields_.entry_point_from_quick_compiled_code_` -- function
   pointer to compiled code or a trampoline
 
-The entry point field is the mechanism by which ART selects the execution mode:
-it can point to the interpreter bridge, JIT-compiled code, AOT-compiled code, or
-a resolution trampoline (for unresolved methods).
+ART selects the execution mode with the entry point field. The field can point
+to the interpreter bridge, JIT-compiled code, AOT-compiled code, or a
+resolution trampoline (for unresolved methods).
 
 ArtMethod provides rich query methods for checking method properties:
 
@@ -646,8 +647,8 @@ freed (only freed when the entire classloader is unloaded). Used for:
 
 The DEX (Dalvik Executable) file format is the bytecode container consumed by
 ART. Unlike Java's `.class` files (one per class), a single `.dex` file
-bundles all classes from a compilation unit into a single, deduplicated
-structure optimized for memory-mapped access.
+bundles all classes from a compilation unit into one deduplicated structure.
+The structure is optimized for memory-mapped access.
 
 Source: `art/libdexfile/` (library that parses and validates DEX files).
 
@@ -685,8 +686,8 @@ struct Header {
 ```
 
 DEX version 41 (magic `dex\n041\0`) adds *container* support: several logical
-DEX files are concatenated into one contiguous blob, and each one carries two
-extra header words pointing back at the enclosing container. The DEX-container
+DEX files are concatenated into one contiguous blob. Each one carries two
+extra header words that point back at the enclosing container. The DEX-container
 version constant is `DexFile::kDexContainerVersion = 41`
 (`art/libdexfile/dex/dex_file.h`, line 112), and the extended header is
 `HeaderV41`:
@@ -700,22 +701,26 @@ struct HeaderV41 : public Header {
 ```
 
 `DexFile::HasDexContainer()` returns true for V41-or-newer files (even a
-container holding a single DEX), and `GetDexContainerRange()` reconstructs the
-whole container span by walking back `header_offset_` bytes from `Begin()` and
-spanning `container_size_` bytes (`art/libdexfile/dex/dex_file.h`, lines
-291-303). The loader keys multi-entry handling off this: container entries are
-opened one at a time via `DexFileLoader::OpenOne(header_offset, ...)`, walking
-forward through the container by header offset, and the single-file `Open()`
+container holding a single DEX). `GetDexContainerRange()` reconstructs the
+whole container span. It walks back `header_offset_` bytes from `Begin()` and
+spans `container_size_` bytes (`art/libdexfile/dex/dex_file.h`, lines
+291-303). The loader keys multi-entry handling off this. It opens container
+entries one at a time via `DexFileLoader::OpenOne(header_offset, ...)` and
+walks forward through the container by header offset. The single-file `Open()`
 helper asserts `IsDexContainerLastEntry()` once the final entry has been
-consumed (line 213). Multi-dex checksum computation is container-aware too: in
+consumed (line 213).
+
+Multi-dex checksum computation is container-aware too. In
 `DexFileLoader::GetMultiDexChecksum()` (`art/libdexfile/dex/dex_file_loader.h`,
 line 113), a non-primary V41 entry whose location checksum matches the previous
-entry's is counted only once. Two Android 17 hardening fixes tightened this path: the
-verifier now rejects a header whose claimed `container_size_` exceeds the actual
-mapped size ("[V41] Check that the claimed size is LE than the actual size"),
-and the loader ignores any superfluous bytes trailing a container so a plain
-`.dex` file is required to hold exactly one container ("Ensure we ignore
-superfluous data after dex container"). See section 18.11 (Android 17 changes)
+entry's is counted only once.
+
+Two Android 17 hardening fixes tightened this path. First, the verifier now
+rejects a header whose claimed `container_size_` exceeds the actual mapped
+size. Its check message reads "[V41] Check that the claimed size is LE than
+the actual size". Second, the loader ignores any superfluous bytes that trail
+a container. So a plain `.dex` file must hold exactly one container ("Ensure we
+ignore superfluous data after dex container"). See section 18.11 (Android 17 changes)
 for how the V41 rollout interacts with profiles and dex2oat.
 
 ### 18.2.2 File Layout
@@ -1153,16 +1158,18 @@ This would produce a DEX file with approximately:
 
 ### 18.2.16 Standard vs Container DEX
 
-ART once supported two on-disk DEX variants -- the traditional standard DEX and
-an internal *compact DEX* (`CompactDexFile`) that re-encoded code items and
-debug info to shrink VDEX files. Compact DEX has been removed; the only
-`DexFile` subclass left in the tree is `StandardDexFile`
-(`art/libdexfile/dex/standard_dex_file.h`). The space-saving role compact DEX
-used to play is now filled by the DEX *container* format (V41, section 18.2.1):
-multiple logical DEX files share one mapped blob, and unchanged shared data
-(strings, type lists, debug info) is laid out once rather than per-DEX. Because
-the container is a property of the standard format itself, ART no longer needs a
-separate compact subclass -- a single `StandardDexFile` instance can be a
+ART once supported two on-disk DEX variants. These were the traditional
+standard DEX and an internal *compact DEX* (`CompactDexFile`). Compact DEX
+re-encoded code items and debug info to shrink VDEX files.
+
+Compact DEX has been removed; the only `DexFile` subclass left in the tree is
+`StandardDexFile` (`art/libdexfile/dex/standard_dex_file.h`). The space-saving role compact DEX
+used to play is now filled by the DEX *container* format (V41, section 18.2.1).
+Multiple logical DEX files share one mapped blob. Unchanged shared data
+(strings, type lists, debug info) is laid out once rather than per-DEX.
+
+The container is a property of the standard format itself. So ART no longer
+needs a separate compact subclass. A single `StandardDexFile` instance can be a
 container entry, and the loader distinguishes entries with `HasDexContainer()`
 and `IsDexContainerLastEntry()`.
 
@@ -1296,8 +1303,8 @@ The `speed-profile` filter is the most common on production devices. It works
 as follows:
 
 1. **Profile collection** -- During app execution, the JIT records which
-   methods are hot (invoked frequently), which classes are used at startup,
-   and which methods use inline caches. This data is persisted to
+   methods are hot (invoked frequently). It also records which classes are
+   used at startup and which methods use inline caches. This data is persisted to
    `/data/misc/profiles/cur/<user>/<package>/primary.prof`.
 
 2. **Profile merging** -- The `profman` tool (`art/profman/`) merges
@@ -1442,9 +1449,9 @@ the compilation behavior:
 - **Instruction set features** -- CPU features (NEON on ARM; SSSE3 / SSE4.1 /
   SSE4.2 / AVX / AVX2 / POPCNT on x86). For x86 these are derived from a named
   CPU variant by `X86InstructionSetFeatures::FromVariant()`
-  (`art/runtime/arch/x86/instruction_set_features_x86.cc`); Android 17 adds the
-  `pantherlake` variant (see section 18.11), which like `kabylake` and
-  `alderlake` enables AVX2.
+  (`art/runtime/arch/x86/instruction_set_features_x86.cc`). Android 17 adds the
+  `pantherlake` variant (see section 18.11). Like `kabylake` and
+  `alderlake`, it enables AVX2.
 - **Compiler filter** -- What to compile
 - **Profile** -- Path to the profile file for PGO
 - **Debuggable** -- Whether to generate debuggable code
@@ -1625,7 +1632,7 @@ Each compiled method has:
 The `OatQuickMethodHeader` itself is minimal: a single `code_info_offset_`
 field followed by the code (`art/runtime/oat/oat_quick_method_header.h`).
 Code size, frame size, and the core/FP register spill masks are not stored
-in the header -- they are decoded on demand from the CodeInfo blob via
+in the header. They are decoded on demand from the CodeInfo blob via
 `CodeInfo::DecodeCodeSize()` and `CodeInfo::DecodeFrameInfo()`.
 
 ### 18.3.17 Multi-Image Compilation
@@ -1761,7 +1768,7 @@ std::deque<ArtMethod*> optimized_queue_; // Full optimization
 `TryGetTaskLocked()` drains the generic task queue first, then walks the
 per-kind compilation queues in the order OSR > fast > baseline > optimized.
 Among those per-kind queues OSR is serviced first because the user is actively
-waiting in a hot loop, but a pending generic task (for example a zygote
+waiting in a hot loop. But a pending generic task (for example a zygote
 verification task) always preempts even an OSR compile.
 
 Each queue also has a corresponding set to prevent duplicate enqueuing:
@@ -1829,9 +1836,10 @@ The compilation is rejected if:
 ### 18.4.7 Pattern Matching
 
 ART includes a fast path for simple methods -- the "small pattern matcher"
-(`art/runtime/jit/small_pattern_matcher.h`). For methods on ARM/ARM64 that
-match known patterns (e.g., simple getters, setters, trivial returns), the
-JIT can install a prewritten native stub instead of running the full compiler:
+(`art/runtime/jit/small_pattern_matcher.h`). The pattern matcher works on
+ARM/ARM64 methods. Some methods match known patterns (e.g., simple getters,
+setters, trivial returns). For these, the JIT can install a prewritten native
+stub instead of running the full compiler:
 
 ```
 // art/runtime/jit/jit.cc, lines 138-154
@@ -1976,9 +1984,9 @@ more detailed view of the key passes and their effects:
 Method inlining replaces a method call with the body of the called method.
 This eliminates call overhead and enables further optimizations (like
 constant propagation through the inlined code). The JIT uses inline caches
-to guide inlining decisions for virtual calls -- if profiling shows that a
-virtual call site almost always targets the same concrete class, the inliner
-can speculatively inline that implementation with a type check guard.
+to guide inlining decisions for virtual calls. Profiling can show that a
+virtual call site almost always targets the same concrete class. Then the
+inliner can speculatively inline that implementation with a type check guard.
 
 #### Constant Folding (`constant_folding.cc`)
 
@@ -2050,7 +2058,7 @@ Each code generator applies architecture-specific optimizations:
 - **ARM64**: NEON vectorization (128-bit), paired loads/stores, conditional
   selection
 - **x86-64**: SIMD vectorization and addressing-mode optimization. The vector
-  width follows the detected features -- 128-bit XMM under SSE4.1, and 256-bit
+  width follows the detected features. It is 128-bit XMM under SSE4.1, and 256-bit
   YMM when AVX2 is available (`HLoopOptimization` reads
   `CodeGeneratorX86_64::GetSIMDRegisterWidth()`, which returns `4 * kX86_64WordSize`
   with AVX2). Android 17 extends AVX2 codegen to x86-64 (see section 18.11).
@@ -2417,15 +2425,14 @@ scanning the entire immune space.
 #### Read Barrier Table (`read_barrier_table.h`)
 
 Used by the CC collector to track which heap regions require read barrier
-processing. When a mutator reads a reference from a region in the read
-barrier table, it must check if the referenced object needs to be copied
-to to-space.
+processing. When a mutator reads a reference from a region in this table, it
+must check if the referenced object needs to be copied to to-space.
 
 ### 18.5.5 Concurrent Copying Collector
 
 The CC collector (`art/runtime/gc/collector/concurrent_copying.h`) was ART's
-long-standing default and still runs on configurations built without
-userfaultfd support; CMC is the collector AOSP builds select today
+long-standing default. It still runs on configurations built without
+userfaultfd support. CMC is the collector that AOSP builds select today
 (`ART_DEFAULT_GC_TYPE` defaults to `CMC` in `art/build/art.go`, line 50). CC
 uses a region-based copying algorithm that runs mostly concurrently with
 application (mutator) threads.
@@ -2649,12 +2656,14 @@ backing pages through `ZeroAndProtectRegion()`, which calls the shared
 `ZeroMemory()` helper in `art/libartbase/base/mem_map.cc`. In Android 17 that
 helper once again hands resident pages to the kernel with `MADV_FREE` rather
 than `MADV_DONTNEED` (`ClearMemory()`, lines 1300-1315). `MADV_FREE` lets the
-kernel reclaim the pages lazily under memory pressure while leaving them mapped
-and zero-cost to re-touch, so a region that is freed and quickly re-allocated
-avoids a hard page fault. This path had been temporarily forced to
-`MADV_DONTNEED`; the Android 17 commit "Revert 'Temporarily disable MADV_FREE
-use with CC GC'" restores `MADV_FREE` as the default for resident reclaim, while
-non-resident pages still use `MADV_DONTNEED`. See section 18.11 for the wider
+kernel reclaim the pages lazily under memory pressure. The pages stay mapped
+and are zero-cost to re-touch. A region that is freed and quickly re-allocated
+therefore avoids a hard page fault.
+
+This path was temporarily forced to
+`MADV_DONTNEED`. The Android 17 commit "Revert 'Temporarily disable MADV_FREE
+use with CC GC'" restores `MADV_FREE` as the default for resident reclaim.
+Non-resident pages still use `MADV_DONTNEED`. See section 18.11 for the wider
 Android 17 memory-management story.
 
 #### Thread-Local Allocation Buffers (TLABs)
@@ -2907,8 +2916,9 @@ static constexpr double kDefaultHeapGrowthMultiplier = 2.0;
 
 ### 18.5.16 Heap Trimming
 
-When the app goes to background or after a period of inactivity, the heap
-can be trimmed to release unused memory back to the operating system:
+The heap can be trimmed to release unused memory back to the operating
+system. This happens when the app goes to background or after a period of
+inactivity:
 
 ```
 // art/runtime/gc/heap.h, line 192
@@ -3134,7 +3144,7 @@ The class status progresses through these states (defined in
 The IMT is a hash-based dispatch table that provides fast interface method
 calls. Each class has a fixed-size IMT (typically 43 entries). The slot for
 an interface method is derived from a hash mixing its declaring class,
-name, and signature (`art/runtime/imtable-inl.h`); default methods instead
+name, and signature (`art/runtime/imtable-inl.h`). Default methods instead
 mask their method index with `kSizeTruncToPowerOfTwo - 1` (31):
 
 - **Single entry** -- If only one interface method maps to a slot, the
@@ -3342,7 +3352,7 @@ Field resolution follows Java Language Specification (JLS) rules:
 4. Cache the resolved `ArtField*`.
 
 The `ResolveFieldJLS` variant follows Java field resolution semantics
-(searching the class hierarchy in JLS-defined order), while `ResolveField`
+(it searches the class hierarchy in JLS-defined order). `ResolveField`
 with `is_static` performs a direct lookup in either the static or instance
 field arrays.
 
@@ -3369,15 +3379,15 @@ by the JIT compiler during devirtualization. When a class is loaded that
 overrides a method previously assumed to have a single implementation, CHA
 invalidates the compiled code and triggers deoptimization.
 
-This enables speculative devirtualization: the JIT can inline virtual method
-calls when only one implementation is known, but must be prepared to
-deoptimize if the assumption is broken by dynamic class loading.
+This enables speculative devirtualization. The JIT can inline virtual method
+calls when only one implementation is known. It must be prepared to
+deoptimize if dynamic class loading breaks the assumption.
 
 ### 18.6.16 AddImageSpace
 
 For boot images and app images, `AddImageSpace()` registers a precompiled
 `.art` image space (already mapped and added to the heap) with the class
-linker, making its classes available:
+linker. This makes its classes available:
 
 ```
 // art/runtime/class_linker.h, lines 196-201
@@ -3389,7 +3399,7 @@ bool AddImageSpace(gc::space::ImageSpace* space,
 ```
 
 This is the primary mechanism by which boot image classes become available
-to all processes -- the Zygote maps them, and child processes inherit the
+to all processes. The Zygote maps them, and child processes inherit the
 mappings via `fork()`.
 
 ---
@@ -3566,8 +3576,8 @@ only the last two: its header describes itself as being "used for global and
 weak global JNI references". Local references get their own table type because
 they need different encoding and much cheaper push/pop behavior. All three
 share the `IndirectRefKind` tag stored in the two low bits of the handle
-(`kJniTransition`, `kLocal`, `kGlobal`, `kWeakGlobal`), which is how
-`GetObjectRefType()` and the reference-decoding fast paths tell them apart.
+(`kJniTransition`, `kLocal`, `kGlobal`, `kWeakGlobal`). `GetObjectRefType()`
+and the reference-decoding fast paths use this tag to tell them apart.
 
 ### 18.7.10 JNI Trampoline Types
 
@@ -3636,8 +3646,8 @@ must handle:
 - **JNI frames** -- Identify the managed caller and the native callee.
 - **Transition frames** -- Special frames at managed/native boundaries.
 
-The stack walker is implemented in `art/runtime/stack.h` and is one of the
-most architecturally sensitive parts of ART, as it must understand each
+The stack walker is implemented in `art/runtime/stack.h`. It is one of the
+most architecturally sensitive parts of ART, because it must understand each
 ISA's calling conventions and frame layouts.
 
 ---
@@ -4044,8 +4054,8 @@ When running under a native bridge (e.g., for ISA translation like ARM-on-x86),
 `libnativeloader` creates "bridged" namespaces that route library loading
 through the native bridge. Every namespace lookup carries an `is_bridged`
 parameter that selects between the native bridge and the direct linker.
-The APEX lookup path shows the parameter in use -- here it is hard-coded to
-`false`, because as the source comment above this call notes, native bridge
+The APEX lookup path shows the parameter in use. Here it is hard-coded to
+`false`, because the source comment above this call notes that native bridge
 is never used for APEXes:
 
 ```
@@ -4267,9 +4277,9 @@ AllocationManager* gAllocManager;
 
 Breakpoints work by:
 
-1. **Deoptimizing the method** -- If the method has compiled code (JIT or
-   AOT), the entry point is replaced with the interpreter bridge so the
-   method runs in the interpreter.
+1. **Deoptimizing the method** -- If the method has compiled code (JIT or AOT),
+   the entry point is replaced with the interpreter bridge. The method then runs
+   in the interpreter.
 2. **Installing a breakpoint callback** -- The interpreter checks for
    breakpoints at each DEX PC and fires the JVMTI breakpoint event.
 3. **Notifying the agent** -- The JVMTI event callback is invoked with the
@@ -4281,11 +4291,12 @@ ART supports class redefinition (hot-swap) through two entry points in
 `art/openjdkjvmti/ti_redefine.h`. The standard JVMTI `RedefineClasses`
 function (line 89) performs non-structural redefinition -- method bodies may
 change, but the shape of the class may not. Structural redefinition is an
-ART-specific JVMTI extension, `com.android.art.class.structurally_redefine_classes`,
-registered in `art/openjdkjvmti/ti_extension.cc` (lines 420-423) and backed by
-`Redefiner::StructurallyRedefineClasses` (line 92); it accepts additive changes
--- new methods and fields -- but still forbids removals or changes to
-supertypes and implemented interfaces. Together these back Android Studio's
+ART-specific JVMTI extension,
+`com.android.art.class.structurally_redefine_classes`. It is registered in
+`art/openjdkjvmti/ti_extension.cc` (lines 420-423) and backed by
+`Redefiner::StructurallyRedefineClasses` (line 92). It accepts additive changes
+-- new methods and fields -- but still forbids removals or changes to supertypes
+and implemented interfaces. Together these back Android Studio's
 "Apply Changes" feature, which modifies classes without restarting the app.
 
 The redefinition process:
@@ -4494,9 +4505,10 @@ a Java component and a native (C++) component.
 ### 18.10.17 ART Daemon (artd)
 
 The `artd` service (`art/artd/`) is the privileged shim component of ART
-Service: it performs tasks that require elevated permissions not available
-to `system_server`, such as manipulating the file system and invoking
-`dex2oat`. Its binder interface (`IArtd`) is internal to ART Service's
+Service. It performs tasks that require elevated permissions not available to
+`system_server`. Such tasks include manipulation of the file system and
+invocation of `dex2oat`. Its binder interface (`IArtd`) is internal to ART
+Service's
 Java code and covers:
 
 - Performing dex optimization (`dexopt()`) and checking whether it is
@@ -4527,30 +4539,33 @@ invoke `dex2oat`.
 ## 18.11 Android 17 Changes
 
 Android 17 ships the ART module with a focused set of runtime, compiler, and GC
-changes. None of them alter the architecture described above, but several touch
-data structures and code paths that earlier sections reference, so this section
+changes. None of them alter the architecture described above. Several touch data
+structures and code paths that earlier sections reference, so this section
 collects them with their source citations.
 
 ### 18.11.1 Pantherlake x86 ISA Variant (AVX2)
 
-ART's x86 back-end does not probe the CPU with `CPUID` at compile time; instead
+ART's x86 back-end does not probe the CPU with `CPUID` at compile time. Instead
 it is handed a *named variant* -- much like a compiler's `-march=`/`-mtune=`
-target -- and maps that name to a fixed set of instruction-set features. The list
+target. It maps that name to a fixed set of instruction-set features. The list
 of recognized variants, and the features each one implies, lives in
-`art/runtime/arch/x86/instruction_set_features_x86.cc`. Teaching ART about a new
-CPU generation is therefore just a matter of adding its name to
-`x86_known_variants` and listing it in the per-feature arrays it qualifies for.
+`art/runtime/arch/x86/instruction_set_features_x86.cc`. A new
+CPU generation is therefore just a matter of adding its name to `x86_known_variants` and listing it in the
+per-feature arrays it qualifies for.
 
 **What `pantherlake` is.** Panther Lake is Intel's client (consumer/mobile) CPU
 generation -- newer than the Kaby Lake and Alder Lake parts already in ART's
-list. For ART's purposes the one salient fact is its vector ISA: like other Intel
-*client* silicon it exposes AVX and AVX2 but not the server-only AVX-512, which is
-exactly why its entry tops out at AVX2 rather than declaring an AVX-512 feature.
-The reason ART cares about the name at all is code generation: when a build
-targets x86-64 -- the Android emulator, x86 Chromebooks, and other x86 form
-factors -- naming `pantherlake` tells `dex2oat` and the optimizing compiler the
-exact feature set the CPU has, so they emit wider vectorized code instead of
-conservatively assuming a baseline x86 chip. Android 17 adds it as a known
+list. For ART's purposes the one salient fact is its vector ISA. Like other
+Intel *client* silicon, it exposes AVX and AVX2 but not the server-only AVX-512.
+This is exactly why its entry tops out at AVX2 and does not declare an AVX-512
+feature.
+
+The reason ART cares about the name at all is code generation. A build can
+target x86-64 -- the Android emulator, x86 Chromebooks, and other x86 form
+factors. For such a build, the name `pantherlake` tells `dex2oat` and the
+optimizing compiler the exact feature set the CPU has. They then emit wider
+vectorized code. Without the name, they conservatively assume a baseline x86
+chip. Android 17 adds it as a known
 variant:
 
 ```
@@ -4568,19 +4583,22 @@ static constexpr const char* x86_variants_with_avx2[] = {
 
 Because `pantherlake` is listed in `x86_variants_with_avx2`,
 `X86InstructionSetFeatures::FromVariant("pantherlake", ...)` returns a feature
-set with `HasAVX2()` true (alongside SSSE3, SSE4.1, SSE4.2, AVX, and POPCNT) --
-the feature string `ssse3,sse4.1,sse4.2,avx,avx2,popcnt` (bitmap `63`). The unit
+set with `HasAVX2()` true (alongside SSSE3, SSE4.1, SSE4.2, AVX, and POPCNT).
+The feature string is `ssse3,sse4.1,sse4.2,avx,avx2,popcnt` (bitmap `63`). The
+unit
 test `X86FeaturesFromPantherlakeVariant`
 (`art/runtime/arch/x86/instruction_set_features_x86_test.cc`) asserts that exact
 result for both the 32-bit `kX86` and 64-bit `kX86_64` instruction sets. This
 puts `pantherlake` alongside `kabylake` and `alderlake` as the only three
-variants ART recognizes at the AVX2 tier; the older Silvermont, Goldmont, and
-Tremont families it knows about stop at SSE4.2/POPCNT with no AVX or AVX2,
-while Atom stops even earlier at SSSE3.
+variants ART recognizes at the AVX2 tier. The older Silvermont, Goldmont, and
+Tremont families it knows about stop at SSE4.2/POPCNT with no AVX or AVX2. Atom
+stops even earlier at SSSE3.
+
 The AVX2 bit lives at position 4 of the feature bitmap
-(`kAvx2Bitfield = 1 << 4`, `art/runtime/arch/x86/instruction_set_features_x86.h`,
-line 141); an Android 17 fix corrected that bit position so the bitmap encoding
-of x86 features round-trips correctly.
+(`kAvx2Bitfield = 1 << 4`,
+`art/runtime/arch/x86/instruction_set_features_x86.h`, line 141). An Android 17
+fix corrected that bit position so the bitmap encoding of x86 features
+round-trips correctly.
 
 ### 18.11.2 AVX2 Vectorization on x86-64
 
@@ -4597,13 +4615,14 @@ size_t GetSIMDRegisterWidth() const override {
 
 `4 * kX86_64WordSize` is 32 bytes (256-bit YMM); without AVX2 the width is
 `2 * kX86_64WordSize` (16 bytes, 128-bit XMM). The loop vectorizer reads this
-width when it decides how many lanes a vector operation packs:
+width when it decides how many lanes a vector operation packs.
 `HLoopOptimization::TrySetVectorType()` computes the lane count as
 `simd_register_size_ / DataType::Size(type)` for the x86 and x86-64 cases
-(`art/compiler/optimizing/loop_optimization.cc`, lines 2161-2219) and passes it
-to `TrySetVectorLength()`, which only stores and validates the result, so a
-`float`/`int` loop on an AVX2 target processes eight elements per iteration
-instead of four. Android 17 added the AVX2-based vectorization path for x86-64;
+(`art/compiler/optimizing/loop_optimization.cc`, lines 2161-2219). It passes the
+lane count to `TrySetVectorLength()`, which only stores and validates the
+result. So a `float`/`int` loop on an AVX2 target processes eight elements per
+iteration instead of four. Android 17 added the AVX2-based vectorization path
+for x86-64;
 the matching vector emitters in
 `art/compiler/optimizing/code_generator_vector_x86_64.cc` branch on
 `GetInstructionSetFeatures().HasAVX2()` to emit YMM forms.
@@ -4625,12 +4644,12 @@ Android 17 is where the V41 container format matures across the toolchain:
 
 - **Loader and verifier**: `DexFile::kDexContainerVersion = 41` gates container
   handling (`art/libdexfile/dex/dex_file.h`, line 112). The loader opens any
-  non-primary DEX of version `>= 41` as a container entry and validates that the
+  non-primary DEX of version `>= 41` as a container entry. It validates that the
   last entry's end matches the container end
   (`art/libdexfile/dex/dex_file_loader.h`, lines 113 and 213). Two hardening
-  fixes landed: the verifier rejects a header whose claimed `container_size_`
-  exceeds the actually-mapped size, and the loader now ignores any superfluous
-  bytes after a container so a plain `.dex` must contain exactly one container.
+  fixes landed. The verifier rejects a header whose claimed `container_size_`
+  exceeds the actually-mapped size. The loader now ignores any superfluous bytes
+  after a container, so a plain `.dex` must contain exactly one container.
 - **Profiles**: a container can pack what used to be `classes.dex`,
   `classes2.dex`, ... into a single zip entry, so the zip-entry name is no
   longer a unique profile key. `ProfileCompilationInfo::GetProfileDexFileBaseKey()`
@@ -4639,11 +4658,11 @@ Android 17 is where the V41 container format matures across the toolchain:
   multi-dex APKs keep the old zip-entry-name form
   (`art/libprofile/profile/profile_compilation_info.cc`, lines 645-663).
 
-The V41 rollout is staged behind a release flag (`RELEASE_USE_DEX_V41`) that
-toggled on and off through development before settling; the format and the
-runtime code that parses it are present in the Android 17 ART module regardless,
-so a device that receives V41-encoded DEX from `dex2oat` or the build system
-parses it correctly.
+The V41 rollout is staged behind a release flag (`RELEASE_USE_DEX_V41`). The
+flag toggled on and off through development before it settled. The format and
+the runtime code that parses it are present in the Android 17 ART module
+regardless. So a device that receives V41-encoded DEX from `dex2oat` or the
+build system parses it correctly.
 
 ### 18.11.4 Value Classes and Record Classes
 
@@ -4677,9 +4696,9 @@ bool ClassLinker::VerifyValueClass(Handle<mirror::Class> klass) {
 }
 ```
 
-Value classes remain a preview-stage Java feature; for now the flag only records
-the property (`IsValueClass()` becomes queryable), and the full set of identity
-and immutability checks is still to come.
+Value classes remain a preview-stage Java feature. For now the flag only records
+the property (`IsValueClass()` becomes queryable). The full set of identity and
+immutability checks is still to come.
 
 **Record classes (now "normal").** Record classes are detected the same way --
 the `@dalvik.annotation.Record` annotation drives `SetRecordClass()`, which sets
@@ -4727,10 +4746,10 @@ static inline void ClearMemory(uint8_t* page_begin, size_t size, bool resident, 
 }
 ```
 
-`MADV_FREE` is cheaper than `MADV_DONTNEED`: the kernel keeps the pages mapped
-and reclaims them lazily only under memory pressure, so a region that is freed
+`MADV_FREE` is cheaper than `MADV_DONTNEED`. The kernel keeps the pages mapped
+and reclaims them lazily only under memory pressure. So a region that is freed
 and quickly reused avoids a hard page fault and a fresh zero-fill. This behavior
-had been temporarily disabled for the CC GC; the Android 17 commit "Revert
+was temporarily disabled for the CC GC. The Android 17 commit "Revert
 'Temporarily disable MADV_FREE use with CC GC'" restores `MADV_FREE` as the
 default for resident reclaim. ART's region-space reclaim reaches this helper via
 `RegionSpace::ZeroAndProtectRegion()` -> `ZeroMemory()`
@@ -4742,16 +4761,16 @@ The Android 17 ART changes above flow through `dex2oat` (section 18.3) without
 changing its overall structure:
 
 - `dex2oat` records the target instruction set and its features in the OAT/VDEX
-  it produces; on an x86-64 build configured for `pantherlake` it therefore
+  it produces. On an x86-64 build configured for `pantherlake`, it therefore
   emits AVX2-aware (256-bit YMM) vectorized code where the optimizer can apply
   it.
 - When the build or runtime supplies V41 container DEX, `dex2oat` consumes it
-  through the same `DexFileLoader` container path described in section 18.11.3,
-  and the profiles it reads use the flattened-index profile keys for container
+  through the same `DexFileLoader` container path described in section 18.11.3.
+  The profiles it reads use the flattened-index profile keys for container
   entries.
 - Record and value class flags are set during class linking
-  (`ClassLinker::LinkSuperClass` -> `VerifyRecordClass` / `VerifyValueClass`), so
-  AOT-compiled images built by `dex2oat` carry the same `class_flags` the
+  (`ClassLinker::LinkSuperClass` -> `VerifyRecordClass` / `VerifyValueClass`).
+  So AOT-compiled images built by `dex2oat` carry the same `class_flags` the
   runtime would compute.
 
 None of these changes the OAT/VDEX file format version or the odrefresh
@@ -4759,27 +4778,31 @@ recompilation triggers covered in section 18.8.
 
 ### 18.11.7 libcore Class Library Uprev to OpenJDK 25
 
-The Java class library ART executes -- `libcore` (project `libcore/`, whose
-`ojluni/` tree holds the OpenJDK-derived `java.*` sources) -- tracks upstream
+The Java class library that ART executes is `libcore` (project `libcore/`, whose
+`ojluni/` tree holds the OpenJDK-derived `java.*` sources). It tracks upstream
 OpenJDK on a per-file basis rather than wholesale. The mapping table
 `libcore/EXPECTED_UPSTREAM` records, for each `ojluni` file, the exact upstream
-release tag it was last rebased from. Android 17 advances that tracking so the
-single largest group of files now follows **OpenJDK 25** (`jdk25u/jdk-25.0.1-ga`):
-of the roughly 2,774 mapped files, about 1,206 cite the `jdk-25.0.1-ga` tag (plus
-one early `jdk-25+26` build for `java.lang.foreign.MemoryLayout`), making 25 the
-plurality version. libcore remains a deliberate mix -- files still sit on
-`jdk21u/jdk-21.0.6-ga`, `jdk17u/jdk-17.0.14-ga`, `jdk11u/jdk-11.0.26-ga`, and
-even `jdk8u`/`jdk7u` tags where Android carries local divergence or has not yet
-rebased -- so "OpenJDK 25" describes the dominant tracking point, not a uniform
-baseline. This uprev is purely a class-library refresh: it does not change the
-ART runtime, compiler, GC, or DEX/OAT formats described in this chapter, only the
-`java.*` source that `dex2oat` compiles and the runtime loads.
+release tag it was last rebased from.
+
+Android 17 advances that tracking, so the single largest group of files now
+follows **OpenJDK 25** (`jdk25u/jdk-25.0.1-ga`). Of the roughly 2,774 mapped
+files, about 1,206 cite the `jdk-25.0.1-ga` tag (plus one early `jdk-25+26`
+build for `java.lang.foreign.MemoryLayout`). This makes 25 the plurality
+version.
+
+libcore remains a deliberate mix. Files still sit on `jdk21u/jdk-21.0.6-ga`,
+`jdk17u/jdk-17.0.14-ga`, `jdk11u/jdk-11.0.26-ga`, and even `jdk8u`/`jdk7u` tags
+where Android carries local divergence or has not yet rebased. So "OpenJDK 25"
+describes the dominant tracking point, not a uniform baseline. This uprev is
+purely a class-library refresh. It does not change the ART runtime, compiler,
+GC, or DEX/OAT formats described in this chapter. It changes only the `java.*`
+source that `dex2oat` compiles and the runtime loads.
 
 ### 18.11.8 Generational Mark-Compact Collection
 
 Section 18.5.6 described generational collection for the Concurrent Copying
 collector (the `use_generational_cc_` / `young_gen_` flags). The Mark-Compact
-collector of section 18.5.17 gains the same generational treatment: a minor GC
+collector of section 18.5.17 gains the same generational treatment. A minor GC
 traces and compacts only recently-allocated objects instead of the whole heap.
 The feature is controlled by the `use_generational_cmc` aconfig flag and the
 `persist.device_config.runtime_native_boot.use_generational_gc` system property,
@@ -4800,9 +4823,9 @@ The flag itself is fixed read-only (`art/build/flags/art-flags.aconfig`, the
 `use_generational_cmc` entry, namespace `art_performance`). When generational
 CMC is on, `MarkCompact` keeps `use_generational_` set and flips `young_gen_`
 for each minor collection (`art/runtime/gc/collector/mark_compact.cc`, lines
-508-511, 524-525); the new `YoungMarkCompact` wrapper class reports
+508-511, 524-525). The new `YoungMarkCompact` wrapper class reports
 `kGcTypeSticky` from its `GetGcType()`
-(`art/runtime/gc/collector/mark_compact.h`, line 69), while
+(`art/runtime/gc/collector/mark_compact.h`, line 69). In contrast,
 `MarkCompact::GetGcType()` returns `kGcTypePartial` (line 148).
 
 Unlike the two-generation CC scheme, generational CMC tracks three generations
@@ -4828,9 +4851,9 @@ heap.
 Before Android 17, an app could overwrite a `static final` field through
 reflection (`Field.setAccessible(true)` followed by `Field.set(...)`) or JNI
 (`SetStatic<Type>Field`). For apps targeting SDK 37 (`SdkVersion::kC`,
-`art/libartbase/base/sdk_version.h` line 44), ART now rejects those writes --
-the reflection path throws an `IllegalAccessException`, and the JNI path is
-fatal (see below). The gate is the target SDK version, so existing binaries
+`art/libartbase/base/sdk_version.h` line 44), ART now rejects those writes. The
+reflection path throws an `IllegalAccessException`, and the JNI path is fatal
+(see below). The gate is the target SDK version, so existing binaries
 keep working until they recompile against the new target.
 
 The decision lives in `ArtField::IsUnmodifiable()`, which short-circuits for
@@ -4873,16 +4896,18 @@ The JNI path enforces the same rule, but far more harshly. Each
 calls `RecordModificationAttempt()` and then, when `IsUnmodifiable()` holds,
 executes a `LOG(FATAL) << "Cannot set ..."` that aborts the whole process
 (`art/runtime/jni/jni_internal.cc`, lines 1666-1688). No exception is thrown
-there -- `IllegalAccessException` is the reflection behavior only. Two
-carve-outs survive: the write-protected
-`System.in`/`out`/`err` fields (mutable only through `System.setIn/setOut/setErr`),
-and class redefinition under a Java-debuggable runtime, which Android Studio
-relies on for hot-swapping fields. Apps targeting SDK 37 and higher also lose
-the ability to modify `static final` fields whose type is `MethodHandle`,
-`VarHandle`, an `Atomic*FieldUpdater`, or `Unsafe`, even where a plain field
-would still be writable (`art/runtime/art_field-inl.h`, lines 536-552). Each
-attempt increments a runtime metric -- `BcpStaticFinalFieldOverwrite` for
-boot-classpath fields, `AppStaticFinalFieldOverwrite` for app fields -- so the
+there -- `IllegalAccessException` is the reflection behavior only.
+
+Two carve-outs survive. One is the write-protected `System.in`/`out`/`err`
+fields (mutable only through `System.setIn/setOut/setErr`). The other is class
+redefinition under a Java-debuggable runtime, which Android Studio relies on to
+hot-swap fields. Apps targeting SDK 37 and higher also lose the ability to
+modify `static final` fields whose type is `MethodHandle`, `VarHandle`, an
+`Atomic*FieldUpdater`, or `Unsafe`. This holds even where a plain field would
+still be writable (`art/runtime/art_field-inl.h`, lines 536-552).
+
+Each attempt increments a runtime metric: `BcpStaticFinalFieldOverwrite` for
+boot-classpath fields and `AppStaticFinalFieldOverwrite` for app fields. So the
 platform can measure how many apps still rely on the old behavior.
 
 ---
@@ -4892,43 +4917,44 @@ platform can measure how many apps still rely on the old behavior.
 Android 17 ships a second, ground-up reimplementation of the zygote process
 written in Rust. It lives in its own top-level project, `system/zygote/`, and
 builds a daemon binary named `zygote_next` (`system/zygote/zygote/Android.bp`,
-the `rust_binary { name: "zygote_next" }` target). It is written in Rust
-across a handful of crates and is an experiment in replacing the
-classic C++/Java zygote described in section 18.1.4 (and the launcher in
-`frameworks/base/cmds/app_process`). This section explains what it is, how it
-differs structurally from the classic zygote, and -- importantly -- how it is
-gated, because it is not the default process launcher in Android 17.
+the `rust_binary { name: "zygote_next" }` target). It is written in Rust across
+a handful of crates. It is an experiment to replace the classic C++/Java zygote
+described in section 18.1.4 (and the launcher in
+`frameworks/base/cmds/app_process`). This section explains what it is and how it
+differs structurally from the classic zygote. Most important, it explains how
+the zygote is gated, because it is not the default process launcher in Android
+17.
 
 ### 18.12.1 Why a Native Rust Zygote
 
 The classic zygote is a Java class (`ZygoteInit` /
-`frameworks/base/core/java/com/android/internal/os/Zygote*`) launched by the
-native `app_process` runner, which embeds the ART runtime and then runs the
+`frameworks/base/core/java/com/android/internal/os/Zygote*`). The native
+`app_process` runner launches it, embeds the ART runtime, and then runs the
 `com.android.internal.os.ZygoteInit` main. Its forking, file-descriptor
 hygiene, capability dropping, and SELinux/UID transitions are implemented partly
-in Java and partly in C++ JNI helpers. That code is security critical -- it runs
-as root and decides exactly what an app process inherits -- and it is exactly the
-kind of pointer-and-syscall code where C++ memory-safety bugs are most dangerous.
+in Java and partly in C++ JNI helpers. That code is security critical. It runs
+as root and decides exactly what an app process inherits. It is also exactly the
+kind of pointer-and-syscall code where C++ memory-safety bugs are most
+dangerous.
 
 The native zygote rewrites this layer in Rust for three stated reasons, all
 visible in the project structure (`system/zygote/README.md`):
 
 - **Memory safety.** The lowest crate, `zygote-sys`
-  (`system/zygote/zygote-sys/`), is the single `unsafe` FFI boundary that wraps
-  raw `libc`/Linux syscalls (`fork`, `clone3`, `setresuid`/`setresgid`,
-  `prctl`, `epoll_wait`, socket calls) and Android-specific helpers
-  (SELinux context, cpuset policy) into safe `Result`-returning Rust APIs.
+  (`system/zygote/zygote-sys/`), is the single `unsafe` FFI boundary. It wraps
+  raw `libc`/Linux syscalls (`fork`, `clone3`, `setresuid`/`setresgid`, `prctl`,
+  `epoll_wait`, socket calls) into safe `Result`-returning Rust APIs. It wraps
+  Android-specific helpers (SELinux context, cpuset policy) in the same way.
   Everything above it -- the server loop, the spawn logic, the
   capability/rlimit handling in `child_process.rs` -- is safe Rust.
 - **Startup and footprint.** A native daemon avoids embedding a full managed
-  runtime purely to run the launcher logic; the `zygote_next` binary preloads
-  shared libraries and then forks, rather than booting ART to run Java spawn
-  code.
+  runtime purely to run the launcher logic. The `zygote_next` binary preloads
+  shared libraries and then forks. It does not boot ART to run Java spawn code.
 - **Maintainability.** The security-critical file-descriptor allowlists are
   data tables in `system/zygote/zygote/src/species/android_native.rs` with an
   explicit per-entry review action, rather than scattered imperative checks.
 
-This does not replace the ART runtime itself: a spawned Android app process
+This does not replace the ART runtime itself. A spawned Android app process
 still needs the managed runtime, the boot image, and class preloading covered in
 sections 18.1 through 18.6. The native zygote is a replacement for the
 *process-creation and specialization machinery*, not for ART.
@@ -4936,13 +4962,13 @@ sections 18.1 through 18.6. The native zygote is a replacement for the
 ### 18.12.2 The Species and Subspecies Model
 
 The classic zygote bakes in one notion of "what gets forked" (a managed app
-process), with a few special cases bolted on (the system_server fork, the
+process). A few special cases are bolted on (the system_server fork, the
 app-zygote, the WebView zygote). The native zygote abstracts that variability
 behind a `Species` trait
 (`system/zygote/zygote/src/species.rs`). A species is the set of callbacks that
-decide what a particular flavor of child process preloads, which file
-descriptors and sockets it is allowed to inherit, and how control is finally
-handed to the new process (the `gestate` method, which never returns).
+decide what a flavor of child process preloads and which file descriptors and
+sockets it may inherit. The callbacks also decide how control is finally handed
+to the new process (the `gestate` method, which never returns).
 
 The species implemented in 17 are tagged by `SpeciesTag`
 (`system/zygote/zygote/src/species.rs`):
@@ -4960,15 +4986,17 @@ The species implemented in 17 are tagged by `SpeciesTag`
 A **subspecies** is the native zygote's equivalent of the classic *child
 zygote* (the app-zygote / per-app-zygote and WebView zygote). Instead of forking
 a child that immediately becomes an app, the server can fork a child that itself
-becomes a new zygote server bound to its own socket, ready to spawn further
-processes with a restricted profile. This is driven by the `SpawnSubspecies`
-message and handled by `Server::handle_message_spawn_subspecies` ->
-`Server::re_initialize_as_subspecies`
-(`system/zygote/zygote/src/server.rs`), which resets the file-descriptor
-registry and rebinds the epoll loop and signal handling for the child server.
+becomes a new zygote server. This new server is bound to its own socket and is
+ready to spawn further processes with a restricted profile.
+
+This is driven by the `SpawnSubspecies` message and handled by
+`Server::handle_message_spawn_subspecies` ->
+`Server::re_initialize_as_subspecies` (`system/zygote/zygote/src/server.rs`).
+The handler resets the file-descriptor registry and rebinds the epoll loop and
+signal handling for the child server.
 The `SpawnSubspeciesAndroidNative` payload carries the restricted library paths,
-UID/GID range, and preload function that the subspecies will enforce -- the same
-role the classic app-zygote plays in restricting a sandboxed process.
+UID/GID range, and preload function that the subspecies will enforce. The
+classic app-zygote plays the same role when it restricts a sandboxed process.
 
 The following diagram shows the native zygote species fork model and how a
 subspecies becomes a second server.
@@ -4992,7 +5020,7 @@ flowchart TD
 The classic zygote command protocol is a newline-delimited list of text
 arguments written over a `stream` `LocalSocket` (the `socket zygote stream 660
 root system` line in `system/core/rootdir/init.zygote64.rc`, backing a
-`LocalServerSocket`); the new `zygote_next` uses a `seqpacket` socket instead.
+`LocalServerSocket`). The new `zygote_next` uses a `seqpacket` socket instead.
 The native zygote replaces that with a typed, FlatBuffers-encoded command
 protocol. The schema lives in
 `system/zygote/zygote-messages/schemas/messages.fbs` and is compiled into Rust
@@ -5000,50 +5028,53 @@ bindings in the `zygote-messages` crate
 (`system/zygote/zygote-messages/`).
 
 The root type is a `Parcel` wrapping a `Message` union. The union members are
-the full command vocabulary: `IdentityQuery` / `IdentityQueryResponse` (ask the
-server which species/arch it is), `Spawn` and `SpawnSubspecies` (with a
-`SpawnCommon` carrying UID/GID, capabilities, rlimits, SELinux `se_info`, and
-scheduling priorities, plus a `SpawnPayload` union selecting
-`SpawnAndroidNative`, `SpawnSubspeciesAndroidNative`, `SpawnLibApp`, or
-`SpawnMock`), `SpawnResponse` (the spawned PID), and `Stat` / `StatResponse`
-for process introspection.
+the full command vocabulary.
+
+`IdentityQuery` / `IdentityQueryResponse` ask the server which species/arch it
+is. `Spawn` and `SpawnSubspecies` carry a `SpawnCommon` with UID/GID,
+capabilities, rlimits, SELinux `se_info`, and scheduling priorities. They also
+carry a `SpawnPayload` union that selects `SpawnAndroidNative`,
+`SpawnSubspeciesAndroidNative`, `SpawnLibApp`, or `SpawnMock`. `SpawnResponse`
+carries the spawned PID. `Stat` / `StatResponse` serve process introspection.
 
 On the framework side the client is `NativeZygoteProcess`
 (`frameworks/base/core/java/android/os/NativeZygoteProcess.java`), an
 `IZygoteProcess` implementation that connects to the `zygote_next` seqpacket
 socket and calls JNI methods in
 `frameworks/base/core/jni/android_os_NativeZygoteProcess.cpp`. The JNI layer
-builds the FlatBuffer (`CreateSpawnParcel`) and writes it to the socket; the
-note in that file that `RESPONSE_DATA_BUF_SIZE` must stay in sync with
-`MESSAGE_BUFFER_SIZE` in `system/zygote/zygote-messages/src/lib.rs` shows the
-two sides share one schema. The server's `epoll` loop dispatches each decoded
-`Message` (`Server::serve` in `system/zygote/zygote/src/server.rs`, line
-1156): an
-`IdentityQuery` is answered, a `Spawn`/`SpawnSubspecies` triggers a `fork()`
-followed by `child_process::re_initialize` and either `Species::gestate` (for an
-app) or `re_initialize_as_subspecies` (for a subspecies server).
+builds the FlatBuffer (`CreateSpawnParcel`) and writes it to the socket. A note
+in that file says `RESPONSE_DATA_BUF_SIZE` must stay in sync with
+`MESSAGE_BUFFER_SIZE` in `system/zygote/zygote-messages/src/lib.rs`. This shows
+that the two sides share one schema.
+
+The server's `epoll` loop dispatches each decoded `Message` (`Server::serve` in
+`system/zygote/zygote/src/server.rs`, line 1156). An `IdentityQuery` is
+answered. A `Spawn`/`SpawnSubspecies` triggers a `fork()` followed by
+`child_process::re_initialize` and either `Species::gestate` (for an app) or
+`re_initialize_as_subspecies` (for a subspecies server).
 
 ### 18.12.4 Relationship to the Classic Zygote and Boot Flow
 
 The native zygote reuses the same fork-and-specialize idea as the classic model
-in section 18.1.4: a long-lived server preloads shared resources once, then
-`fork()`s a child per process and re-initializes it (drop the capability
-bounding set, set secondary groups, set rlimits, `setresgid` to the target GID,
-apply seccomp filters while still privileged -- before the UID change -- then
-`setresuid` to the target UID and overwrite the capability set --
-`child_process::re_initialize` in
-`system/zygote/zygote/src/child_process.rs`). The mechanics map almost one to
-one onto the Java `Zygote.forkAndSpecialize` path, with the file-descriptor
-sanitization driven by the per-species allowlists rather than the classic
-`ZygoteCommandBuffer` argument parsing.
+in section 18.1.4. A long-lived server preloads shared resources once. Then it
+`fork()`s a child per process and re-initializes it.
+
+The re-initialization drops the capability bounding set, sets secondary groups,
+and sets rlimits. Then it calls `setresgid` with the target GID. Next it applies
+seccomp filters while still privileged, before the UID change. Finally it calls
+`setresuid` with the target UID and overwrites the capability set
+(`child_process::re_initialize` in `system/zygote/zygote/src/child_process.rs`).
+The mechanics map almost one to one onto the Java `Zygote.forkAndSpecialize`
+path. The per-species allowlists drive the file-descriptor sanitization, rather
+than the classic `ZygoteCommandBuffer` argument parsing.
 
 What differs is the launch wiring and how a process picks which zygote to use:
 
 - **Boot ordering (cross-reference Chapter 4, Boot and Init).** The classic
   primary zygote is started by an init `.rc` service early in boot. The native
   zygote's service `zygote_next` is marked `disabled` in
-  `system/zygote/zygote/zygote_next.rc` and only auto-starts later, when the
-  property `persist.zygote.zygote_next.start_on_boot` is `true`; otherwise it is
+  `system/zygote/zygote/zygote_next.rc`. It only auto-starts later, when the
+  property `persist.zygote.zygote_next.start_on_boot` is `true`. Otherwise it is
   started on demand the first time a native process is requested. Init service
   ordering and property-triggered starts are covered in Chapter 4.
 - **system_server (cross-reference Chapter 20, system_server).** The classic
@@ -5054,7 +5085,7 @@ What differs is the launch wiring and how a process picks which zygote to use:
   the aconfig flag `android.os.Flags.nativeFrameworkPrototype()` is enabled
   *and* the per-process `ZYGOTE_POLICY_FLAG_NATIVE_PROCESS` policy bit is set
   (`frameworks/base/core/java/android/os/Process.java`, the `isNative`
-  computation); otherwise it falls back to the classic `ZygoteProcess`.
+  computation). Otherwise it falls back to the classic `ZygoteProcess`.
 
 ### 18.12.5 Default vs Flag-Gated Status in Android 17
 
@@ -5064,28 +5095,27 @@ evidence is consistent across three layers:
 - The init service `zygote_next` is declared `disabled`
   (`system/zygote/zygote/zygote_next.rc`); nothing starts it at boot unless the
   persisted opt-in property is set.
-- The aconfig flag controlling the framework side,
+- The aconfig flag that controls the framework side is
   `native_framework_prototype` in
-  `frameworks/base/core/java/android/os/flags.aconfig`, is in fact overridden to
-  `ENABLED` in stock release configs
+  `frameworks/base/core/java/android/os/flags.aconfig`. It is in fact overridden
+  to `ENABLED` in stock release configs
   (`build/release/aconfig/trunk_staging/android.os/native_framework_prototype_flag_values.textproto`
   and the `cp2a` variant), so `nativeFrameworkPrototype()` returns true. What
   keeps `zygote_next` off for ordinary processes is the *second* gate in the
   `isNative` computation: the per-process `ZYGOTE_POLICY_FLAG_NATIVE_PROCESS`
-  bit. That bit is set in exactly one place
-  (`ActiveServices.java`), and only when
-  `nativeFrameworkPrototype() && r.mIsNativeIsolated`, where `mIsNativeIsolated`
-  requires `ServiceInfo.FLAG_NATIVE_SERVICE` together with
-  `FLAG_ISOLATED_PROCESS` -- a new native-only isolated
-  service type. Ordinary apps and `system_server` never set that bit, so they
+  bit. That bit is set in exactly one place (`ActiveServices.java`). It is set
+  only when `nativeFrameworkPrototype() && r.mIsNativeIsolated`, where
+  `mIsNativeIsolated` requires `ServiceInfo.FLAG_NATIVE_SERVICE` together with
+  `FLAG_ISOLATED_PROCESS` -- a new native-only isolated service type. Ordinary
+  apps and `system_server` never set that bit, so they
   always fall back to the classic `ZygoteProcess`.
 - The Java client is annotated `@hide` and carries TODOs about still evolving
-  toward parity (`NativeZygoteProcess.java`), and the JNI layer carries a TODO
-  to remove its temporary opt-in logic once `zygote_next` is used on all
+  toward parity (`NativeZygoteProcess.java`). The JNI layer carries a TODO to
+  remove its temporary opt-in logic once `zygote_next` is used on all
   form-factors (`android_os_NativeZygoteProcess.cpp`).
 
-In other words: the classic C++/Java zygote of section 18.1.4 remains the
-default process launcher in Android 17, and the Rust `zygote_next` is a
+In other words, the classic C++/Java zygote of section 18.1.4 remains the
+default process launcher in Android 17. The Rust `zygote_next` is a
 forward-looking prototype that an enabled build can opt into per process. It is
 intended to eventually succeed the classic zygote, but does not do so in 17.
 
@@ -5095,9 +5125,10 @@ intended to eventually succeed the classic zygote, but does not do so in 17.
 
 ## 18.13 ART Reference Summary
 
-This section gathers cross-subsystem reference material for the runtime: a
-data-flow map tying the pieces together, a table of representative performance
-characteristics, and the per-release ART version history.
+This section gathers cross-subsystem reference material for the runtime. It has
+three parts: a data-flow map that ties the pieces together, a table of
+representative performance characteristics, and the per-release ART version
+history.
 
 ### 18.13.1 Architecture Cross-Reference
 
@@ -5374,7 +5405,7 @@ adb shell setprop wrap.<package> \
 ls /apex/com.android.art/lib64/
 ```
 
-In Android Studio, use the "Attach Debugger" feature with the "Java and
+In Android Studio, use the "Attach Debugger" feature. Select the "Java and
 Native" debug type to see both Java and native stack frames.
 
 ### Exercise 18.9 -- Walk the Class Loading Chain
@@ -5763,7 +5794,7 @@ architectural decisions include:
    the gap between cold-start performance and peak throughput.
 
 2. **Concurrent garbage collection** -- The CC collector copies objects
-   concurrently using read barriers, achieving sub-millisecond pause times
+   concurrently with read barriers. This gives sub-millisecond pause times
    on typical workloads. The newer CMC collector further reduces memory
    overhead through in-place compaction.
 
@@ -5773,10 +5804,10 @@ architectural decisions include:
 
 4. **Modular delivery** -- Through Project Mainline, the ART module (APEX)
    can be updated independently of the rest of the system. `odrefresh`
-   ensures that compiled artifacts are regenerated after updates.
+   makes sure that compiled artifacts are regenerated after updates.
 
 5. **Namespace isolation** -- `libnativeloader` enforces strict boundaries
-   between app, vendor, and platform native libraries, supporting both
+   between app, vendor, and platform native libraries. This supports both
    Treble compatibility and security.
 
 6. **Rich debugging** -- JVMTI support enables full-featured debugging
@@ -5788,7 +5819,7 @@ architectural decisions include:
    comprehensive debugging support through CheckJNI. Indirect reference
    tables protect against GC-induced object movement.
 
-8. **On-device refresh** -- `odrefresh` ensures that compilation artifacts
-   survive system updates by detecting changes in APEX versions, boot
-   classpath checksums, and system properties, then triggering selective
+8. **On-device refresh** -- `odrefresh` makes sure that compilation artifacts
+   survive system updates. It detects changes in APEX versions, boot
+   classpath checksums, and system properties. Then it triggers selective
    re-compilation.

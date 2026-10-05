@@ -2,13 +2,13 @@
 
 Android ships with one of the most complete sensor frameworks of any
 general-purpose operating system.  From the accelerometer that rotates your
-screen to the head tracker that spatialises audio in earbuds, the same
-architecture routes data through **three well-defined layers**: a Java/Kotlin
-application API (`SensorManager`), a native system service (`SensorService`),
-and a vendor HAL (`ISensors`).  This chapter traces every event from its
-origin in sensor hardware, through the HAL, into the service, and up to the
-application -- annotated with the exact source files in AOSP where each step
-is implemented.
+screen to the head tracker that spatializes audio in earbuds, the same
+architecture routes data through **three well-defined layers**.  These are a
+Java/Kotlin application API (`SensorManager`), a native system service
+(`SensorService`), and a vendor HAL (`ISensors`).  This chapter traces every
+event from its origin in sensor hardware, through the HAL, into the service,
+and up to the application.  It names the exact source files in AOSP where each
+step is implemented.
 
 ---
 
@@ -149,7 +149,7 @@ Entry point: frameworks/native/services/sensorservice/main_sensorservice.cpp
 ### 17.2.1 Startup: `onFirstRef()`
 
 When `SensorService` is first referenced (typically at system-server boot),
-`onFirstRef()` performs the full initialisation sequence:
+`onFirstRef()` performs the full initialization sequence:
 
 ```mermaid
 flowchart TD
@@ -216,14 +216,14 @@ bool SensorService::registerSensor(std::shared_ptr<SensorInterface> s,
 ```
 
 **Virtual Sensor Gating.** The `virtualSensorsNeeds` bitmask tracks which
-composite sensor types the framework still has to synthesise in software.  It
+composite sensor types the framework still has to synthesize in software.  It
 starts out with every composite bit set (gravity, linear acceleration, rotation
-vector, geomagnetic rotation vector, game rotation vector), and the enumeration
+vector, geomagnetic rotation vector, game rotation vector).  The enumeration
 loop *clears* a bit when the HAL reports that type natively:
-`virtualSensorsNeeds &= ~(1<<list[i].type);`.  Registration then reads the bit
-back.  If the HAL supplies `SENSOR_TYPE_GRAVITY` natively (e.g. via a sensor
-hub), `SensorService` still constructs and registers its own `GravitySensor`,
-but passes `isDebug = true` so the software copy stays out of the normal sensor
+`virtualSensorsNeeds &= ~(1<<list[i].type);`, and registration then reads the
+bit back.  If the HAL supplies `SENSOR_TYPE_GRAVITY` natively (e.g. via a sensor
+hub), `SensorService` still constructs and registers its own `GravitySensor`.
+It passes `isDebug = true`, so the software copy stays out of the normal sensor
 list and only the HAL's sensor is user-visible:
 
 ```cpp
@@ -246,7 +246,7 @@ clamped to the kernel's `wmem_max`.
 ### 17.2.2 The Main Thread Loop: `threadLoop()`
 
 `SensorService` extends `Thread` and its `threadLoop()` is the critical
-data path.  It runs at `SCHED_FIFO` priority 10 to minimise jitter.
+data path.  It runs at `SCHED_FIFO` priority 10 to minimize jitter.
 
 ```
 Source: SensorService.cpp, line ~1174
@@ -661,8 +661,8 @@ Handle must be unique until reboot
 
 Direct channels provide the lowest-latency path for sensor data by
 bypassing `SensorService`'s event loop entirely.  Only the event data
-path bypasses `SensorService`, though -- channel setup and rate
-configuration still go through it: the app's `SensorDirectChannel` calls
+path bypasses `SensorService`, though.  Channel setup and rate
+configuration still go through it.  The app's `SensorDirectChannel` calls
 into `SensorService`, whose `SensorDirectConnection` invokes
 `registerDirectChannel` / `configDirectReport` on the HAL via
 `SensorDevice`.
@@ -1193,10 +1193,10 @@ sequenceDiagram
 On the Java side, `SystemSensorManager` creates a `SensorEventQueue`
 (not to be confused with the HAL-side FMQ) for each registered listener.
 This queue is backed by a `BitTube` file descriptor that native code adds
-to the target thread's `Looper`: the `Receiver` in
+to the target thread's `Looper`. The `Receiver` in
 `frameworks/base/core/jni/android_hardware_SensorManager.cpp` obtains the
-native `MessageQueue` via `android_os_MessageQueue_getMessageQueue()` and
-calls `Looper::addFd()` on the BitTube fd -- the Java
+native `MessageQueue` via `android_os_MessageQueue_getMessageQueue()`. Then
+it calls `Looper::addFd()` on the BitTube fd. The Java
 `MessageQueue.addOnFileDescriptorEventListener` API is not involved.
 When events arrive, the Looper wakes the thread and delivers them.
 
@@ -1348,9 +1348,9 @@ a wake-up sensor fires until the application has read the event:
 
 A 5-second timeout prevents wake-lock leaks if the app fails to read events.
 `setWakeLockAcquiredLocked()` itself only acquires or releases the kernel wake
-lock and wakes the Looper; the timeout lives in the ack-receiver thread, which
-polls with a 5000 ms deadline whenever the wake lock is held and drops every
-connection's ref count if nothing acknowledges in time:
+lock and wakes the Looper. The timeout lives in the ack-receiver thread. This
+thread polls with a 5000 ms deadline whenever the wake lock is held. It drops
+every connection's ref count if nothing acknowledges in time:
 
 ```cpp
 // SensorService.cpp, line ~1420
@@ -1526,9 +1526,9 @@ sequenceDiagram
     SP->>OUT: Spatialised audio stream
 ```
 
-The event stream is consumed inside **audioserver**, not system_server:
+The event stream is consumed inside **audioserver**, not system_server.
 `SensorPoseProvider` (`frameworks/av/media/libheadtracking`) subscribes to
-the head tracker over a `SensorEventConnection` and feeds
+the head tracker over a `SensorEventConnection`. It feeds
 `SpatializerPoseController`
 (`frameworks/av/services/audiopolicy/service`), which drives the
 `HeadTrackingProcessor`.  `AudioService` in system_server only selects and
@@ -1536,7 +1536,7 @@ enables the head-tracking sensor; it does not carry the events.
 
 When a head tracker sensor is exposed as a **dynamic sensor** through
 Bluetooth HID, the `DynamicSensorInfo::uuid` field is set to the HID
-Persistent Unique ID, which allows the audio framework to associate
+Persistent Unique ID. This lets the audio framework associate
 the sensor with the correct audio device.
 
 ### 17.8.4 Access Restrictions
@@ -1570,11 +1570,11 @@ const int RUNTIME_SENSORS_HANDLE_END  = 0x5FFFFFFF;
 
 The `RuntimeSensor` class forwards `activate()` and `batch()` calls to
 a `RuntimeSensorCallback`.  Runtime sensors are registered only from
-`system_server`, on behalf of **VirtualDeviceManager**: the sole
+`system_server`, on behalf of **VirtualDeviceManager**. The sole
 implementer of `SensorManagerInternal.RuntimeSensorCallback` is the
 `RuntimeSensorCallbackWrapper` in
-`frameworks/base/services/companion/java/com/android/server/companion/virtual/SensorController.java`,
-which backs the sensors of a virtual device.  Bluetooth and USB head
+`frameworks/base/services/companion/java/com/android/server/companion/virtual/SensorController.java`.
+It backs the sensors of a virtual device.  Bluetooth and USB head
 trackers are *not* runtime sensors -- they are exposed as **dynamic
 sensors** over HID (Section 17.3.6):
 
@@ -1815,7 +1815,7 @@ Additional info is delivered as a sequence of frames:
 2. One or more data frames
 3. `AINFO_END` frame (end of report)
 
-Reports are triggered by `activate()` or `flush()` calls, and may also
+Reports are triggered by `activate()` or `flush()` calls. They may also
 update periodically for time-varying parameters (recommended rate: less
 than 1/1000 of the sensor event rate).
 
@@ -1849,7 +1849,7 @@ These tests verify:
 
 - Sensor presence and properties
 - Event delivery rate and jitter
-- Batching behaviour and flush correctness
+- Batching behavior and flush correctness
 - Wake-up sensor wake lock protocol
 - Direct channel operation
 - Rate capping enforcement
@@ -2005,7 +2005,7 @@ parcelable Event {
 ```
 
 The `EventPayload` union discriminates on `sensorType` to provide
-strongly-typed access to sensor data -- `Vec3` for accelerometer,
+strongly-typed access to sensor data. `Vec3` is for accelerometer,
 `Vec4` for game rotation vector, `Uncal` for uncalibrated sensors,
 `HeadTracker` for head tracking, and so on.
 
@@ -2071,21 +2071,22 @@ library.  The proxy handles:
 
 ## 17.15 Android 17 Sensor Changes
 
-Android 17 layers two notable changes onto the architecture described above:
-a `SensorService`-side mechanism that stops streaming events to *frozen*
-processes, and a Context Hub Runtime Environment (CHRE) **data-flow** facility
-that lets nanoapps push high-throughput streams through shared memory rather
-than discrete event messages.  Both are gated by feature flags, so the legacy
-paths described in the earlier sections remain the fallback.
+Android 17 adds two notable changes to the architecture described above.
+The first is a `SensorService`-side mechanism that stops streaming events to
+*frozen* processes.  The second is a Context Hub Runtime Environment (CHRE)
+**data-flow** facility.  It lets nanoapps push high-throughput streams through
+shared memory rather than discrete event messages.  Feature flags gate both
+changes, so the legacy paths described in the earlier sections remain the
+fallback.
 
 ### 17.15.1 Suspending Events for Frozen Clients
 
-Apps that are cached in the background can be *frozen* by the framework: the
-kernel freezer (`cgroup freezer`) stops scheduling their threads entirely.  A
-frozen app cannot drain its sensor socket, so before Android 17 `SensorService`
-would keep filling the per-connection `BitTube` until it backed up, wasting
-buffer memory and, for wake-up sensors, holding the service wake lock waiting
-for an acknowledgement that never comes.
+The framework can *freeze* apps that are cached in the background.  The kernel
+freezer (`cgroup freezer`) then stops scheduling their threads entirely.  A
+frozen app cannot drain its sensor socket.  So before Android 17,
+`SensorService` kept filling the per-connection `BitTube` until it backed up.
+This wasted buffer memory.  For wake-up sensors, it also held the service wake
+lock while the service waited for an acknowledgement that never comes.
 
 Android 17 adds an explicit frozen-state path, guarded by the
 `suspend_sensor_event_delivery_on_frozen_pid` flag:
@@ -2097,7 +2098,7 @@ Source: frameworks/base/core/java/android/hardware/flags/sensor_service.aconfig
 ```
 
 When the flag is enabled, each `SystemSensorManager` registers a lightweight
-listener binder with the service the first time it is constructed:
+listener binder with the service when it is first constructed:
 
 ```
 Source: frameworks/base/core/java/android/hardware/SystemSensorManager.java (line ~153)
@@ -2143,9 +2144,10 @@ mBinderStateRecipients[listener] = recipient;
 
 When the client's frozen state changes, binder invokes
 `ClientStateRecipient::onStateChanged()`.  The recipient debounces the
-transition under `mFrozenStateLock` (two binder threads can otherwise both
-observe an unchanged value and post duplicate messages) and forwards the change
-to the service's `Looper` via a `FrozenStateChangeHandler`:
+transition under `mFrozenStateLock`.  Without the lock, two binder threads can
+both observe an unchanged value and post duplicate messages.  Then the
+recipient forwards the change to the service's `Looper` via a
+`FrozenStateChangeHandler`:
 
 ```
 Source: frameworks/native/services/sensorservice/SensorService.cpp (line ~1934)
@@ -2200,9 +2202,9 @@ sequenceDiagram
 If the client dies while registered, `binderDied()` (and `onClientDied()`)
 calls `unregisterClientListener()`, which removes the recipient and detaches the
 death and frozen-state callbacks.  Every entry point in this path is a no-op
-when the flag is off (the functions return `INVALID_OPERATION` /
-`UNKNOWN_TRANSACTION`), so devices that have not flipped the flag keep the
-pre-17 behaviour.
+when the flag is off.  The functions return `INVALID_OPERATION` /
+`UNKNOWN_TRANSACTION`.  So devices that have not flipped the flag keep the
+pre-17 behavior.
 
 ### 17.15.2 CHRE Data Flows: High-Throughput Streaming Between Endpoints
 
@@ -2220,8 +2222,8 @@ Source: system/chre/chre_api/include/chre_api/chre/data_flow.h (@since v1.12)
 ```
 
 A data flow is uniquely identified by the message-hub ID of its source plus a
-data-flow ID.  The source nanoapp creates the flow and pushes elements into it;
-sink nanoapps (or endpoints on other hubs, or on the application processor)
+data-flow ID.  The source nanoapp creates the flow and pushes elements into it.
+Sink nanoapps (or endpoints on other hubs, or on the application processor)
 attach, read elements out of the same backing memory, and release them.  Because
 the payload lives in a shared region, the data is not copied per hop -- only
 small index and metadata updates cross the boundary.
@@ -2266,16 +2268,17 @@ Source: system/chre/chre_api/include/chre_api/chre/data_flow.h
 | `PERIODIC` | 3 | On a configured period in milliseconds |
 | `STREAMING` | 4 | On every write (the platform may coalesce or throttle) |
 
-The overwrite policy is either `ALLOWED` (the source may overwrite data a slow
-sink has not yet read) or `DISALLOWED` (the source blocks rather than discard
-unread data).  Together these let a high-rate accelerometer source feed, say, an
-opportunistically-woken gesture sink and a streaming logging sink from the same
-buffer, each draining at its own cadence.
+The overwrite policy is either `ALLOWED` or `DISALLOWED`.  With the first, the
+source may overwrite data that a slow sink has not yet read.  With the second,
+the source blocks rather than discard unread data.  Together these policies let
+a high-rate accelerometer source feed two sinks from the same buffer.  One
+example is an opportunistically-woken gesture sink and a streaming logging sink.
+Each sink drains at its own cadence.
 
 On the framework side, the Context Hub HAL gained the shared-memory plumbing in
 its AIDL version 5.  A `SharedDataRegion` parcelable describes a block of shared
-memory (a mappable file descriptor, size, and required Android permissions) that
-backs one or more data flows; vendors are required to use the
+memory (a mappable file descriptor, size, and required Android permissions).
+This block backs one or more data flows.  Vendors must use the
 `/system/chre/data_flow:contexthub_data_flow` library rather than hand-rolling
 access to the layout:
 
@@ -2285,9 +2288,9 @@ Source: hardware/interfaces/contexthub/aidl/android/hardware/contexthub/SharedDa
         hardware/interfaces/contexthub/aidl/android/hardware/contexthub/IEndpointCommunication.aidl
 ```
 
-The shared region is laid out as a set of `@FixedSize` structures so that 32-bit
-and 64-bit cores -- and endpoints built against different library versions --
-can interpret the same bytes.  All references are byte offsets from the region
+The shared region is a set of `@FixedSize` structures.  This layout lets 32-bit
+and 64-bit cores, and endpoints built against different library versions,
+interpret the same bytes.  All references are byte offsets from the region
 base, never raw pointers:
 
 ```mermaid
@@ -2305,23 +2308,25 @@ graph TB
     SNKM -.->|readIndex| BLK
 ```
 
-The source advances an atomic `writeIndex` in `DataFlowSourceMetadata`; each
-sink advances its own atomic `readIndex` in its `DataFlowSinkMetadata`, and the
-distance between the two is how far the sink is behind.  A split
+The source advances an atomic `writeIndex` in `DataFlowSourceMetadata`.  Each
+sink advances its own atomic `readIndex` in its `DataFlowSinkMetadata`.  The
+distance between the two is how far the sink is behind.
+
+A split
 `sourceFlags`/`sinkFlags` pair (each a 16-bit value plus a counter) emulates a
-single source-set flag that the sink can atomically "clear" even across cores
-where a true read-modify-write would not be coherent; the source uses it to
-signal exceptional states such as `BLOCKING`, `OVERWRITE`, `FINISHED`, and
+single source-set flag.  The sink can atomically "clear" this flag even across
+cores where a true read-modify-write would not be coherent.  The source uses it
+to signal exceptional states such as `BLOCKING`, `OVERWRITE`, `FINISHED`, and
 `DISCONNECTED`.  When the source overwrites a slow sink, a `DataFlowAlertFds`
 record carries the waking and non-waking file descriptors used to notify the
 affected endpoints.
 
 CHRE's `DataFlowManager` (built only when `CHRE_DATA_FLOW_SUPPORT_ENABLED` is
-defined) owns this state on the coprocessor: it allocates blocks on demand,
+defined) owns this state on the coprocessor.  It allocates blocks on demand,
 builds consumer policies, and routes alerts through the message router.  Data
 flows are the foundation for streaming sensor batches to nanoapps and to the
-host with far fewer wake-ups and copies than the per-message path, and they sit
-alongside -- not in place of -- the `ISensors` FMQ path that `SensorService`
+host.  They need far fewer wake-ups and copies than the per-message path.  They
+sit alongside -- not in place of -- the `ISensors` FMQ path that `SensorService`
 uses for the standard application sensor API.
 
 ---
@@ -2534,7 +2539,7 @@ correctness and efficiency:
    management.
 
 3. **SensorFusion** implements an Extended Kalman Filter in three modes
-   (9-axis, no-mag, no-gyro) to produce virtual sensors like rotation
+   (9-axis, no-mag, no-gyro).  It produces virtual sensors like rotation
    vector, gravity, and linear acceleration from raw accelerometer,
    gyroscope, and magnetometer data.
 
@@ -2550,13 +2555,13 @@ correctness and efficiency:
    via Bluetooth dynamic sensors, feeding the audio Spatializer.
 
 7. **Android 17** adds a frozen-client path so `SensorService` stops
-   streaming events to processes the framework has frozen (registered via the
-   empty `ISensorClientListener` binder and binder frozen-state callbacks), and
-   introduces CHRE **data flows** -- a shared-memory streaming primitive that
-   moves high-throughput sensor data between nanoapps and the host with minimal
-   copies and per-sink wake-up policies.
+   streaming events to processes the framework has frozen.  These
+   processes are registered via the empty `ISensorClientListener` binder and
+   binder frozen-state callbacks.  It also introduces CHRE **data flows** -- a shared-memory
+   streaming primitive.  It moves high-throughput sensor data between nanoapps
+   and the host with minimal copies and per-sink wake-up policies.
 
 The key design principle throughout is that sensor data flows through a
-single, well-audited path -- from hardware through the HAL, through
-`SensorService`, and out to applications -- with power policy and access
-control enforced at the service layer.
+single, well-audited path.  The path goes from hardware through the HAL,
+through `SensorService`, and out to applications.  The service layer enforces
+power policy and access control.

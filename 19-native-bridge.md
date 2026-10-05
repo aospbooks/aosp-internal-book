@@ -5,10 +5,10 @@ code compiled for one CPU architecture to run on devices with a different
 architecture.  An ARM-only game, for example, can run on an x86 tablet -- or, in
 the newest scenario, a RISC-V application can run on an x86_64 host.
 
-This chapter dissects the Native Bridge interface that ART exposes, explores
-Berberis (Google's open-source binary translator), examines the
-`native_bridge_support` proxy libraries, touches on Intel's closed-source
-Houdini translator, and looks ahead to RISC-V.
+This chapter dissects the Native Bridge interface that ART exposes.  It explores
+Berberis (Google's open-source binary translator) and examines the
+`native_bridge_support` proxy libraries.  It also touches on Intel's
+closed-source Houdini translator and looks ahead to RISC-V.
 
 ---
 
@@ -21,7 +21,7 @@ is compiled to native shared libraries (`.so` files) through the NDK.  Those
 libraries target a specific instruction set -- `armeabi-v7a`, `arm64-v8a`,
 `x86`, or `x86_64`.  When a device's ISA does not match the ISA of an app's
 native library, a **native bridge** can translate the foreign instructions at
-run time so the app still works.
+run time.  As a result, the app still works.
 
 From the ART README in `art/libnativebridge/README.md`:
 
@@ -126,8 +126,8 @@ struct NativeBridgeCallbacks {
 };
 ```
 
-Each successive version is an additive extension -- new function pointers are
-appended at the end of the struct, and the `version` field tells the host
+Each successive version is an additive extension.  New function pointers are
+appended at the end of the struct.  The `version` field tells the host
 library which callbacks are safe to call.
 
 ### 19.1.4  Version History
@@ -175,7 +175,7 @@ struct NativeBridgeRuntimeCallbacks {
 };
 ```
 
-The **shorty** is a compact representation of a method's signature: `V` for
+The **shorty** is a compact representation of a method's signature.  `V` is for
 void, `I` for int, `L` for an object reference, `J` for long, and so on.
 The bridge needs this information to build correct calling-convention
 **trampolines** -- wrapper functions that marshal arguments between host and
@@ -277,8 +277,8 @@ Key observations:
    namespace on device, or plain `dlopen` on host (lines 41-61).
 3. The compatibility check (`isCompatibleWith(NAMESPACE_VERSION)`) rejects
    outright only a bridge that reports version 0.  A v1 bridge is always
-   treated as compatible (the check falls through to `return true`), and a
-   v2+ bridge decides for itself via its own `isCompatibleWith()` callback
+   treated as compatible (the check falls through to `return true`).  A
+   v2+ bridge decides for itself, through its own `isCompatibleWith()` callback,
    whether it supports `NAMESPACE_VERSION` (3).
 
 ### 19.1.8  NeedsNativeBridge -- The ISA Check
@@ -325,8 +325,8 @@ The `JNICallType` enum distinguishes:
   overhead, no implicit parameters.
 
 Version 7 added `getTrampolineWithJNICallType` specifically because
-`@CriticalNative` methods have a fundamentally different calling convention --
-they pass no `JNIEnv*` or `jobject`, and the bridge must not inject them.
+`@CriticalNative` methods have a fundamentally different calling convention.
+They pass no `JNIEnv*` or `jobject`, and the bridge must not inject them.
 
 ### 19.1.10  Linker Namespace Integration
 
@@ -341,8 +341,8 @@ counterpart in the dynamic linker:
 | `loadLibraryExt` | `android_dlopen_ext` |
 | `getExportedNamespace` | `android_get_exported_namespace` |
 
-This parallel design ensures that guest libraries see the same isolation
-boundaries as host libraries -- vendor code cannot access platform internals,
+This parallel design makes sure that guest libraries see the same isolation
+boundaries as host libraries.  Vendor code cannot access platform internals,
 and platform libraries are separated from app libraries.
 
 The namespace operations are all gated on version checking:
@@ -435,14 +435,16 @@ frameworks/libs/binary_translation/
 
 ### 19.2.2  Directory Map
 
-In Android 17 the binary translation tree was reorganized: every module that
+In Android 17 the binary translation tree was reorganized.  Every module that
 makes up the CPU-emulation core was moved under a single new top-level
 `cpu_emulation/` directory (commit "cpu_emulation: consolidate modules under new
 directory", `Bug: 476465845`).  Before the move the decoder, interpreter, the
 two JIT tiers, the IR backend, the assembler, and the intrinsics each sat at the
-top level; now they are siblings under `cpu_emulation/`, which makes the
+top level.  Now they are siblings under `cpu_emulation/`.  This makes the
 boundary between *the engine that emulates a guest CPU* and *the runtime that
-hosts it* explicit.  The translator dispatcher itself was also split out of
+hosts it* explicit.
+
+The translator dispatcher itself was also split out of
 `runtime/` into its own `cpu_emulation/translator/` module.  Section 19.8
 walks the three-tier engine that lives there.
 
@@ -968,11 +970,13 @@ void* BerberisNativeBridge::LoadLibrary(const char* libpath, int flags,
 The in-source rationale for this fallback (see the `CreateNamespace` comment at
 `frameworks/libs/binary_translation/native_bridge/native_bridge.cc:243-253` and
 bug b/308371292) is twofold.  Android SDK libraries have no good mechanism for
-shipping JNI libraries, so such a library often lives in the system search path
-and is only resolvable through the host system linker namespace — which is also
-why the guest search path is preserved for the host namespace.  And apps
+shipping JNI libraries.  So such a library often lives in the system search path
+and is only resolvable through the host system linker namespace.  This is also
+why the guest search path is preserved for the host namespace.
+
+And apps
 sometimes drop libraries of one architecture into the folder of another (x86_64
-binaries under an `arm64` directory, say); those load fine when the architecture
+binaries under an `arm64` directory, say).  Those load fine when the architecture
 happens to match the host.  One library is explicitly excluded from the
 fallback: `libRS.so` never resolves to a host binary (b/206676167).
 
@@ -1047,7 +1051,7 @@ For a JNI method `jint foo(JNIEnv*, jobject, jint, jfloat)` with shorty
 (env + jobject), int, float.
 
 **JNIEnv translation** is particularly complex.  The guest `JNIEnv*` is not
-the same as the host `JNIEnv*` because the function pointer table needs to
+the same as the host `JNIEnv*`.  This is because the function pointer table needs to
 contain trampolines that convert guest calls back to host JNI calls.  Berberis
 maintains per-thread bidirectional mappings:
 
@@ -1148,9 +1152,9 @@ sequenceDiagram
 
 ### 19.2.13  Proxy Loader
 
-When a guest library calls a function that exists in a system library (like
-`libEGL.so` or `libc.so`), the call must be redirected to a host-side **proxy**
-that handles the ISA translation.
+A guest library can call a function that exists in a system library (like
+`libEGL.so` or `libc.so`). Such a call must be redirected to a host-side
+**proxy** that handles the ISA translation.
 
 From `frameworks/libs/binary_translation/proxy_loader/proxy_loader.cc`:
 
@@ -1211,12 +1215,14 @@ void InitBerberis() {
 
 The `static bool` trick ensures thread-safe one-time initialization (C++11
 guarantees).  `InitTranslator()` is the call that brings up the three-tier
-engine; in the Android 17 tree it lives in the consolidated translator module
-(section 19.8), not in `runtime/`.  The same file also exposes
+engine. In the Android 17 tree it lives in the consolidated translator module
+(section 19.8), not in `runtime/`.
+
+The same file also exposes
 `PreZygoteForkUnsafe()`, which forwards to the translation cache's
-`PreZygoteForkUnsafe()`.  That call does not flush translated code -- it
-closes the cache's `memfd` file descriptor, because the Zygote's fork does
-not allow unrecognized open file descriptors to survive into the child.
+`PreZygoteForkUnsafe()`.  That call does not flush translated code. It
+closes the cache's `memfd` file descriptor. The reason is that the Zygote's
+fork does not let unrecognized open file descriptors survive into the child.
 
 When guest code is overwritten (for example a self-modifying JIT inside the
 guest, or `dlclose`), the runtime invalidates the affected compiled regions.
@@ -1278,9 +1284,9 @@ backtrace:
   #02 pc .../riscv64/libnative_bridge_vdso.so
 ```
 
-This dual-stack trace is invaluable for debugging -- developers can see both
-where the crash happened in guest code and what the translator was doing at
-that point.
+This dual-stack trace is invaluable for debugging. Developers can see where
+the crash happened in guest code. They can also see what the translator was
+doing at that point.
 
 ### 19.2.16  Building Berberis
 
@@ -1475,9 +1481,9 @@ The makefile includes a workaround for APEX-enabled libraries:
 #   /system/lib/$GUEST_ARCH/
 ```
 
-This is because APEX libraries are normally installed inside APEX modules
-(`/apex/com.android.runtime/lib64/`), but the native bridge support libraries
-need to be in the traditional `/system/lib64/riscv64/` path.  The `.bootstrap`
+This workaround is needed. This is because APEX libraries are normally installed
+inside APEX modules (`/apex/com.android.runtime/lib64/`). The native bridge support libraries,
+however, need to be in the traditional `/system/lib64/riscv64/` path.  The `.bootstrap`
 variant is the mechanism that makes this work.
 
 ### 19.3.6  On-Device Layout
@@ -1539,7 +1545,7 @@ graph TB
 ```
 
 The proxy libraries are loaded lazily.  When the guest linker resolves a symbol
-in a modified guest library, the VDSO calls `InterceptGuestSymbol`, which
+in a modified guest library, the VDSO calls `InterceptGuestSymbol`. That call
 triggers `LoadProxyLibrary` to load the corresponding
 `libberberis_proxy_<name>.so` and register the interception.
 
@@ -1575,8 +1581,8 @@ The build files contain explicit synchronization comments:
 ```
 
 This comment appears three times in `native_bridge_support.mk` (lines 31, 61,
-81) -- a sign that the two projects are tightly coupled and changes to one
-must be reflected in the other.
+81). It shows that the two projects are tightly coupled. A change to one must
+be reflected in the other.
 
 ---
 
@@ -1685,15 +1691,15 @@ file defines the library lists without any Berberis-specific references --
 Houdini could (and does) reuse the same lists.
 
 The three explicit "keep in sync" comments in `native_bridge_support.mk`
-demonstrate that the support libraries and the translator are designed as
-a coordinated pair, regardless of which translator implementation is used.
+show that the support libraries and the translator are designed as
+a coordinated pair. This is true for every translator implementation.
 
 ### 19.4.8  Intel Bridge Technology (IBT)
 
 Intel Bridge Technology is the evolution of Houdini for modern Intel platforms.
-While Houdini was designed for Intel Atom mobile SoCs, IBT targets Intel Core
-and Xeon processors running Android (including Chrome OS with Android app
-support and Windows Subsystem for Android):
+Houdini was designed for Intel Atom mobile SoCs. IBT targets Intel Core
+and Xeon processors that run Android. These include Chrome OS with Android app
+support and Windows Subsystem for Android:
 
 | Generation | Product | Target Platform |
 |---|---|---|
@@ -1736,9 +1742,9 @@ graph TB
     NB --> CLOUD
 ```
 
-In each deployment, the same pattern applies: Houdini/IBT is installed as
-`libhoudini.so`, guest ARM libraries are placed in `system/lib/arm/` and
-`system/lib64/arm64/`, and the package manager advertises ARM ABIs in the
+In each deployment, the same pattern applies. Houdini/IBT is installed as
+`libhoudini.so`. Guest ARM libraries are placed in `system/lib/arm/` and
+`system/lib64/arm64/`. The package manager advertises ARM ABIs in the
 device's ABI list as fallback targets.
 
 ---
@@ -1746,10 +1752,10 @@ device's ABI list as fallback targets.
 ## 19.5  DigitalisX64: Berberis-based ARM64 to x86_64 Translator
 
 DigitalisX64 is an open-source ARM64-to-x86_64 binary translator that builds
-on the Berberis engine described in section 19.2. Where Berberis is the
-upstream reference implementation inside AOSP, DigitalisX64 packages it as a
-buildable distribution targeted at the x86_64 emulator (Goldfish) so that
-ARM64-only Android applications can run on x86_64 host environments. Its
+on the Berberis engine described in section 19.2. Berberis is the
+upstream reference implementation inside AOSP. DigitalisX64 packages it as a
+buildable distribution for the x86_64 emulator (Goldfish). With it, ARM64-only
+Android applications can run on x86_64 host environments. Its
 stated description is:
 
 > The arm64-to-x86_64 binary translation based on Berberis framework.
@@ -1786,8 +1792,8 @@ emulator
 ```
 
 The lunch target produces a Goldfish x86_64 system image with the Berberis
-runtime preinstalled and `ro.dalvik.vm.native.bridge` configured so that
-ARM64-only APKs installed inside the emulator route through the translator
+runtime preinstalled and `ro.dalvik.vm.native.bridge` configured. This lets ARM64-only
+APKs installed inside the emulator route through the translator
 via the standard NativeBridge dispatch path described in section 19.1.
 
 ### 19.5.3  Relationship to Berberis and Houdini
@@ -1820,9 +1826,9 @@ Project links:
 
 The Android Emulator (Goldfish/Ranchu) uses a distinct native bridge
 configuration to support ARM apps on x86_64 emulator images. This is
-separate from both Houdini (device-side) and Berberis (RISC-V) — it enables
-developers to test ARM-only apps in the x86_64 emulator without requiring
-a full ARM system image.
+separate from both Houdini (device-side) and Berberis (RISC-V). It lets
+developers test ARM-only apps in the x86_64 emulator. A full ARM system image
+is not required.
 
 ### 19.6.1  Board Configuration
 
@@ -1851,7 +1857,7 @@ shape with `TARGET_NATIVE_BRIDGE_ARCH := riscv64` and
 product through `PRODUCT_DEVICE := emu64xr`
 (`device/generic/goldfish/64bitonly/product/sdk_phone64_x86_64_riscv64.mk:26`).
 Neither of these boards carries `TARGET_2ND_CPU_ABI` or
-`TARGET_NATIVE_BRIDGE_2ND_*`: the modern emulator images are 64-bit only, so
+`TARGET_NATIVE_BRIDGE_2ND_*`. The modern emulator images are 64-bit only, so
 there is no 32-bit x86 or `armeabi-v7a` slot to fill.
 
 ### 19.6.2  ABI List Construction
@@ -1871,8 +1877,8 @@ TARGET_CPU_ABI_LIST := x86_64,arm64-v8a
 #                      ^^^^^^ native  ^^^^^^^^^^ bridge
 ```
 
-The **ordering matters**: the package manager prefers native x86_64 libraries
-when available and only falls back to ARM through the bridge when an APK
+The **ordering matters**. The package manager prefers native x86_64 libraries
+when available. It falls back to ARM through the bridge only when an APK
 contains no x86_64 code. This is why most apps run at full native speed on the
 emulator — only apps with ARM-only native libraries go through translation.
 
@@ -1899,9 +1905,9 @@ type ndkTranslationPackageProperties struct {
 ```
 
 At build time, this module collects the native-bridge and native variants of
-its dependencies and zips them (under `system/...` entries, together with a
+its dependencies. It zips them (under `system/...` entries, together with a
 generated `Android.bp` and `product.mk`) into a distributable
-`ndk_translation_package.zip` -- there is no direct system-image install
+`ndk_translation_package.zip`. There is no direct system-image install
 rule.  A product that consumes the package then places the ARM libraries at:
 
 ```
@@ -1954,9 +1960,9 @@ Both graphics loaders link against `libnativebridge_lazy`:
 
 It is worth being precise about what this dependency buys, because it is
 narrower than it looks.  The loaders use libnativebridge only to load GPU
-*debug layer* libraries that were built for the guest ISA: `egl_layers.h:77`
+*debug layer* libraries that were built for the guest ISA. `egl_layers.h:77`
 resolves layer entry points with
-`android::NativeBridgeGetTrampoline(dlhandle_, name, nullptr, 0)`, and
+`android::NativeBridgeGetTrampoline(dlhandle_, name, nullptr, 0)`.
 `frameworks/native/vulkan/libvulkan/layers_extensions.cpp:129-134` does the same
 for Vulkan layers.  No ordinary GL or Vulkan entry point taken by the app itself
 is dispatched through libnativebridge.
@@ -1964,12 +1970,14 @@ is dispatched through libnativebridge.
 An app's everyday GLES and Vulkan calls travel a different road.  The guest
 process links against guest-ISA stub libraries built from
 `frameworks/libs/native_bridge_support/android_api/libEGL` and
-`.../libvulkan`; calls into those stubs are intercepted and handed to host-side
-proxy libraries — `libberberis_proxy_libEGL` and `libberberis_proxy_libvulkan`
-(`frameworks/libs/binary_translation/berberis_config.mk:27,46`) — which
-`proxy_loader/proxy_loader.cc:63-78` loads on first use and which forward to the
-real host GPU driver.  The trampoline machinery of section 19.2.10 is what
-bridges the two ISAs in both paths, but only the layer-loading path goes through
+`.../libvulkan`. Calls into those stubs are intercepted and handed to host-side
+proxy libraries: `libberberis_proxy_libEGL` and `libberberis_proxy_libvulkan`
+(`frameworks/libs/binary_translation/berberis_config.mk:27,46`).
+`proxy_loader/proxy_loader.cc:63-78` loads them on first use. They forward to
+the real host GPU driver.
+
+The trampoline machinery of section 19.2.10
+bridges the two ISAs in both paths. Only the layer-loading path goes through
 libnativebridge's public API.
 
 ### 19.6.6  Emulator vs. Device Bridge Comparison
@@ -2012,7 +2020,7 @@ graph TB
 
 All four bridge implementations — Berberis, Houdini/IBT, the emulator's NDK
 translation, and the DigitalisX64 community build — share the same
-NativeBridge interface and the same runtime integration points. This unified
+NativeBridge interface. They also share the same runtime integration points. This unified
 architecture means:
 
 1. **App developers don't need to care** which bridge is in use — their ARM
@@ -2020,10 +2028,10 @@ architecture means:
 2. **The framework handles fallback transparently** — PackageManager selects
    the best ABI from the device's list, using the bridge only when necessary
 3. **Testing on the emulator validates real-device behavior** — the same
-   translation path is exercised whether running on an x86 emulator, an
-   Intel Chromebook with Houdini, or a DigitalisX64-built emulator image
+   translation path is used on an x86 emulator. It is also used on an
+   Intel Chromebook with Houdini and on a DigitalisX64-built emulator image
 4. **A single engine powers multiple distributions** — Berberis is the
-   upstream translator inside AOSP, and DigitalisX64 reuses it as a
+   upstream translator inside AOSP. DigitalisX64 reuses it as a
    community-maintained ARM64 → x86_64 emulator distribution (see section
    19.5)
 
@@ -2191,10 +2199,10 @@ The RISC-V focus represents a strategic investment:
    Berberis runs inside the Android process model with proper ART integration,
    while QEMU is a full-system emulator with higher overhead.
 
-3. **Bidirectional value**: Unlike ARM-to-x86 translation (which benefits x86
-   devices by running ARM apps), RISC-V translation also benefits the RISC-V
-   ecosystem by providing a development platform before hardware is widely
-   available.
+3. **Bidirectional value**: ARM-to-x86 translation benefits x86 devices,
+   because those devices run ARM apps.  RISC-V translation also benefits the
+   RISC-V ecosystem, because it gives a development platform before hardware is
+   widely available.
 
 ### 19.7.7  Multi-Target Architecture
 
@@ -2212,10 +2220,10 @@ frameworks/libs/binary_translation/guest_abi/arm64/
 
 There is also a RISC-V-on-ARM64-*host* path, where the host machine is ARM64
 and the guest is still RISC-V.  Section 19.9 covers both ARM64 directions in
-detail.  The short version: ARM64 work is scaffolding, not production -- the
+detail.  The short version: ARM64 work is scaffolding, not production.  The
 ARM64-host translator only interprets, and its syscall bridge is an `-ENOSYS`
-stub (the ARM64-*guest* path, by contrast, has implemented syscall emulation
-but no translator tiers yet).
+stub.  The ARM64-*guest* path, by contrast, has implemented syscall emulation
+but no translator tiers yet.
 
 ```mermaid
 graph TD
@@ -2256,7 +2264,7 @@ in the decoder template.
 
 Section 19.2.3 introduced Berberis's interpreter, lite translator, and heavy
 optimizer as three execution backends.  The Android 17 reorganization made the
-relationship between them explicit: all three, plus the decoder, the IR backend,
+relationship between them explicit.  All three, plus the decoder, the IR backend,
 and the dispatcher that chooses between them, now live under
 `frameworks/libs/binary_translation/cpu_emulation/`.  This section walks the
 dispatcher that ties the tiers together.
@@ -2265,8 +2273,8 @@ dispatcher that ties the tiers together.
 
 Before Android 17 the per-region translation dispatcher lived inside the
 `runtime/` library.  The 17 reorganization split it into its own module
-(commit "translator_riscv64: split out from runtime", `Bug: 476465845`) so the
-runtime no longer depends on the full code generator.  The public entry point is
+(commit "translator_riscv64: split out from runtime", `Bug: 476465845`).  The
+runtime therefore no longer depends on the full code generator.  The public entry point is
 a single function in
 `frameworks/libs/binary_translation/cpu_emulation/translator/include/berberis/translator/translator.h`:
 
@@ -2316,8 +2324,8 @@ The default is **two-gear** (`kLiteTranslateThenHeavyOptimize`): a region is
 first lite-translated, and only the hot regions are later promoted to the heavy
 optimizer.  `UpdateTranslationMode()` (lines 62-86) lets a developer override
 the policy by name (`"interpret-only"`, `"two-gear"`, and so on) through a
-config string, which is invaluable when isolating a miscompilation to a single
-tier.
+config string.  This is very useful when a miscompilation is isolated
+to a single tier.
 
 ### 19.8.3  Two-Gear Promotion
 
@@ -2330,7 +2338,7 @@ enum class TranslationGear {
 };
 ```
 
-The first gear runs when a region is translated for the first time; the second
+The first gear runs when a region is translated for the first time.  The second
 gear runs when a region that was already lite-translated is being promoted.
 The decision lives in `TranslateRegion`
 (`translator_x86_64.cc`, lines 156-229).  In two-gear mode the first gear calls
@@ -2365,8 +2373,8 @@ GuestCodeEntry::Kind kLiteTranslated = GuestCodeEntry::Kind::kLiteTranslated;
 GuestCodeEntry::Kind kHeavyOptimized = GuestCodeEntry::Kind::kHeavyOptimized;
 ```
 
-Every tier can fall back to the one below it: lite falls back to the
-interpreter for instructions it cannot translate, and heavy falls back to lite
+Every tier can fall back to the one below it.  Lite falls back to the
+interpreter for instructions it cannot translate.  Heavy falls back to lite
 or to the interpreter.  The interpreter is the universal backstop, so a region
 that no JIT can handle still runs correctly, just slowly.
 
@@ -2411,7 +2419,7 @@ these paths under `cpu_emulation/`:
 | Tier dispatcher | `frameworks/libs/binary_translation/cpu_emulation/translator/` |
 
 The translation cache that the dispatcher writes to, the trampolines, and the
-`runtime/` initialization remain outside `cpu_emulation/` -- they are part of the
+`runtime/` initialization remain outside `cpu_emulation/`.  They are part of the
 *host* runtime, not the guest-CPU emulator.
 
 ---
@@ -2493,15 +2501,15 @@ There is a runtime direction directory
 plumbing in `frameworks/libs/binary_translation/runtime/arm64/`
 (`init_guest_arch.cc`, `init_kernel_args.cc`, `run_guest_call.cc`).
 
-The syscall layer for the ARM64 guest is also real, not a placeholder:
+The syscall layer for the ARM64 guest is also real, not a placeholder.
 `frameworks/libs/binary_translation/kernel_api/arm64/` carries implemented
 emulation (`syscall_emulation.cc`, `syscall_emulation_arch.cc`,
-`open_emulation.cc`, `epoll_emulation.cc`), built into the arm/arm64-guest
-kernel-API library.  The unfinished syscall bridge in the tree belongs to the
-*other* direction:
+`open_emulation.cc`, `epoll_emulation.cc`).  That emulation is built into the
+arm/arm64-guest kernel-API library.  The unfinished syscall bridge in the tree
+belongs to the *other* direction.
 `frameworks/libs/binary_translation/kernel_api/runtime_bridge_riscv64_to_arm64.cc`
 is compiled only for the ARM64 *host* (a RISC-V guest on an ARM64 machine,
-section 19.9.2), and every entry point in it is a stub that returns `-ENOSYS`
+section 19.9.2).  Every entry point in it is a stub that returns `-ENOSYS`
 and traces the call:
 
 ```cpp
@@ -2525,13 +2533,15 @@ wired end to end.
 
 The takeaway: in Android 17 Berberis is a production RISC-V-to-x86_64
 translator with ARM64 build-out underway on two fronts.  The ARM64-host path can
-interpret RISC-V but has no JIT, and its syscall bridge is the `-ENOSYS` stub;
-the ARM64-guest path has its state, ABI, and code-generation directories, its
-instruction tests, and an implemented syscall-emulation layer, but no
-translator tiers yet.  Neither ARM64 direction is a substitute for Houdini or IBT
+interpret RISC-V but has no JIT.  Its syscall bridge is the `-ENOSYS` stub.
+The ARM64-guest path has its state, ABI, and code-generation directories, its
+instruction tests, and an implemented syscall-emulation layer.  It has no
+translator tiers yet.
+
+Neither ARM64 direction is a substitute for Houdini or IBT
 (section 19.4) yet.  The community DigitalisX64 distribution (section 19.5)
-takes the ARM64-guest engine and packages it for the x86_64 emulator, which is
-the most complete ARM64 path that ships from a public source today.
+takes the ARM64-guest engine and packages it for the x86_64 emulator.  Today
+this is the most complete ARM64 path that ships from a public source.
 
 ---
 
@@ -2609,10 +2619,13 @@ out/host/linux-x86/bin/berberis_program_runner_riscv64 \
 ### Exercise 19.5: Trace a Bridge Load
 
 The per-callback messages in Berberis's native bridge shim are not logcat
-messages.  Each one is a `LOG_NB(...)` call, and
+messages.  Each one is a `LOG_NB(...)` call.
 `frameworks/libs/binary_translation/native_bridge/native_bridge.cc:50` defines
-`LOG_NB` as `TRACE` — Berberis's own tracing macro, gated on `Tracing::IsOn()`
-and written to a file or a socket rather than to the log buffer.  (Raising
+`LOG_NB` as `TRACE`.  That macro is Berberis's own tracing macro.  It is gated on
+`Tracing::IsOn()`, and it writes to a file or a socket rather than to the log
+buffer.
+
+(Raising
 `log.tag.nativebridge` does nothing here: `art/libnativebridge/native_bridge.cc`
 sets `LOG_TAG "nativebridge"` but contains no `ALOGV` calls at all, only
 warnings and errors.)  So the way to watch a load is to turn Berberis tracing
@@ -2638,8 +2651,8 @@ native_bridge_loadLibraryExt(path=libgame.so)
 native_bridge_getTrampolineWithJNICallType(handle=0x..., name='nativeInit', shorty='VL', ...)
 ```
 
-Only a couple of messages reach logcat as well, because they use
-`TRACE_AND_ALOGI` under `LOG_TAG "berberis"` — the startup banner
+Only a couple of messages reach logcat as well.  They use
+`TRACE_AND_ALOGI` under `LOG_TAG "berberis"`.  These are the startup banner
 `Initialized Berberis (riscv64)` (`native_bridge.cc:414-416`) and the notice
 that a library fell back to the host platform (`native_bridge.cc:187`).  Those
 you can watch with `adb logcat -s berberis:*`.
@@ -2660,7 +2673,7 @@ Open `art/libnativebridge/include/nativebridge/native_bridge.h` and:
 3. Find the `NativeBridgeRuntimeCallbacks` structure and explain what
    `getMethodShorty` does.
    Answer: It retrieves the compact type descriptor ("shorty") for a Java
-   method, which the bridge uses to generate the correct trampoline calling
+   method.  The bridge uses it to generate the correct trampoline calling
    convention.
 
 ### Exercise 19.7: Build Berberis from Source
@@ -2743,30 +2756,31 @@ v1-v8) in `libnativebridge`, AOSP allows any binary translator to plug in
 without modifying ART.
 
 Berberis, Google's open-source reference implementation, demonstrates the full
-complexity of binary translation on Android: multi-tier translation (interpreter,
-lite JIT, heavy optimizer), dual linker namespaces, JNI trampoline generation
-from method shorty strings, guest CPU state management, proxy library
-interception, and crash reporting with dual stack traces.  In Android 17 the
-engine was reorganized: the decoder, the three tiers, the IR backend, the
-assembler, the intrinsics, and the tier dispatcher were consolidated under a new
-`cpu_emulation/` directory, and the dispatcher's two-gear policy
+complexity of binary translation on Android.  It shows multi-tier translation
+(interpreter, lite JIT, heavy optimizer), dual linker namespaces, and JNI
+trampoline generation from method shorty strings.  It also shows guest CPU state
+management, proxy library interception, and crash reporting with dual stack
+traces.  In Android 17 the engine was reorganized.  The decoder, the three
+tiers, the IR backend, the assembler, the intrinsics, and the tier dispatcher
+were consolidated under a new `cpu_emulation/` directory.  The dispatcher's
+two-gear policy
 (lite-translate, then heavy-optimize hot regions) is now its own module split out
 of `runtime/`.
 
 The `native_bridge_support` libraries provide the guest-side runtime
-environment -- 21 guest-side API libraries, a guest linker, a guest VDSO, and a
-guest app_process (the matching host-side `libberberis_proxy_*` proxies are
-built from `frameworks/libs/binary_translation/android_api/`).  Together with the bridge implementation, they form a complete
+environment.  This is 21 guest-side API libraries, a guest linker, a guest VDSO,
+and a guest app_process.  The matching host-side `libberberis_proxy_*` proxies are
+built from `frameworks/libs/binary_translation/android_api/`.  Together with the bridge implementation, they form a complete
 execution environment for foreign-ISA applications.
 
 The RISC-V focus positions Berberis as a strategic investment in Android's
 future.  The comments in `riscv64_device.go` explicitly position it as a QEMU
 successor, and the comprehensive vector extension support and CTS compatibility
 demonstrate production-grade ambition.  Alongside the production
-RISC-V-to-x86_64 path, the 17 tree carries ARM64 scaffolding in two directions
--- an interpreter-only RISC-V-on-ARM64 host path whose runtime syscall bridge
-is an `-ENOSYS` stub, and an ARM64-guest path whose syscall emulation is
-implemented but which has no translator tiers yet.
+RISC-V-to-x86_64 path, the 17 tree carries ARM64 scaffolding in two directions.
+One is an interpreter-only RISC-V-on-ARM64 host path whose runtime syscall
+bridge is an `-ENOSYS` stub.  The other is an ARM64-guest path whose syscall
+emulation is implemented but which has no translator tiers yet.
 
 ### Key source files
 

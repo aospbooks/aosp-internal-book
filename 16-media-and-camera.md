@@ -2,10 +2,10 @@
 
 Android's media framework is one of the most architecturally complex subsystems in AOSP.
 It spans from high-level Java APIs (`MediaPlayer`, `MediaCodec`, `MediaRecorder`) through
-a native C++ stack that includes Stagefright, the Codec2 framework, NuPlayer, the Camera
-service, media extractors, and hardware abstraction layers that communicate directly with
-vendor-supplied codec and camera hardware. Across the C++ codebase that
-makes up the core pipeline, every frame of video you watch, every audio sample you hear,
+a native C++ stack. This stack includes Stagefright, the Codec2 framework, NuPlayer, the Camera
+service, media extractors, and hardware abstraction layers. The hardware abstraction layers
+communicate directly with vendor-supplied codec and camera hardware. The core pipeline is a large C++ codebase.
+Every frame of video you watch, every audio sample you hear,
 and every photo you capture passes through the machinery described in this chapter.
 
 ---
@@ -17,9 +17,11 @@ and every photo you capture passes through the machinery described in this chapt
 Android's media stack is organized into five distinct layers. At the top, Java and NDK
 APIs provide the interface that application developers use. Beneath them, a native
 services layer manages codec instances, playback sessions, and recording pipelines. The
-core codec abstraction layer, which includes both the legacy Stagefright/OMX path and
-the modern Codec2 path, translates between the services layer and actual codec
-implementations. Below that, the HAL (Hardware Abstraction Layer) provides the vendor
+core codec abstraction layer translates between the services layer and actual codec
+implementations. This layer includes both the legacy Stagefright/OMX path and
+the modern Codec2 path.
+
+Below that, the HAL (Hardware Abstraction Layer) provides the vendor
 contract. At the bottom sits the hardware itself: DSPs, dedicated video encoders/decoders,
 camera sensors, and ISPs.
 
@@ -86,10 +88,12 @@ graph TD
 
 The diagram above captures the central insight of Android's media architecture: there are
 two parallel paths through the codec layer. The **legacy OMX path** (ACodec) wraps
-OpenMAX IL components; it dates back to the Stagefright rework of the media stack in
-Android 2.2/2.3, with ACodec itself arriving alongside MediaCodec in the Android 4.1
-era. The **modern Codec2 path** (CCodec) was
-introduced in Android 10 and is now the primary path for all Google-provided software codecs
+OpenMAX IL components. It dates back to the Stagefright rework of the media stack in
+Android 2.2/2.3. ACodec itself arrived alongside MediaCodec in the Android 4.1
+era.
+
+The **modern Codec2 path** (CCodec) was
+introduced in Android 10. It is now the primary path for all Google-provided software codecs
 and most vendor hardware codecs. Both paths are abstracted behind the `MediaCodec` API, so
 applications need not know which is in use.
 
@@ -196,8 +200,8 @@ frameworks/av/
 
 `MediaCodec` is the single most important class in the Android media framework. At 8234
 lines in `frameworks/av/media/libstagefright/MediaCodec.cpp`, it implements a complex
-asynchronous state machine that manages the lifecycle of every codec instance in the
-system -- audio and video, encoder and decoder, hardware and software.
+asynchronous state machine. This state machine manages the lifecycle of every codec instance
+in the system -- audio and video, encoder and decoder, hardware and software.
 
 The class is defined with the following factory methods:
 
@@ -243,8 +247,8 @@ sp<MediaCodec> MediaCodec::CreateByType(
 }
 ```
 
-This factory pattern is critical: `CreateByType` queries the `MediaCodecList` for all
-codecs that support the given MIME type, then attempts to instantiate them in priority
+This factory pattern is critical. `CreateByType` queries the `MediaCodecList` for all
+codecs that support the given MIME type. Then it attempts to instantiate them in priority
 order. If a hardware codec fails to allocate (perhaps because all hardware instances are
 in use), the system falls back to a software codec.
 
@@ -372,8 +376,8 @@ There are several important details here:
    queue without causing stalls.
 
 3. **Codec base selection**: The `mGetCodecBase` callback creates either an `ACodec`
-   (for OMX components) or a `CCodec` (for Codec2 components), depending on the
-   `owner` field from `MediaCodecInfo`.
+   (for OMX components) or a `CCodec` (for Codec2 components). The `owner` field from
+   `MediaCodecInfo` decides which.
 
 4. **Secure codec handling**: Codecs whose names end in `.secure` indicate DRM-protected
    content paths. These require special hardware support and additional security checks.
@@ -410,9 +414,10 @@ status_t MediaCodec::configure(
 ```
 
 The configure step includes a retry mechanism with resource reclamation. If the initial
-configuration fails due to insufficient resources (e.g., all hardware codec instances are
-in use), MediaCodec will ask the ResourceManagerService to reclaim a codec from a
-lower-priority process and retry:
+configuration fails due to insufficient resources, MediaCodec will ask the
+ResourceManagerService to reclaim a codec. The codec comes from a lower-priority process.
+Then MediaCodec will retry. One example cause is that all hardware codec instances are in use.
+The code below shows the retry:
 
 ```cpp
     for (int i = 0; i <= kMaxRetry; ++i) {
@@ -489,7 +494,7 @@ key constants at the top of the file (lines 111-286). These metrics cover:
 - **HDR metadata**: color standard, range, transfer function, HDR10+ info
 - **Error tracking**: error codes, error states
 
-The render quality tracking is particularly sophisticated, implementing both freeze
+The render quality tracking is particularly sophisticated. It implements both freeze
 detection (when frames are not rendered on time) and judder detection (when frame
 spacing is uneven). These metrics are surfaced to the platform's MediaMetrics system
 for monitoring video playback quality at scale.
@@ -706,7 +711,7 @@ public:
     bool usePrefix() const { return mIsAvc || mIsHevc || mIsHeic || mIsDovi; }
 ```
 
-The Track class supports a wide range of codecs: AVC (H.264), HEVC (H.265), AV1,
+The Track class supports many codecs: AVC (H.264), HEVC (H.265), AV1,
 APV, HEIC, AVIF, HEIF, Dolby Vision, and traditional MPEG-4 Part 2. Key constants
 define operational limits:
 
@@ -722,8 +727,8 @@ static const int64_t kMaxCttsOffsetTimeUs = 30 * 60 * 1000000LL;  // 30 minutes
 
 MPEG4Writer also handles HEIF/AVIF image writing and gainmap (HDR) metadata, which
 is critical for the newer Ultra HDR photo format. The track identification system
-uses a `TrackId` struct (line 118) that enforces ISO 14496-12 constraints: track IDs
-cannot be zero, and when used with `MediaRecorder`, they are limited to 4 bits (values
+uses a `TrackId` struct (line 118). This struct enforces ISO 14496-12 constraints. Track IDs
+cannot be zero. When used with `MediaRecorder`, they are limited to 4 bits (values
 1-15).
 
 ### 16.2.9 The AMessage Pattern
@@ -764,7 +769,7 @@ on the looper thread, ensuring thread-safe access to MediaCodec's state.
 
 Codec2 (often abbreviated C2) is Android's modern codec framework, designed to replace
 the aging OMX IL interface. Located in `frameworks/av/media/codec2/`, it comprises 10
-subdirectories encompassing the core API, 21 software codec families, a HAL layer, and
+subdirectories. These hold the core API, 21 software codec families, a HAL layer, and
 the `sfplugin` bridge to the Stagefright framework.
 
 ```mermaid
@@ -814,7 +819,7 @@ The key design improvements over OMX include:
 
 2. **Work-based processing model**: Instead of OMX's separate input/output buffer
    queues, Codec2 uses a unified `C2Work` structure that bundles input and output
-   together, simplifying buffer lifecycle tracking.
+   together. This simplifies buffer lifecycle tracking.
 
 3. **Flexible buffer management**: Codec2 supports multiple allocator backends
    (Gralloc, ION/DMA-buf, blob) through a uniform `C2Buffer` abstraction.
@@ -873,8 +878,8 @@ public:
 
 The watchdog runs a singleton looper thread. Every 3.3 seconds, it checks all registered
 CCodec instances and calls `initiateReleaseIfStuck()` on any that appear hung. This
-is essential for robustness: if a vendor codec HAL freezes, the watchdog ensures the
-system eventually recovers rather than leaving the MediaCodec in a permanently stuck state.
+is essential for robustness. If a vendor codec HAL freezes, the watchdog makes sure the
+system eventually recovers. The MediaCodec does not stay in a permanently stuck state.
 
 ### 16.3.3 CCodecBufferChannel
 
@@ -943,10 +948,10 @@ constexpr size_t kSmoothnessFactor = 4;
 const static size_t kDequeueTimeoutNs = 0;
 ```
 
-The `kSmoothnessFactor` of 4 is additive headroom: the buffer channel sizes its slot
+The `kSmoothnessFactor` of 4 is additive headroom. The buffer channel sizes its slot
 counts as the codec's declared input, pipeline, and output delays plus 4 extra slots
-(e.g. `numInputSlots = inputDelayValue + pipelineDelayValue + kSmoothnessFactor`),
-providing headroom for smooth operation under varying decode latencies.
+(e.g. `numInputSlots = inputDelayValue + pipelineDelayValue + kSmoothnessFactor`).
+This gives headroom for smooth operation under varying decode latencies.
 
 ### 16.3.4 The C2InputSurface Wrapper
 
@@ -990,8 +995,8 @@ The `frameworks/av/media/codec2/components/` directory contains Google's softwar
 implementations, organized by codec family. Each component follows the naming convention
 `c2.android.<codec>.<encoder|decoder>`.
 
-The full set of 21 component families, plus the shared `base/` classes they all build on
-(the directory also holds `cmds/` and `tests/`, which contain tooling rather than codecs):
+The full set of 21 component families follows. It also lists the shared `base/` classes they all build on.
+The directory also holds `cmds/` and `tests/`, which contain tooling rather than codecs:
 
 | Directory | Codec(s) | Type | Source Files |
 |---|---|---|---|
@@ -1025,7 +1030,7 @@ Notable observations:
   In practice, dav1d is the preferred software decoder due to its superior performance.
 
 - **IAMF (Immersive Audio Model and Formats)**: The `iamf/` family is a software decoder
-  for the AOM Immersive Audio Model and Formats standard (`audio/iamf`), built on the
+  for the AOM Immersive Audio Model and Formats standard (`audio/iamf`). It builds on the
   `external/iamf_tools` library. It is gated by the `iamf_software_decoder` flag in
   `frameworks/av/media/aconfig/swcodec_flags.aconfig` and registered for `minsdk="36"`.
   Section 16.3.13 walks through it.
@@ -1077,9 +1082,9 @@ public:
                 .build());
 ```
 
-The `kMaxOutputDelay` of 34 for AVC is derived from the specification: AVC allows up to
-16 frames of reordering delay, interlaced content doubles this to 32 fields, and the
-software decoder adds 2 frames of internal delay, totaling 34.
+The `kMaxOutputDelay` of 34 for AVC is derived from the specification. AVC allows up to
+16 frames of reordering delay. Interlaced content doubles this to 32 fields. The
+software decoder adds 2 frames of internal delay, which gives a total of 34.
 
 ### 16.3.6 Codec2 HAL
 
@@ -1162,7 +1167,7 @@ graph TD
 The `DefineParam` / `withDefault` / `withFields` / `withSetter` / `build()` builder
 pattern provides a declarative way to specify parameter constraints. For example,
 the picture size parameter for the AVC decoder constrains width and height to the range
-[2, 4096] in steps of 2 (ensuring even dimensions for YUV formats).
+[2, 4096] in steps of 2. This makes the dimensions even, as YUV formats need.
 
 ### 16.3.8 CCodecConfig: Parameter Translation
 
@@ -1195,18 +1200,20 @@ graph TD
 ```
 
 Unlike OMX's separate `EmptyThisBuffer` / `FillThisBuffer` calls, a `C2Work` bundles
-input and output together. The client submits a `C2Work` with input data filled in; the
-component processes it and fills in the output data within the same `C2Work` structure,
-then returns it via the `onWorkDone` callback. This design eliminates the complex
+input and output together. The client submits a `C2Work` with input data filled in.
+The component processes it and fills in the output data within the same `C2Work` structure.
+Then the component returns the structure through the `onWorkDone` callback. This design eliminates the complex
 buffer-matching logic required by OMX.
 
 ### 16.3.12 APV: The Advanced Professional Video Codec
 
 Android 16 (Baklava, API 36) added a software codec for APV (Advanced Professional
-Video), the intra-only mezzanine codec that Samsung contributed and that the Alliance for
-Open Media has since adopted; the 17 cycle has continued to extend it. APV targets professional capture and editing workflows where every frame is a
-keyframe: there is no inter-frame prediction, so each picture is independently decodable,
-which makes scrubbing, trimming, and frame-accurate editing cheap at the cost of a much
+Video). APV is the intra-only mezzanine codec that Samsung contributed and that the
+Alliance for Open Media has since adopted. The 17 cycle has continued to extend it.
+
+APV targets professional capture and editing workflows where every frame is a
+keyframe. There is no inter-frame prediction, so each picture is independently decodable.
+This makes scrubbing, trimming, and frame-accurate editing cheap, at the cost of a much
 higher bitrate. The Codec2 component lives in `frameworks/av/media/codec2/components/apv/`
 and wraps the `external/libopenapv` (`libopenapv`, the `oapv` API) reference library.
 
@@ -1226,9 +1233,10 @@ constexpr char COMPONENT_NAME[] = "c2.android.apv.encoder";
 ```
 
 The encoder declares a single supported profile, the 4:2:2 10-bit profile
-(`C2Config::PROFILE_APV_422_10`), reflecting APV's positioning as a high-fidelity capture
-format rather than a delivery format (the decoder makes the matching declaration as a
-`C2StreamProfileLevelInfo::input` parameter in `C2SoftApvDec.cpp`, lines 88-92):
+(`C2Config::PROFILE_APV_422_10`). This reflects APV's positioning as a high-fidelity
+capture format rather than a delivery format. The decoder makes the matching declaration
+as a `C2StreamProfileLevelInfo::input` parameter in `C2SoftApvDec.cpp`, lines 88-92. The
+encoder's declaration is:
 
 ```cpp
 // frameworks/av/media/codec2/components/apv/C2SoftApvEnc.cpp, line 119
@@ -1245,21 +1253,24 @@ format rather than a delivery format (the decoder makes the matching declaration
 })
 ```
 
-APV's levels are organized into bands (Band 0 through Band 3) that scale the allowed
-bitrate per level, which is why the level enum is a cross-product of level number and
-band. Because APV carries HDR metadata in the bitstream itself (mastering display color
-volume, content light level, and ITU-T T.35 user data for HDR10+), the decoder parses
-those out of each access unit and republishes them as `C2StreamHdrStaticMetadataInfo` and
-`C2StreamHdr10PlusInfo` so the rest of the pipeline sees standard Codec2 HDR parameters.
+APV organizes its levels into bands (Band 0 through Band 3). The bands scale the allowed
+bitrate per level. For this reason the level enum is a cross-product of level number and
+band.
+
+APV carries HDR metadata in the bitstream itself (mastering display color
+volume, content light level, and ITU-T T.35 user data for HDR10+). For this reason, the decoder parses
+this metadata out of each access unit. It republishes the metadata as
+`C2StreamHdrStaticMetadataInfo` and
+`C2StreamHdr10PlusInfo`, so the rest of the pipeline sees standard Codec2 HDR parameters.
 The decoder's `getHdrInfo`, `getHDRStaticParams`, and `getHDR10PlusInfoData` helpers in
 `C2SoftApvDec.cpp` perform that extraction.
 
 The feature is staged behind two layers of flags so vendors can adopt it incrementally.
 The framework-facing `apv_support` flag in
 `frameworks/av/media/aconfig/codec_fwk.aconfig` controls whether the platform advertises
-APV at all (it gates the `MediaFormat.MIMETYPE_VIDEO_APV` plumbing and the
+APV at all. It gates the `MediaFormat.MIMETYPE_VIDEO_APV` plumbing and the
 `CodecProfileLevel.APVProfile*`/`APVLevel*` constants in
-`frameworks/base/media/java/android/media/MediaCodecInfo.java`), while the
+`frameworks/base/media/java/android/media/MediaCodecInfo.java`. The
 `apv_software_codec` flag in `frameworks/av/media/aconfig/swcodec_flags.aconfig` gates the
 software component itself. In the codec list the entries are declared
 `enabled="false" minsdk="36" variant="!slow-cpu"`:
@@ -1276,24 +1287,26 @@ software component itself. In the codec list the entries are declared
 ```
 
 Two things stand out in that declaration. The `enabled="false"` default means a device
-ships APV support only if its codec list overlay turns it on; APV is opt-in rather than
-universal. And the `variant="!slow-cpu"` attribute excludes low-end CPUs, because
-software-decoding a 10-bit 4:2:2 intra-only stream at the bitrates APV uses (up to
-240 Mbit/s in the limit above) is expensive. The `minsdk="36"` attribute is the clearest
-marker of when the codec arrived: APV shipped with Android 16, not with 17. What the 17
-cycle adds is the `apv_software_codec_cq` flag, a constant-quality rate-control mode for
-the encoder, which is why the encoder's codec-list entry now carries a
-`<Limit name="quality" range="0-100" default="90" />` where Android 16 declared only
-VBR bitrate modes.
+ships APV support only if its codec list overlay turns it on. APV is opt-in rather than
+universal. And the `variant="!slow-cpu"` attribute excludes low-end CPUs. This is because
+software decode of a 10-bit 4:2:2 intra-only stream is expensive at APV bitrates.
+Those bitrates go up to 240 Mbit/s in the limit above.
+
+The `minsdk="36"` attribute is the clearest
+marker of when the codec arrived: APV shipped with Android 16, not with 17. The 17
+cycle adds the `apv_software_codec_cq` flag, a constant-quality rate-control mode for
+the encoder. For this reason the encoder's codec-list entry now carries a
+`<Limit name="quality" range="0-100" default="90" />`. Android 16 declared only
+VBR bitrate modes in that entry.
 
 ### 16.3.13 IAMF: Immersive Audio Decoding
 
-The other recently added Codec2 family, also introduced in Android 16 (API 36), is a
-decoder for IAMF, the Alliance for Open Media's Immersive Audio Model and Formats
-standard. IAMF describes scene-based and
-channel-based immersive audio (think Dolby-Atmos-style object/bed mixes, but royalty
-free) as a tree of "audio elements" and "mix presentations" carried in OBUs (Open
-Bitstream Units, the same container concept AV1 uses). The component lives in
+The other recently added Codec2 family is a decoder for IAMF, the Alliance for Open
+Media's Immersive Audio Model and Formats standard. It also arrived in Android 16
+(API 36). IAMF describes scene-based and
+channel-based immersive audio as a tree of "audio elements" and "mix presentations".
+Think of Dolby-Atmos-style object/bed mixes, but royalty free. The tree is carried in
+OBUs (Open Bitstream Units), the same container concept that AV1 uses. The component lives in
 `frameworks/av/media/codec2/components/iamf/` and is a decoder only: there is no
 software IAMF encoder in the tree.
 
@@ -1303,13 +1316,14 @@ constexpr char COMPONENT_NAME[] = "c2.android.iamf.decoder";
 // ... DOMAIN_AUDIO, MEDIA_MIMETYPE_AUDIO_IAMF ("audio/iamf")
 ```
 
-Rather than implement the bitstream parser in `frameworks/av`, the component links the
+The component does not implement the bitstream parser in `frameworks/av`. It links the
 `external/iamf_tools` library and drives it through a small C++ API surface
 (`iamf_tools::api::IamfDecoderFactory` / `IamfDecoderInterface`, included from
 `<iamf_tools/iamf_decoder_factory.h>`). `external/iamf_tools` is one of the most active
 media repositories in the 16-to-17 changeset. The Codec2 wrapper is therefore mostly
-glue: it feeds OBUs to the decoder, pulls back decoded "temporal units," and translates
-between Android's channel-mask vocabulary and IAMF's loudspeaker-layout vocabulary.
+glue. It feeds OBUs to the decoder and pulls back decoded "temporal units." It also
+translates between Android's channel-mask vocabulary and IAMF's loudspeaker-layout
+vocabulary.
 
 That translation is the interesting part, and it lives in `LayoutTranslation.cpp`. IAMF
 expresses output configurations as standardized layouts (ITU-R BS.2051 sound systems and
@@ -1329,12 +1343,14 @@ std::optional<iamf_tools::api::OutputLayout> C2SoftIamfDec::getTargetOutputLayou
 ```
 
 The header note in `LayoutTranslation.h` is explicit that masks without an exact IAMF
-layout are rejected, except that `CHANNEL_OUT_5POINT1POINT2` and
-`CHANNEL_OUT_7POINT1POINT2` are snapped to their nearest equivalents. This is how an
+layout are rejected. The exceptions are `CHANNEL_OUT_5POINT1POINT2` and
+`CHANNEL_OUT_7POINT1POINT2`, which are snapped to their nearest equivalents.
+
+This is how an
 immersive mix is rendered down to whatever speaker configuration the device actually
-has: the application asks for a channel count or mask, the decoder picks an IAMF
-`OutputLayout`, and the `iamf_tools` engine performs the downmix/rendering internally,
-returning a `SelectedMix` that the component reads back to publish the real output
+has. The application asks for a channel count or mask. The decoder picks an IAMF
+`OutputLayout`. The `iamf_tools` engine performs the downmix/rendering internally and
+returns a `SelectedMix`. The component reads it back to publish the real output
 channel mask.
 
 The codec list declares the decoder with `minsdk="36"` and documents the current codec
@@ -1352,12 +1368,12 @@ support and IAMF profile limits inline:
 ```
 
 The `minsdk="36"` again dates the component to Android 16. The visible 17-cycle change
-here is the dropped `variant="!slow-cpu"` attribute: Android 16 excluded low-end CPUs
-from the IAMF decoder, and the entry no longer does, so the decoder is now offered on
+here is the dropped `variant="!slow-cpu"` attribute. Android 16 excluded low-end CPUs
+from the IAMF decoder. The entry no longer does this, so the decoder is now offered on
 every device that enables it.
 
-The XML comments track real implementation limits: at this stage the decoder handles
-the Opus and PCM substream codecs, and the `iamf_aac_flac` flag in
+The XML comments track real implementation limits. At this stage the decoder handles
+the Opus and PCM substream codecs. The `iamf_aac_flac` flag in
 `swcodec_flags.aconfig` is the gate for extending it to AAC and FLAC substreams. The
 whole component is itself gated by `iamf_software_decoder`. On the framework side, the
 `audio_mix_presentation_support` flag in `codec_fwk.aconfig` adds the
@@ -1367,11 +1383,12 @@ presentations an IAMF stream offers.
 ### 16.3.14 In-Process Software Codecs: ApexCodecs and LFI
 
 Historically every software codec on Android ran inside the dedicated
-`media.swcodec` HAL process, reached over Binder/Codec2-HAL even when the codec was
-Google's own software implementation. That isolation is good for security but costs an
-IPC hop and a process boundary on every buffer. Android 17 introduces an *in-process*
-path for select software audio codecs through a new module API, `libapexcodecs`, so the
-codec runs directly inside the client process while keeping the Codec2 programming model.
+`media.swcodec` HAL process. Access to it went over Binder/Codec2-HAL, even when the
+codec was Google's own software implementation. That isolation is good for security but
+costs an IPC hop and a process boundary on every buffer. Android 17 introduces an
+*in-process* path for select software audio codecs through a new module API,
+`libapexcodecs`. The codec runs directly inside the client process. It keeps the Codec2
+programming model.
 
 The module lives in `frameworks/av/media/module/libapexcodecs/`, and its public API is
 `ApexCodecs.h`:
@@ -1388,7 +1405,7 @@ The module lives in `frameworks/av/media/module/libapexcodecs/`, and its public 
 
 As the comment says, the `ApexCodec_*` types deliberately mirror the Codec2 vocabulary
 (`ApexCodec_Status`, `ApexCodec_Configurable`, linear/graphic buffers, supported-values
-queries), so the same parameter and buffer model carries over without a HAL hop. The
+queries). The same parameter and buffer model therefore carries over without a HAL hop. The
 codec implementations are thin C2-to-ApexCodec adapters, but the two that ship wrap very
 different back ends. `C2ApexOpusDec` wraps the existing libopus decoder, built for this
 path as `libopus_lfi` (`external/libopus/Android.bp`, line 426). `C2ApexAacDec` instead
@@ -1421,27 +1438,30 @@ static std::map<std::string, ComponentDesc> BuildCodecs() {
 }
 ```
 
-The gating is conservative: the in-process Opus decoder is admitted only on 64-bit-only
-`aarch64` devices at API level 37 or higher, and the in-process AAC decoder rides on the
+The gating is conservative. The in-process Opus decoder is admitted only on 64-bit-only
+`aarch64` devices at API level 37 or higher. The in-process AAC decoder rides on the
 `rust_aac_software_decoder` flag. The corresponding framework flags
 (`in_process_sw_audio_codec` and `in_process_sw_audio_codec_support` in
-`frameworks/av/media/aconfig/codec_fwk.aconfig`) control whether `MediaCodecList` and the
+`frameworks/av/media/aconfig/codec_fwk.aconfig`) control the in-process variant in two
+places. They decide whether `MediaCodecList` and the
 Codec2 client (`frameworks/av/media/codec2/hal/client/client.cpp`) advertise and route to
-the in-process variant at all. `frameworks/av/media/libstagefright/MediaCodecList.cpp` and
+it at all. `frameworks/av/media/libstagefright/MediaCodecList.cpp` and
 `frameworks/av/media/codec2/hal/client/client.cpp` carry the `in_process_sw_audio_codec_support()`
 checks that decide which list a given component lands in
 (`frameworks/av/media/libmedia/MediaCodecInfo.cpp` checks the related
 `in_process_sw_codec_lfi()` flag instead).
 
-Running a codec inside the client process re-opens the security question that the HAL
-process was originally meant to answer, so Android 17 pairs the in-process path with a
-new sandboxing technology. The `in_process_sw_codec_lfi` flag names it: LFI, Lightweight
-Fault Isolation. LFI lives outside `frameworks/av`, in the new `system/lfi` project (with
-supporting `external/lfi/*` repositories that arrive in the 16-to-17 changeset), and it
-sandboxes native code inside a process by software-fault-isolating the codec's memory
-accesses and control flow rather than relying on a separate address space. The intent is
-to keep the latency and power win of running the codec in-process while bounding the
-blast radius of a malformed bitstream exploit to the sandbox instead of the whole client.
+A codec that runs inside the client process re-opens the security question that the HAL
+process was originally meant to answer. Android 17 therefore pairs the in-process path
+with a new sandboxing technology. The `in_process_sw_codec_lfi` flag names it: LFI,
+Lightweight Fault Isolation.
+
+LFI lives outside `frameworks/av`, in the new `system/lfi` project (with
+supporting `external/lfi/*` repositories that arrive in the 16-to-17 changeset). It
+sandboxes native code inside a process with software fault isolation of the codec's
+memory accesses and control flow. It does not rely on a separate address space. The
+intent is to keep the latency and power win of an in-process codec. It also bounds the
+blast radius of a malformed bitstream exploit to the sandbox, not the whole client.
 LFI is the in-process security story; `libapexcodecs` is the codec-delivery and API
 story; the `in_process_sw_*` flags are the switches that turn the combination on.
 
@@ -1451,8 +1471,8 @@ Android 17 adds framework support for VVC (Versatile Video Coding, H.266) under
 the MIME type `video/vvc`. Unlike APV and IAMF, no software codec for VVC ships
 in the tree: there is no `frameworks/av/media/codec2/components/vvc/` directory,
 no `c2.android.vvc` component, and no `media_codecs_sw.xml` entry. What Android
-17 adds is the plumbing a vendor decoder plugs into, so a device with a hardware
-or vendor VVC codec can expose it through the standard `MediaCodec` and
+17 adds the plumbing that a vendor decoder plugs into. A device with a hardware
+or vendor VVC codec can then expose it through the standard `MediaCodec` and
 `MediaExtractor` APIs.
 
 The MIME constant exists on both the native and Java sides:
@@ -1472,8 +1492,8 @@ public static final String MIMETYPE_VIDEO_VVC = "video/vvc";
 `VVCProfileMain10Still`, `VVCProfileMain10HDR10`, and more) and the matching
 tier/level constants (`VVCMainTierLevel10` through `VVCHighTierLevel63`), all
 behind `@FlaggedApi(FLAG_VVC_SUPPORT)`. On the Codec2 side, `C2Config.h` defines
-the `PROFILE_VVC_*` enum from `_C2_PL_VVC_BASE`, and `C2Config.cpp` carries the
-string-to-enum table that lets a vendor codec declare profiles like
+the `PROFILE_VVC_*` enum from `_C2_PL_VVC_BASE`. `C2Config.cpp` carries the
+string-to-enum table. This table lets a vendor codec declare profiles like
 `vvc-main-10` and `vvc-main-10-still`:
 
 ```cpp
@@ -1492,8 +1512,8 @@ set, gated by the `vvc_support()` flag in `codec_fwk.aconfig`:
         && base::EqualsIgnoreCase(mMediaType, MIMETYPE_VIDEO_VVC)) {
 ```
 
-Container support follows in the MP4 extractor, where a VVC track is recognized
-only on Android 17 and later and only when a second flag is set:
+Container support follows in the MP4 extractor. There a VVC track is recognized
+only on Android 17 and later, and only when a second flag is set:
 
 ```cpp
 // frameworks/av/media/module/extractors/mp4/MPEG4Extractor.cpp, line 5714
@@ -1504,10 +1524,10 @@ if (isAtLeastRelease(37, "CinnamonBun")) {
 }
 ```
 
-So VVC in AOSP 17 is decode-side plumbing gated by two flags: `vvc_support`
-(`frameworks/av/media/aconfig/codec_fwk.aconfig`) for the framework
-profile/level and `MediaCodec` integration, and `extractor_mp4_enable_vvc`
-(`frameworks/av/media/module/extractors/extractor.aconfig`) for MP4 demuxing.
+So VVC in AOSP 17 is decode-side plumbing gated by two flags. The `vvc_support` flag
+(`frameworks/av/media/aconfig/codec_fwk.aconfig`) covers the framework
+profile/level and `MediaCodec` integration. The `extractor_mp4_enable_vvc` flag
+(`frameworks/av/media/module/extractors/extractor.aconfig`) covers MP4 demuxing.
 Whether a device can actually decode `video/vvc` depends on a vendor supplying
 the codec component.
 
@@ -1695,10 +1715,10 @@ struct NuPlayer::FlushDecoderAction : public Action {
 };
 ```
 
-The deferred action pattern solves a common problem in media players: operations like
-seek require flushing both audio and video decoders, waiting for the flushes to complete,
-then resuming from the new position. Rather than implementing complex multi-step state
-machines, NuPlayer queues actions that execute in sequence.
+The deferred action pattern solves a common problem in media players. Operations like
+seek require a flush of both audio and video decoders. They must wait for the flushes to
+complete. Then they resume from the new position. NuPlayer does not implement complex
+multi-step state machines. It queues actions that execute in sequence.
 
 ### 16.4.3 NuPlayerDecoder: MediaCodec Wrapper
 
@@ -1855,9 +1875,9 @@ This ensures that the system's battery statistics properly account for video enc
 which is a power-intensive operation.
 
 Android 17 adds a constant-quality recording path to `MediaRecorder`. The older
-`setVideoEncodingBitRate()` targets a bitrate; the new
+`setVideoEncodingBitRate()` targets a bitrate. The new
 `setVideoEncodingQuality()` instead asks the encoder to hold a quality level and
-let the bitrate float, which keeps complex scenes from being starved of bits:
+let the bitrate float. This keeps complex scenes from being starved of bits:
 
 ```java
 // frameworks/base/media/java/android/media/MediaRecorder.java, line 1177
@@ -1884,8 +1904,8 @@ if (mVideoEncodingQuality != -1) {
 
 `MediaCodecSource::adjustMediaFormatForConstantQuality()` is where the request is
 honored or dropped. It checks whether the selected encoder advertises
-`BITRATE_MODE_CQ`; if it does, it sets `KEY_BITRATE_MODE` to `BITRATE_MODE_CQ`,
-and if it does not, it logs a warning and removes the `quality` key so recording
+`BITRATE_MODE_CQ`. If it does, it sets `KEY_BITRATE_MODE` to `BITRATE_MODE_CQ`.
+If it does not, it logs a warning and removes the `quality` key, so recording
 falls back to bitrate control:
 
 ```cpp
@@ -1902,7 +1922,7 @@ if (format->findInt32(KEY_QUALITY, &videoEncodingQuality) && videoEncodingQualit
 ```
 
 `BITRATE_MODE_CQ` is the same constant-quality rate-control mode `ACodec` maps to
-`OMX_Video_ControlRateConstantQuality` (Section 16.2.7); the Android 17 addition
+`OMX_Video_ControlRateConstantQuality` (Section 16.2.7). The Android 17 addition
 is the recorder-level API and the encoder-capability check that routes a
 recording session into it. The whole path is gated by the
 `FLAG_QUALITY_SETTING_SUPPORT` flag.
@@ -2199,9 +2219,9 @@ auto [deviceId, mappedCameraId] =
 
 The Camera NDK (Native Development Kit) provides C APIs for camera access from native
 code, used by game engines and cross-platform frameworks. It is not a JNI wrapper
-around the Java Camera2 API: `libcamera2ndk` (`frameworks/av/camera/ndk/`) is a native
-client that obtains the `hardware::ICameraService` binder interface directly (the same
-interface the Java API uses) and talks to CameraService over Binder:
+around the Java Camera2 API. `libcamera2ndk` (`frameworks/av/camera/ndk/`) is a native
+client. It obtains the `hardware::ICameraService` binder interface directly (the same
+interface the Java API uses). Then it talks to CameraService over Binder:
 
 ```mermaid
 graph LR
@@ -2353,9 +2373,9 @@ sp<IMediaExtractor> MediaExtractorFactory::Create(
 
 The key design decision here is **remote extraction by default**. The
 `media.stagefright.extractremote` property (default true) causes extractor plugins to
-run in the isolated `media.extractor` process. This is a security measure: media
-container parsing is one of the most common attack surfaces, and running it in a
-sandboxed process limits the impact of a parsing vulnerability.
+run in the isolated `media.extractor` process. This is a security measure. Media
+container parsing is one of the most common attack surfaces. A sandboxed process
+limits the impact of a parsing vulnerability.
 
 The sniffing mechanism (line 132) iterates through all loaded plugins to find the best
 match for a given data source:
@@ -2522,8 +2542,8 @@ std::optional<Range<int32_t>> VideoCapabilities::getSupportedWidthsFor(
 }
 ```
 
-The capability computation uses a **macroblock model**: the codec's capabilities are
-expressed in terms of blocks (typically 16x16 for AVC, 64x64 for HEVC), and the
+The capability computation uses a **macroblock model**. The codec's capabilities are
+expressed in terms of blocks (typically 16x16 for AVC, 64x64 for HEVC). The
 supported resolution range is computed from the maximum block count, block aspect
 ratio constraints, alignment requirements, and smaller-dimension limits.
 
@@ -2681,9 +2701,9 @@ graph TD
 
 The `media_codecs.xml` file, located in the vendor or system partition, declares
 all available codecs on the device. The `media_codecs_performance.xml` file provides
-performance data (measured achievable resolution x frame rate combinations) that enables
-the framework to distinguish between codecs that can sustain 4K@30fps and those that
-can only sustain 1080p@30fps.
+performance data (measured achievable resolution x frame rate combinations). This data
+enables the framework to distinguish between codecs that can sustain 4K@30fps and those
+that can only sustain 1080p@30fps.
 
 ### 16.7.4 Codec Feature Flags
 
@@ -2801,8 +2821,8 @@ MediaCodec classifies codecs into three domains, each with different behavior:
 Video codecs get a dedicated looper thread because video processing is latency-
 sensitive: a stall in the codec's message processing would directly cause frame
 drops. Audio and image codecs share the main looper because their timing
-requirements are less stringent. Battery tracking is likewise video-only: the
-`BatteryChecker` is instantiated only when `mDomain == DOMAIN_VIDEO`, and every
+requirements are less stringent. Battery tracking is likewise video-only. The
+`BatteryChecker` is instantiated only when `mDomain == DOMAIN_VIDEO`. Every
 call site is null-guarded, so audio and image codecs never report battery activity.
 
 ### 16.8.3 Secure Codec Path (DRM)
@@ -2848,8 +2868,8 @@ Key security properties:
 4. The crypto plugin runs in the TEE (Trusted Execution Environment)
 
 The `queueSecureInputBuffer` method passes encryption metadata (key, IV, sub-sample
-mapping, pattern) to the crypto subsystem, which decrypts directly into secure
-memory accessible only by the hardware decoder.
+mapping, pattern) to the crypto subsystem. The crypto subsystem decrypts directly into
+secure memory accessible only by the hardware decoder.
 
 ### 16.8.4 Tunneled Playback Mode
 
@@ -3363,8 +3383,8 @@ void BatteryChecker::onCodecActivity(std::function<void()> batteryOnCb) {
 }
 ```
 
-The BatteryChecker implements a timeout-based approach: it records that the codec is
-active when buffer activity occurs, and if no activity is seen for the timeout period,
+The BatteryChecker implements a timeout-based approach. It records that the codec is
+active when buffer activity occurs. If no activity occurs for the timeout period,
 it records that the codec is idle. This prevents battery statistics from being inflated
 by codecs that are configured but not actively processing data.
 
@@ -3499,8 +3519,8 @@ MediaCodec::DequeueOutputResult MediaCodec::handleDequeueOutputBuffer(
 
 The dequeue handler implements several important behaviors:
 
-1. **Output format changes** (`INFO_FORMAT_CHANGED`): When the codec's output format
-   changes (e.g., resolution change during adaptive playback), the change is delivered
+1. **Output format changes** (`INFO_FORMAT_CHANGED`): The codec's output format
+   changes (e.g., resolution change during adaptive playback). In that case, the change is delivered
    as a special return value from `dequeueOutputBuffer`, not as a separate callback.
 
 2. **Output buffer changes** (`INFO_OUTPUT_BUFFERS_CHANGED`): When the buffer set itself
@@ -3929,13 +3949,13 @@ graph TD
     style EP fill:#ffcdd2
 ```
 
-NuPlayer's `GenericSource` reaches the sandboxed extractor process directly: it
-obtains the `media.extractor` binder service, casts it to `IMediaExtractorService`,
+NuPlayer's `GenericSource` reaches the sandboxed extractor process directly. It
+gets the `media.extractor` binder service, casts it to `IMediaExtractorService`,
 and calls `makeIDataSource()`
-(`frameworks/av/media/libmediaplayerservice/nuplayer/GenericSource.cpp`), while
+(`frameworks/av/media/libmediaplayerservice/nuplayer/GenericSource.cpp`).
 `MediaExtractorFactory` calls `makeExtractor()` over the same interface. The
-`NuMediaExtractor` class is not part of NuPlayer's pipeline; it backs the NDK and
-Java `MediaExtractor` APIs in the application process and crosses the same Binder
+`NuMediaExtractor` class is not part of NuPlayer's pipeline. It backs the NDK and
+Java `MediaExtractor` APIs in the application process. It crosses the same Binder
 boundary to the extractor service.
 
 The extractor process has:
@@ -3988,9 +4008,9 @@ sequenceDiagram
 ```
 
 `MediaExtractorFactory::LoadExtractors()` calls the internal `RegisterExtractors()`
-once per plugin directory, scanning the media APEX path first (inside the
+once per plugin directory. It scans the media APEX path first (inside the
 `com_android_media` linker namespace) and then the `/system` and `/system_ext`
-locations — on current builds the extractors ship in the `com.android.media` APEX.
+locations. On current builds the extractors ship in the `com.android.media` APEX.
 Each extractor shared library exports a single symbol `GETEXTRACTORDEF` that returns
 an `ExtractorDef` structure containing:
 
@@ -4071,8 +4091,8 @@ kCodecHdr10PlusInfo          - Dynamic metadata present
 kCodecHdrFormat              - Which HDR format
 ```
 
-The distinction between "config" and "parsed" metadata is important: the config values
-are what the application requested during `configure()`, while the parsed values are
+The distinction between "config" and "parsed" metadata is important. The config values
+are what the application requested during `configure()`. The parsed values are
 what the codec actually found in the bitstream. A mismatch may indicate incorrect
 content labeling.
 
@@ -4230,9 +4250,9 @@ void add(const TYPE& value) {
 }
 ```
 
-This design allocates memory in chunks (`mElementCapacity` entries at a time), avoiding
-the overhead of individual per-sample allocations for videos that may contain millions
-of frames.
+This design allocates memory in chunks (`mElementCapacity` entries at a time). This
+avoids the overhead of individual per-sample allocations for videos that may contain
+millions of frames.
 
 ---
 
@@ -4266,9 +4286,9 @@ The dump output categorizes codecs by media type. For example, under
 ```
 
 The rank value determines codec priority: lower rank means higher priority. Hardware
-codec ranks come from the device's `media_codecs.xml`; the platform's software
+codec ranks come from the device's `media_codecs.xml`. The platform's software
 codecs default to rank 512 for video and image components but rank 8 for audio
-components (`frameworks/av/media/codec2/vndk/C2Store.cpp`), so software audio
+components (`frameworks/av/media/codec2/vndk/C2Store.cpp`). So software audio
 codecs often outrank hardware alternatives.
 
 ### 16.9.2 Trace a Video Decode Session
@@ -4414,10 +4434,10 @@ adb shell dumpsys -l | grep c2
 # android.hardware.media.c2.IComponentStore/default
 ```
 
-The "software" store provides Google's software codecs, while "default" is typically the
+The "software" store provides Google's software codecs. The "default" store is typically the
 vendor's hardware codec store. On current builds the stores are registered as AIDL
-services (the software store's HIDL wrapper is deprecated and skipped unless declared
-in the VINTF manifest), so `adb shell lshal | grep c2` shows a
+services. The software store's HIDL wrapper is deprecated and skipped unless declared
+in the VINTF manifest. So `adb shell lshal | grep c2` shows a
 `android.hardware.media.c2@1.x::IComponentStore` entry only on legacy HIDL devices.
 
 ### 16.9.9 Trigger Codec Reclamation
@@ -4595,9 +4615,9 @@ judder-score-avg    - Average judder severity
 judder-score-max    - Worst judder event
 ```
 
-Freeze is typically caused by decoder stalls (slow hardware, resource contention),
-while judder is typically caused by frame rate mismatches (e.g., 24fps content on
-a 60Hz display causes a 3:2 pulldown pattern that produces uneven frame spacing).
+Decoder stalls (slow hardware, resource contention) typically cause freeze.
+Frame rate mismatches typically cause judder. For example, 24fps content on
+a 60Hz display causes a 3:2 pulldown pattern that produces uneven frame spacing.
 
 ### 16.9.14 Codec ID Generation and Tracking
 
@@ -4619,8 +4639,8 @@ static uint64_t GenerateCodecId() {
 ```
 
 The ID is composed of a random 32-bit prefix (unique per process) and an atomic
-32-bit sequence number (unique per codec instance within the process). This enables
-correlation of logs, metrics, and resource manager entries across the system.
+32-bit sequence number (unique per codec instance within the process). This makes it possible to
+correlate logs, metrics, and resource manager entries across the system.
 
 ---
 
@@ -4653,9 +4673,9 @@ lines of core C++ code across five major subsystems:
 1. **MediaCodec** provides the central state machine and API surface,
    with sophisticated resource management, metrics collection, and retry logic.
 
-2. **ACodec** bridges to legacy OMX codecs, while **CCodec** (3,849
-   lines) bridges to the modern Codec2 framework with its typed parameter system,
-   work-based processing model, and 21 software codec families.
+2. **ACodec** bridges to legacy OMX codecs. **CCodec** (3,849
+   lines) bridges to the modern Codec2 framework. Codec2 has a typed parameter system,
+   a work-based processing model, and 21 software codec families.
 
 3. **MediaPlayerService** and **NuPlayer** orchestrate
    the complete playback pipeline from extraction through decoding to synchronized
@@ -4670,7 +4690,7 @@ lines of core C++ code across five major subsystems:
    **MediaProfiles** describe what the hardware can do.
 
 The evolution from OMX to Codec2 represents the most significant architectural shift
-in Android media in the past decade, bringing type safety, better buffer management,
-and improved vendor extensibility. Meanwhile, the media pipeline continues to grow
-with new codec support (AV1, IAMF, APV), HDR formats (HDR10+, Dolby Vision), and
+in Android media in the past decade. It brings type safety, better buffer management,
+and improved vendor extensibility. Meanwhile, the media pipeline continues to grow.
+It gets new codec support (AV1, IAMF, APV), HDR formats (HDR10+, Dolby Vision), and
 professional video features.

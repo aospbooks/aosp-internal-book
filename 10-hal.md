@@ -8,14 +8,15 @@ The Hardware Abstraction Layer exists because of a fundamental legal tension at
 the heart of Android.  The Linux kernel is licensed under GPL v2, which requires
 that any derivative work also be distributed under GPL.  Android's userspace
 framework, however, is licensed under Apache 2.0, which permits proprietary
-derivatives -- the very mechanism that allows device manufacturers to
+derivatives.  This is the mechanism that lets device manufacturers
 differentiate their products without opening their source code.
 
 Hardware vendors face a dilemma.  Their device drivers must run in kernel space,
 making them subject to GPL (at least for the portions that link against kernel
-headers).  But their proprietary algorithms -- camera ISP tuning, DSP firmware
-interfaces, GPU shader compilers, modem protocols -- represent hundreds of
-millions of dollars of R&D investment that they are unwilling to open-source.
+headers).  But their proprietary algorithms represent hundreds of millions of dollars
+of R&D investment, and they are unwilling to open-source them.  Examples are
+camera ISP tuning, DSP firmware interfaces, GPU shader compilers, and modem
+protocols.
 
 The HAL is the legal and architectural solution.  It defines a stable interface
 between the Apache-licensed Android framework and vendor-specific proprietary
@@ -25,13 +26,16 @@ framework talks to the HAL through a well-defined contract, never linking
 directly against GPL kernel code.
 
 This is not merely a policy choice -- it is enforced by the platform.  Since
-Android 8.0 (Project Treble), linker namespace isolation has ensured that
-framework code cannot load vendor libraries and vice versa, except through
-approved HAL interfaces.  From Android 8 through 14 this was backed by the
-Vendor Native Development Kit (VNDK), a versioned set of system libraries
-vendor code could link against; VNDK was deprecated in Android 15, and the
-current tree forces `BOARD_VNDK_VERSION` empty in `build/make/core/config.mk`,
-leaving linker namespaces, SELinux, and VINTF as the enforcement mechanisms.
+Android 8.0 (Project Treble), the platform enforces linker namespace isolation.
+Framework code cannot load vendor libraries and vice versa, except through
+approved HAL interfaces.
+
+From Android 8 through 14, the Vendor Native
+Development Kit (VNDK) backed this.  The VNDK is a versioned set of system
+libraries that vendor code could link against.  VNDK was deprecated in
+Android 15.  The current tree forces `BOARD_VNDK_VERSION` empty in
+`build/make/core/config.mk`.  Linker namespaces, SELinux, and VINTF remain as
+the enforcement mechanisms.
 
 ### 10.1.2 The Four-Layer Stack
 
@@ -188,7 +192,7 @@ The key enforcement mechanisms are:
 
 1. **Linker namespace isolation.**  The dynamic linker enforces that system
    libraries cannot load vendor libraries and vice versa, except through
-   explicitly allowed interfaces -- for example, the framework loads
+   explicitly allowed interfaces.  For example, the framework loads
    same-process HALs from the vendor partition only through the dedicated
    SP-HAL namespace via `android_load_sphal_library()`.
 
@@ -196,7 +200,7 @@ The key enforcement mechanisms are:
    of system libraries with stable ABIs that vendor code was permitted to
    link against.  VNDK was deprecated in Android 15 and is disabled in the
    current tree, where `build/make/core/config.mk` unconditionally clears
-   `BOARD_VNDK_VERSION`; no VNDK snapshot is built or installed anymore.
+   `BOARD_VNDK_VERSION`.  No VNDK snapshot is built or installed anymore.
 
 3. **VINTF.**  The formal declaration system (described in Section 10.5) that
    records which HALs each side provides and requires.
@@ -204,9 +208,10 @@ The key enforcement mechanisms are:
 4. **SELinux.**  Mandatory access control that prevents unauthorized
    cross-partition communication.
 
-Together, these mechanisms ensure that a system partition OTA update will not
-break vendor HALs, and a vendor partition update will not break the framework --
-as long as both sides honor the HAL contracts defined in VINTF.
+Together, these mechanisms make sure that a system partition OTA update will
+not break vendor HALs.  They also make sure that a vendor partition update will
+not break the framework.  This holds as long as both sides honor the HAL
+contracts defined in VINTF.
 
 ### 10.1.5.2 The Partition Layout
 
@@ -264,11 +269,11 @@ system/hwservicemanager/    # HIDL service manager
 ## 10.2 Legacy HAL (libhardware)
 
 The legacy HAL, implemented in `hardware/libhardware/`, was Android's original
-mechanism for abstracting hardware.  It is a simple C-based `dlopen()` approach:
-the framework loads a shared library at runtime, looks up a well-known symbol,
-and casts it to a known struct type.  Despite its age, understanding the legacy
-HAL is essential because its patterns influenced all subsequent HAL designs, and
-some legacy modules still exist on shipping devices.
+mechanism for abstracting hardware.  It is a simple C-based `dlopen()` approach.
+The framework loads a shared library at runtime, looks up a well-known symbol,
+and casts it to a known struct type.  Despite its age, the legacy HAL is still
+essential to understand.  This is because its patterns influenced all subsequent HAL designs, and some
+legacy modules still exist on shipping devices.
 
 ### 10.2.1 Core Data Structures: hw_module_t and hw_device_t
 
@@ -382,9 +387,10 @@ typedef struct hw_device_t {
 } hw_device_t;
 ```
 
-The pattern is C-style polymorphism: each specific HAL (gralloc, camera, audio,
-etc.) defines its own struct that begins with `hw_module_t` or `hw_device_t`
-and adds domain-specific fields and function pointers after them.  The framework
+The pattern is C-style polymorphism.  Each specific HAL (gralloc, camera,
+audio, etc.) defines its own struct that begins with `hw_module_t` or
+`hw_device_t`.  The struct adds domain-specific fields and function pointers
+after them.  The framework
 casts the generic pointer to the specific type.
 
 ```mermaid
@@ -781,14 +787,14 @@ for 20 legacy HAL modules:
 | vibrator | `modules/vibrator` | Vibrator motor |
 
 The header directory `hardware/libhardware/include/hardware/` contains the
-interface definitions for most of these, plus additional ones like `camera2.h`,
-`camera3.h`, `gralloc1.h`, `hwcomposer2.h`, and `keymaster2.h` that represent
-evolved versions of the same interfaces.  A few of the modules keep their
-headers elsewhere: `consumerir.h`, `radio.h`, `thermal.h`, and
-`local_time_hal.h` live in `hardware/libhardware/include_vendor/hardware/`
-instead, and `usbaudio`, `usbcamera`, and `audio_remote_submix` have no
-dedicated header at all -- they implement the generic `audio.h`/`camera3.h`
-contracts.
+interface definitions for most of these.  It also contains additional headers
+like `camera2.h`, `camera3.h`, `gralloc1.h`, `hwcomposer2.h`, and
+`keymaster2.h`, which represent evolved versions of the same interfaces.  A few
+of the modules keep their headers elsewhere.  `consumerir.h`, `radio.h`,
+`thermal.h`, and `local_time_hal.h` live in
+`hardware/libhardware/include_vendor/hardware/` instead.  `usbaudio`,
+`usbcamera`, and `audio_remote_submix` have no dedicated header at all.  They
+implement the generic `audio.h`/`camera3.h` contracts.
 
 ### 10.2.6.1 Legacy HAL Header Contracts
 
@@ -810,10 +816,10 @@ extension and module ID.  The full set of headers includes:
 | `vibrator.h` | `VIBRATOR_HARDWARE_MODULE_ID` | `vibrator_device_t` |
 | `memtrack.h` | `MEMTRACK_HARDWARE_MODULE_ID` | `memtrack_module_t` |
 
-(`bluetooth.h` is the odd one out: it defines no `hw_module_t`/`hw_device_t`
-subtypes at all, instead exporting a flat `bt_interface_t` function table under
-the string `BLUETOOTH_INTERFACE_STRING` -- it is not a `hw_module_t`-style
-legacy HAL.)
+(`bluetooth.h` is the odd one out.  It defines no `hw_module_t`/`hw_device_t`
+subtypes at all.  Instead it exports a flat `bt_interface_t` function table
+under the string `BLUETOOTH_INTERFACE_STRING`.  It is not a
+`hw_module_t`-style legacy HAL.)
 
 Each header follows the same pattern:
 
@@ -824,8 +830,8 @@ Each header follows the same pattern:
 
 This pattern means that for each legacy HAL type, both the framework and the
 vendor must agree on the same header version.  If Google adds a new function
-pointer to `gralloc_module_t`, all vendors must rebuild their gralloc HALs --
-there is no way to detect the mismatch at runtime because the struct layout is
+pointer to `gralloc_module_t`, all vendors must rebuild their gralloc HALs.
+There is no way to detect the mismatch at runtime because the struct layout is
 fixed at compile time.
 
 ### 10.2.6.2 The Camera HAL: Multiple API Versions
@@ -875,7 +881,7 @@ These limitations motivated the creation of HIDL and Project Treble.
 HIDL was introduced in Android 8.0 (Oreo) as part of Project Treble.  It is a
 dedicated interface definition language for hardware HALs, with its own compiler,
 runtime, and service manager.  HIDL's goal was to make the vendor HAL a formal,
-versioned, testable contract that could be implemented either in-process
+versioned, testable contract.  The contract could be implemented either in-process
 (passthrough mode) or in a separate process (binderized mode).
 
 The HIDL source lives in `system/libhidl/`.
@@ -1063,11 +1069,11 @@ Notably, hwservicemanager does *not* require every registered HAL to appear in
 the device's VINTF manifest.  A comment in
 `system/hwservicemanager/ServiceManager.cpp` (lines 401-407) explains why:
 requiring manifest entries for every registration would prevent tests from
-registering their own services, so for HIDL the platform relies on VTS to catch
+registering their own services.  So for HIDL the platform relies on VTS to catch
 undeclared HALs.  The one check hwservicemanager does enforce is consistency
-within an inheritance chain: if a HAL *is* declared in the manifest but one of
-its superclasses in the `interfaceChain()` is not, registration is refused
-(`ServiceManager.cpp`, lines 417-432).
+within an inheritance chain.  Suppose a HAL *is* declared in the manifest, but
+one of its superclasses in the `interfaceChain()` is not.  Then hwservicemanager
+refuses the registration (`ServiceManager.cpp`, lines 417-432).
 
 With HIDL now deprecated, newer devices may not ship hwservicemanager at all.
 The `NoHwServiceManager` class in `ServiceManagement.cpp` (lines 213-348) acts
@@ -1209,9 +1215,9 @@ sp<IBase> wrapPassthroughInternal(sp<IBase> iface) {
 
 The `BsConstructorMap` is populated by the generated `Bs*` (passthrough
 shim) classes.  Each HIDL interface library registers its wrapper at
-library-load time (via static constructors), so that when a passthrough HAL
-is loaded, the runtime can find the right wrapper by walking the
-`interfaceChain`.
+library-load time (via static constructors).  This lets the runtime find the
+right wrapper by walking the `interfaceChain` when a passthrough HAL is
+loaded.
 
 ### 10.3.8 HIDL Transport Layer
 
@@ -1328,14 +1334,16 @@ sp<IServiceManager1_0> defaultServiceManager() {
 The manifest check happens on the *client* side, not inside hwservicemanager.
 `registerAsServiceInternal()` (`system/libhidl/transport/ServiceManagement.cpp`,
 lines 981-1008) queries hwservicemanager for the HAL's declared transport via
-`getTransport()` -- a lookup served by `system/hwservicemanager/Vintf.cpp` from
-the VINTF manifests -- and refuses to register unless the transport is
-`HWBINDER`, logging "must be in VINTF manifest in order to register/get".
-hwservicemanager's own `add()` deliberately does not require a manifest entry
-(a comment in `system/hwservicemanager/ServiceManager.cpp` explains that doing
+`getTransport()`.  `system/hwservicemanager/Vintf.cpp` serves this lookup from
+the VINTF manifests.  The client function refuses to register unless the transport is
+`HWBINDER`, and it logs "must be in VINTF manifest in order to register/get".
+hwservicemanager's own `add()` deliberately does not require a manifest entry.
+A comment in `system/hwservicemanager/ServiceManager.cpp` explains that doing
 so would prevent tests from running, so HIDL relies on VTS for full
-enforcement); it only rejects a registration when a declared HAL's superclasses
-in the interface chain are missing from the manifest.
+enforcement.
+
+The only rejection hwservicemanager makes is for a declared HAL whose
+superclasses in the interface chain are missing from the manifest.
 
 **5. hwservicemanager stores the service:**
 
@@ -1366,8 +1374,8 @@ is available (true for `getService()`) or returns immediately (false for
 
 **7. For passthrough, the runtime loads the vendor .so:**
 
-If the VINTF manifest declares the HAL as `transport=passthrough`, instead
-of contacting hwservicemanager, the runtime uses the passthrough service
+If the VINTF manifest declares the HAL as `transport=passthrough`, the runtime
+does not contact hwservicemanager.  Instead, it uses the passthrough service
 manager to dlopen the vendor library and call `HIDL_FETCH_IFoo()`.
 
 ```mermaid
@@ -1428,39 +1436,40 @@ interface ICameraProvider extends @2.5::ICameraProvider {
 };
 ```
 
-When `getService()` is called for `@2.4::ICameraProvider`, the runtime will
-accept any implementation that provides 2.4, 2.5, or 2.6 -- because all
-later versions inherit from 2.4.
+When `getService()` is called for `@2.4::ICameraProvider`, the runtime accepts
+any implementation that provides 2.4, 2.5, or 2.6.  All later versions inherit
+from 2.4.
 
 ### 10.3.9 HIDL Deprecation Status
 
 HIDL was officially deprecated back in Android 13 (2022), and no new HIDL
 interfaces are accepted into AOSP.  The deprecation is real but not a clean
 sweep: HIDL is frozen, not gone.  The Android 17 tree still ships about 726
-`.hal` files across `hardware/interfaces/` -- audio, wifi, gnss, radio, camera,
+`.hal` files across `hardware/interfaces/`.  Audio, wifi, gnss, radio, camera,
 keymaster, secure_element, bluetooth, and others all retain frozen `.hal`
-versions alongside (or instead of) their newer `aidl/` packages, and roughly a
+versions alongside (or instead of) their newer `aidl/` packages.  Roughly a
 dozen of the interface directories still have no top-level `aidl/` at all.
+
 These survive because a HAL that froze a HIDL interface years ago must keep that
 exact wire contract available for vendor partitions that target it.  The HIDL
 runtime (`system/libhidl`) and `hwservicemanager` likewise survive as a
-compatibility shim so a newer framework can still talk to an older vendor
-partition that froze a HIDL HAL.
+compatibility shim.  With the shim, a newer framework can still talk to an older
+vendor partition that froze a HIDL HAL.
 
 Key files reflecting this deprecation:
 
 - `system/libhidl/transport/ServiceManagement.cpp` contains `NoHwServiceManager`
-  (line 209) -- a stand-in `IServiceManager` returned on devices that have
-  fully migrated away from HIDL, so callers that still reach for the HwBinder
-  service manager get a well-behaved no-op rather than a crash.
+  (line 209).  This is a stand-in `IServiceManager`.  It is returned on devices that
+  have fully migrated away from HIDL.  As a result, callers that still reach for the
+  HwBinder service manager get a well-behaved no-op rather than a crash.
 - The `isHidlSupported()` function (line 75) checks whether HwBinder is even
   available on the device.  Where it returns false,
   `gDefaultServiceManager` is set to the `NoHwServiceManager` (lines 367-370)
   and HIDL `getService` lookups short-circuit (line 565).
 
 In other words, a device launching with Android 17 can ship with no HIDL stack
-at all: `system/libhidl` and `system/hwservicemanager` exist for backward
-compatibility, but a clean AIDL-only device never instantiates a real
+at all.  `system/libhidl` and `system/hwservicemanager` exist for backward
+compatibility.  A clean AIDL-only device never instantiates a real
 `hwservicemanager`.
 
 ---
@@ -1472,7 +1481,7 @@ AIDL (Android Interface Definition Language).  As of current AOSP, AIDL HALs
 are the standard for all new hardware interfaces and most existing ones.
 
 AIDL was already the lingua franca for inter-process communication within the
-Android framework.  By extending AIDL to support HALs, Google eliminated the
+Android framework.  Google extended AIDL to support HALs.  This removed the
 need for a separate IDL language (HIDL), a separate IPC mechanism (HwBinder),
 and a separate service manager (hwservicemanager).
 
@@ -1560,10 +1569,10 @@ interface ILights {
 
 This is straightforward AIDL.  The `@VintfStability` annotation is the only
 indicator that this is a HAL interface rather than a regular framework service.
-Version 3 added the third method, `setLightEffects`, which takes an array of
-`HwLightEffect` parcelables (each a series of color control points, a frame
-schedule, and an interpolation mode) so a light can play an animation rather
-than a single static state.
+Version 3 added the third method, `setLightEffects`.  It takes an array of
+`HwLightEffect` parcelables.  Each parcelable is a series of color control
+points, a frame schedule, and an interpolation mode.  With these, a light can
+play an animation rather than a single static state.
 
 ### 10.4.3 The @VintfStability Annotation
 
@@ -1577,9 +1586,9 @@ The `@VintfStability` annotation has two effects:
    the device's VINTF manifest before allowing it to be registered with
    `servicemanager`.
 
-This annotation bridges the AIDL world to the VINTF compatibility framework,
-ensuring that HAL interfaces are subject to the same compatibility guarantees
-as HIDL interfaces were.
+This annotation bridges the AIDL world to the VINTF compatibility framework.
+It makes sure that HAL interfaces have the same compatibility guarantees as
+HIDL interfaces had.
 
 ### 10.4.4 Walkthrough: The Lights HAL
 
@@ -1729,11 +1738,11 @@ frame rate) before mutating any light, so an ill-formed request throws
 
 The fragment still declares `<version>2</version>` even though the interface is
 frozen at version 3 and the implementation links the V3 library.  The manifest
-`<version>` is the *highest* interface version the service provides: libvintf's
+`<version>` is the *highest* interface version the service provides.  libvintf's
 `VersionRange::supportedBy()` (`system/libvintf/include/vintf/VersionRange.h`,
 lines 54-61) accepts a manifest version against any matrix requirement at or
 below it.  Declaring 2 while shipping V3 code is therefore simply a stale,
-under-declared reference fragment -- it works because the framework matrix
+under-declared reference fragment.  It works because the framework matrix
 still accepts version 2, not because of any "minimum version" convention.
 
 **init.rc service definition** (`lights-default.rc`):
@@ -2162,8 +2171,8 @@ interface ISensors {
 ```
 
 The `MQDescriptor` type is a Binder-serializable description of a shared-memory
-FMQ channel.  The framework creates the FMQ, passes its descriptor to the HAL
-via `initialize()`, and then both sides can read/write events through shared
+FMQ channel.  The framework creates the FMQ and passes its descriptor to the HAL
+via `initialize()`.  Then both sides can read and write events through shared
 memory without any Binder overhead.
 
 This pattern of "Binder for setup, FMQ for data" is common in
@@ -2253,16 +2262,16 @@ retry or HAL restart.
 The Sensors HAL above hands a `MQDescriptor` across Binder and then never
 touches Binder again for the actual sample stream.  The machinery that makes
 that possible lives in `system/libfmq/` (C++ and Rust, plus the
-EventFlag futex helper).  This section opens that box: how the ring
-buffer is laid out in shared memory, how the read and write pointers advance
-lock-free, how `EventFlag` wakes a blocked reader, and what the `MQDescriptor`
-actually carries when it crosses an AIDL boundary.
+EventFlag futex helper).  This section opens that box.  It shows how the ring
+buffer is laid out in shared memory and how the read and write pointers advance
+lock-free.  It also shows how `EventFlag` wakes a blocked reader, and what the
+`MQDescriptor` actually carries when it crosses an AIDL boundary.
 
 #### Shared-memory layout and the grantor descriptors
 
-An FMQ is one ashmem region containing three (optionally four) areas: a write
-counter, a read counter, the ring buffer itself, and -- if blocking operations
-are needed -- a 32-bit EventFlag word.  Each area is described by a
+An FMQ is one ashmem region that contains three (optionally four) areas.  The
+areas are a write counter, a read counter, the ring buffer itself, and, if
+blocking operations are needed, a 32-bit EventFlag word.  Each area is described by a
 `GrantorDescriptor`, and the descriptor positions are fixed by an enum in
 `system/libfmq/base/fmq/MQDescriptorBase.h`:
 
@@ -2282,9 +2291,10 @@ enum GrantorType : int {
 A queue created without EventFlag support needs three grantors (read counter,
 write counter, data buffer); a blocking queue needs a fourth for the EventFlag
 word.  When `MessageQueueBase::initMemory()` runs, it `mmap`s each grantor in
-turn -- `mReadPtr` from `READPTRPOS`, `mWritePtr` from `WRITEPTRPOS`, the ring
-buffer `mRing` from `DATAPTRPOS`, and (if present) `mEvFlagWord` from
-`EVFLAGWORDPOS` -- then calls `EventFlag::createEventFlag()` on the futex word.
+turn.  It maps `mReadPtr` from `READPTRPOS`, `mWritePtr` from `WRITEPTRPOS`,
+the ring buffer `mRing` from `DATAPTRPOS`, and (if present) `mEvFlagWord` from
+`EVFLAGWORDPOS`.  Then it calls `EventFlag::createEventFlag()` on the futex
+word.
 The read and write counters are each a `RingBufferPosition`, which is just a
 `uint64_t` (`system/libfmq/include/fmq/MessageQueueBase.h`, `mReadPtr` and
 `mWritePtr` are `std::atomic<uint64_t>*`).
@@ -2292,7 +2302,7 @@ The read and write counters are each a `RingBufferPosition`, which is just a
 #### The two counters and the wrap-around
 
 The single most important design choice in FMQ is that the read and write
-counters are *monotonically increasing absolute byte positions* -- they are
+counters are *monotonically increasing absolute byte positions*.  They are
 never reduced modulo the buffer size.  The amount of data available to read is
 simply `writePtr - readPtr`, computed in `availableToReadBytes()`:
 
@@ -2307,11 +2317,13 @@ return writePtr - readPtr;
 The actual byte offset into the ring buffer is recovered only when a slot is
 addressed, via `writePtr % mDesc->getSize()` (and likewise for the read
 offset).  Because the counters are 64-bit, the difference stays correct even
-after the offsets have wrapped many times; only a genuine pointer corruption
-(write counter behind the read counter) is treated as an error.  A write or
-read that runs off the end of the buffer is split into two contiguous regions
--- this is what the `MemTransaction` returned by `beginWrite()`/`beginRead()`
-represents.  `beginWrite()` computes `contiguousMessages = (size - writeOffset)
+after the offsets have wrapped many times.  Only a genuine pointer corruption
+(write counter behind the read counter) is treated as an error.
+
+A write or
+read that runs off the end of the buffer is split into two contiguous regions.
+The `MemTransaction` returned by `beginWrite()`/`beginRead()` represents these
+two regions.  `beginWrite()` computes `contiguousMessages = (size - writeOffset)
 / quantum`; if that is fewer than requested, it returns a `MemTransaction` with
 a `first` region at `mRing + writeOffset` and a `second` region wrapping back
 to `mRing`.  The caller fills both regions, then calls `commitWrite(nMessages)`,
@@ -2350,21 +2362,23 @@ very different contracts:
 
 - **`kUnsynchronizedWrite`** -- one writer, *many* readers.  Writes always
   succeed, overwriting the oldest unread data if the buffer is full.  Each
-  reader keeps its own read counter, and a reader that has been lapped detects
-  the overwrite and resets its counter (the queue logs and the read returns the
-  loss).  Because those read counters live in each reader's own process memory,
-  the shared read-counter slot is free, and this flavor reuses grantor slot 0
-  (`WRITEREGIONENDPTRPOS`, defined as the same index as `READPTRPOS`) to
-  publish the end of an in-progress write region -- the grantor count is
+  reader keeps its own read counter.  A lapped reader
+  detects the overwrite and resets its counter (the queue logs and the read
+  returns the loss).
+
+  Those read counters live in each reader's own process
+  memory, so the shared read-counter slot is free.  This flavor reuses grantor
+  slot 0 (`WRITEREGIONENDPTRPOS`, defined as the same index as `READPTRPOS`)
+  to publish the end of an in-progress write region.  The grantor count is
   unchanged, not increased.
   libfmq even warns at runtime if an unsynchronized writer tries to overwrite
   the entire buffer in a single call, because that defeats the overflow
   detection.
 
 The flavor is carried in the AIDL type system as the second template parameter
-of `MQDescriptor<T, Flavor>` -- `SynchronizedReadWrite` or `UnsynchronizedWrite`
--- so a mismatch between the two ends is a compile-time error, not a runtime
-surprise.
+of `MQDescriptor<T, Flavor>`, either `SynchronizedReadWrite` or
+`UnsynchronizedWrite`.  A mismatch between the two ends is therefore a
+compile-time error, not a runtime surprise.
 
 #### EventFlag: futex-based wakeup
 
@@ -2385,13 +2399,15 @@ if ((~old & bitmask) != 0) {   // a previously-clear bit was set
 `EventFlag::wait(bitmask, ...)` does the mirror image: it atomically clears the
 requested bits with `atomic_fetch_and`, and if none were already set it parks
 the thread with `FUTEX_WAIT_BITSET`.  This "deferred wake" handling means a
-`wake` that arrives before the matching `wait` is not lost -- the bit is already
-set, so `wait` returns immediately without a syscall.  The blocking API on the
-queue (`writeBlocking()` / `readBlocking()`) wires this up automatically using
-the standard `FMQ_NOT_FULL` / `FMQ_NOT_EMPTY` notification bits: a writer sets
-`FMQ_NOT_EMPTY` after committing, a reader sets `FMQ_NOT_FULL` after draining,
-and each blocks on the other's bit.  Both blocking methods are restricted to the
-`kSynchronizedReadWrite` flavor and require an EventFlag word to have been
+`wake` that arrives before the matching `wait` is not lost.  The bit is already
+set, so `wait` returns immediately without a syscall.
+
+The blocking API on the
+queue (`writeBlocking()` / `readBlocking()`) wires this up automatically.  It
+uses the standard `FMQ_NOT_FULL` / `FMQ_NOT_EMPTY` notification bits.  A writer
+sets `FMQ_NOT_EMPTY` after it commits, and a reader sets `FMQ_NOT_FULL` after
+it drains.  Each side blocks on the other's bit.  Both blocking methods are
+restricted to the `kSynchronizedReadWrite` flavor and require an EventFlag word to have been
 configured.
 
 #### The MQDescriptor across AIDL
@@ -2411,17 +2427,19 @@ parcelable MQDescriptor<@FixedSize T, Flavor> {
 }
 ```
 
-The `handle` is a `NativeHandle` carrying the ashmem file descriptor(s); the
-`grantors` array gives the offset and extent of each area within that shared
-memory; `quantum` is the element size and `flags` encodes the flavor.  The
+The `handle` is a `NativeHandle` that carries the ashmem file descriptor(s).
+The `grantors` array gives the offset and extent of each area within that shared
+memory.  `quantum` is the element size and `flags` encodes the flavor.  The
 element type `T` must be `@FixedSize` -- FMQ copies raw bytes, so the layout has
-to be identical on both sides.  On the receiving end, `AidlMessageQueue<T,
+to be identical on both sides.
+
+On the receiving end, `AidlMessageQueue<T,
 Flavor>` (`system/libfmq/include/fmq/AidlMessageQueue.h`) reconstructs a live
 queue from the descriptor via the `AidlMQDescriptorShim`, mapping the same
 ashmem region the sender created.  Because both processes now `mmap` the same
 pages, every subsequent `write()`/`read()` touches shared memory directly with
-zero Binder transactions -- exactly the "Binder for setup, FMQ for data"
-pattern §10.4.7.1 described, now grounded in the descriptor that carries it.
+zero Binder transactions.  This is exactly the "Binder for setup, FMQ for data"
+pattern that §10.4.7.1 described, now tied to the descriptor that carries it.
 A Rust wrapper (`system/libfmq/libfmq.rs`, built on the type-erased
 `ErasedMessageQueue`) exposes the same queue to Rust HAL implementations and
 clients.
@@ -2521,8 +2539,8 @@ The build system enforces this:
 1. During development, changes can be made to the `.aidl` files in the main
    source directory.
 2. `m <name>-update-api` refreshes the `current/` snapshot from the sources.
-   When a version is ready to ship, it is "frozen" by running
-   `m <name>-freeze-api`, which copies the current sources into a new numbered
+   When a version is ready to ship, it is "frozen" by running `m <name>-freeze-api`.
+   This command copies the current sources into a new numbered
    directory (`system/tools/aidl/build/aidl_api.go`, lines 686-689).
 3. The `frozen: true` flag in `Android.bp` tells the build system to verify
    that the current sources match the latest frozen version.
@@ -2549,13 +2567,15 @@ interface ITrunkStableTest {
 The compiler cross-checks the declared number against the interface's real
 frozen version.  `AidlInterface::VersionSpecificCheckValid()` in
 `system/tools/aidl/aidl_language.cpp` (lines 1870-1882) raises an error if the
-`@VersionSupport` version does not equal the actual version being built, and
+`@VersionSupport` version does not equal the actual version being built.
 `AidlInterface::Version()` (lines 1904-1910) makes the annotation the
-authoritative source of an interface's version when present.  This tightens the
-trunk-stable model: with the annotation in the source, the version an interface
-claims to support is written down at the type itself rather than inferred only
-from the `aidl_interface` build flag, so an interface that is wired into the
-wrong version stanza fails the build instead of silently mis-versioning.
+authoritative source of an interface's version when present.
+
+This tightens the trunk-stable model.  With the annotation in the source, the
+version an interface claims to support is written down at the type itself.  It
+is not inferred only from the `aidl_interface` build flag.  So an
+interface that is wired into the wrong version stanza fails the build instead
+of silently mis-versioning.
 
 ### 10.4.10 The hardware/interfaces/ Directory
 
@@ -2563,12 +2583,14 @@ The `hardware/interfaces/` directory contains all AOSP HAL interface
 definitions.  In the Android 17 tree it holds 51 hardware interface directories
 (excluding the infrastructure directories `common`, `compatibility_matrices`,
 `scripts`, `staging`, and `tests`).  Most carry an `aidl/` package, and the
-HIDL-only `configstore` interface that earlier releases shipped is gone.  But
-the `.hal`/`hidl/` subtrees have *not* all been pruned: roughly 726 `.hal` files
-still ship, and exactly twelve of these directories (`apexkey`, `atrace`,
+HIDL-only `configstore` interface that earlier releases shipped is gone.
+
+But
+the `.hal`/`hidl/` subtrees have *not* all been pruned.  Roughly 726 `.hal`
+files still ship.  Exactly twelve of these directories (`apexkey`, `atrace`,
 `automotive`, `biometrics`, `camera`, `graphics`, `input`, `media`,
 `renderscript`, `security`, `tv`, `virtualization`) have no top-level `aidl/`
-of their own -- their interfaces are either still frozen HIDL `.hal`
+of their own.  Their interfaces are either still frozen HIDL `.hal`
 definitions, nested AIDL packages one level down, or non-HAL build artifacts:
 
 | Category | HAL Interfaces |
@@ -2853,8 +2875,8 @@ images to work with newer framework images.
 HALs that are absent from the compatibility matrix are simply not required.
 For entries that are present, optionality is expressed by the
 `optional="true"` attribute (e.g. `android.hardware.security.timestamp` in the
-202604 matrix); an AIDL entry that omits `<version>` is *not* thereby optional
--- libvintf treats a missing AIDL version as the default version 1
+202604 matrix).  An AIDL entry that omits `<version>` is *not* thereby optional.
+libvintf treats a missing AIDL version as the default version 1
 (`system/libvintf/constants-private.h`).
 
 ### 10.5.4 The Compatibility Check Algorithm
@@ -2865,8 +2887,8 @@ precise about which check runs where.
 The runtime entry point, `VintfObject::checkCompatibility()`
 (`system/libvintf/VintfObject.cpp`, lines 696-745), first null-checks the four
 VINTF documents (device manifest, framework manifest, device matrix, framework
-matrix), then calls `HalManifest::checkCompatibility()` in both directions plus
-`RuntimeInfo::checkCompatibility()`.  Those calls
+matrix).  Then it calls `HalManifest::checkCompatibility()` in both directions
+and `RuntimeInfo::checkCompatibility()`.  Those calls
 (`system/libvintf/HalManifest.cpp`, lines 474-523) verify:
 
 1. Schema/type consistency between each manifest and the opposing matrix.
@@ -2880,11 +2902,11 @@ matrix), then calls `HalManifest::checkCompatibility()` in both directions plus
 4. Runtime info (kernel version, kernel configs, loaded SELinux policy)
    against the framework matrix.
 
-What this runtime check does *not* do is iterate the matrix's HAL entries:
-HAL presence, version-range, and instance matching against the FCM are
-enforced by the build-time `check_vintf` tooling and by the VTS VINTF tests
-(`test/vts-testcase/hal/treble/vintf/`), not by
-`VintfObject::checkCompatibility()`.
+This runtime check does *not* iterate the matrix's HAL entries.
+The build-time `check_vintf` tooling and the VTS VINTF tests
+(`test/vts-testcase/hal/treble/vintf/`) enforce HAL presence, version-range,
+and instance matching against the FCM.  `VintfObject::checkCompatibility()`
+does not enforce them.
 
 ```mermaid
 flowchart TD
@@ -2902,10 +2924,10 @@ flowchart TD
 
 ### 10.5.4.1 Detailed Compatibility Matrix Analysis
 
-To understand the scale of compatibility checking, let us examine the framework
+To understand the scale of compatibility checking, look at the framework
 compatibility matrix for FCM level 202604
-(`hardware/interfaces/compatibility_matrices/compatibility_matrix.202604.xml`),
-the matrix that devices launching with Android 17 must satisfy.  It encodes the
+(`hardware/interfaces/compatibility_matrices/compatibility_matrix.202604.xml`).
+Devices that launch with Android 17 must satisfy this matrix.  It encodes the
 complete set of HAL requirements for the release.
 
 The matrix includes entries for every hardware subsystem (versions below are
@@ -2956,7 +2978,7 @@ Some entries use `<regex-instance>` for dynamic naming:
 ```
 
 The `updatable-via-apex="true"` attribute on camera and biometric HALs indicates
-that these HALs can be delivered through APEX modules, allowing them to be
+that these HALs can be delivered through APEX modules.  They can then be
 updated through the Google Play system update mechanism without a full OTA.
 
 ### 10.5.4.2 Version Range Semantics
@@ -2975,9 +2997,9 @@ For example, the GNSS HAL version range `2-7` tells us:
 - Versions 2 through 7 are all supported by the current framework.
 - The framework's GNSS code has backward-compatibility logic for each version.
 
-This version range mechanism is the key to Treble's compatibility promise:
-a vendor shipping version 2 of the GNSS HAL can receive framework updates
-that add support for version 7 without needing to update their HAL.
+This version range mechanism is the key to Treble's compatibility promise.
+A vendor that ships version 2 of the GNSS HAL can receive framework updates
+that add support for version 7.  The vendor does not need to update the HAL.
 
 ### 10.5.5 FCM Levels and Timeline
 
@@ -2999,19 +3021,20 @@ date-based levels, with `202704` newly added for the next release:
 
 The level naming changed from simple integers to date-based identifiers
 (`YYYYMM`, where the month is always `04`) starting with Android 15.  The
-mapping is not folklore: the enum `Level` in
+mapping is not folklore.  The enum `Level` in
 `system/libvintf/include/vintf/Level.h` (lines 32-59) assigns symbolic letters
-to each level (`V = 202404`, `B = 202504`, `C = 202604`, `D = 202704`), and
+to each level (`V = 202404`, `B = 202504`, `C = 202604`, `D = 202704`).
 `GetDescription()` in `system/libvintf/analyze_matrix/analyze_matrix.cpp`
-(lines 87-94) prints them as "Android 15 (V)" through "Android 18 (D)".  By
-that table, the **target FCM level for a device launching with Android 17 is
-202604**; the `202704` matrix in the same tree is the in-development matrix for
-the next release (Android 18), which is how AOSP stages the next year's HAL
+(lines 87-94) prints them as "Android 15 (V)" through "Android 18 (D)".
+
+By that table, the **target FCM level for a device launching with Android 17 is
+202604**.  The `202704` matrix in the same tree is the in-development matrix for
+the next release (Android 18).  This is how AOSP stages the next year's HAL
 requirements while the current release is still shipping.
 
 A device declares its target FCM level in the device manifest.  The framework
 selects the appropriate compatibility matrix based on that level.  This is how
-older devices can continue to work with newer frameworks -- the framework knows
+older devices can continue to work with newer frameworks.  The framework knows
 what HAL versions the device era supports and only requires those.
 
 The runtime also derives an FCM level straight from the GKI kernel release.
@@ -3169,10 +3192,10 @@ static bool forEachManifest(
 This code shows that `servicemanager` loads both the device manifest and
 framework manifest at startup, and uses them to validate every HAL
 registration request.  The `isAllowedToUseLibvintf()` function in
-`VintfObject.cpp` (lines 82-100) is a usage-policy check: when a binary
+`VintfObject.cpp` (lines 82-100) is a usage-policy check.  When a binary
 outside the allowlist pulls in libvintf, `GetInstance()` logs a
-`libvintf-usage-violation` error to discourage the extra memory cost, but
-then builds and returns the object anyway -- it does not actually block those
+`libvintf-usage-violation` error to discourage the extra memory cost.  But it
+then builds and returns the object anyway.  It does not actually block those
 processes from querying VINTF data:
 
 ```c++
@@ -3227,9 +3250,9 @@ flowchart TD
     style O fill:#e8f5e9
 ```
 
-The `vintf_fragments` directive in `Android.bp` (as seen in the Lights and
-Vibrator HALs) causes the build system to automatically install manifest
-fragments into the correct location.  At boot time, `libvintf` scans these
+The Lights and Vibrator HALs use the `vintf_fragments` directive in
+`Android.bp`.  This directive causes the build system to automatically install
+manifest fragments into the correct location.  At boot time, `libvintf` scans these
 directories and merges all fragments into a single logical manifest.
 
 This fragment-based assembly has several benefits:
@@ -3275,7 +3298,7 @@ partition update is being applied, the update system checks the new framework's
 compatibility matrix against the existing vendor's manifest.  If they are
 incompatible, the OTA is rejected.
 
-This is what makes Project Treble's independent update promise possible: the
+This is what makes Project Treble's independent update promise possible.  The
 framework can be updated without touching the vendor partition, as long as the
 VINTF compatibility check passes.
 
@@ -3298,16 +3321,20 @@ sequenceDiagram
 
 ### 10.5.9 xsdc: Generating Parsers for the Config Files
 
-The manifests and compatibility matrices in this section are XML documents, and
-so are dozens of other configuration files that cross the system/vendor
-boundary -- media codec lists, the apex info list, audio policy configuration,
-and more.  Treble treats the *schema* of each of these files as a stable
-interface, which raises a practical problem: every consumer needs a parser that
-stays in lock-step with the schema, and hand-writing those parsers is both
-tedious and a place for system/vendor drift to creep in.  `xsdc`
+The manifests and compatibility matrices in this section are XML documents.  So
+are dozens of other configuration files that cross the system/vendor boundary.
+Examples are media codec lists, the apex info list, and audio policy
+configuration.  Treble treats the *schema* of each of these files as a stable
+interface.
+
+This raises a practical problem.  Every consumer needs a parser
+that stays in lock-step with the schema.  Hand-writing those parsers is both
+tedious and a place for system/vendor drift to creep in.
+
+`xsdc`
 (`system/tools/xsdc/`, a Java code generator plus a small
 `XsdcSupport.h` runtime header) solves this by compiling an XSD schema into a
-parser, so the schema file is the single source of truth.
+parser.  This makes the schema file the single source of truth.
 
 #### The xsd_config Soong rule
 
@@ -3346,18 +3373,18 @@ knobs that matter in practice:
 Because the schema is an API, `xsd_config` also feeds a `current.txt`
 under `api_dir` (a Treble "ConfigFile as API" signature, described in
 `system/tools/xsdc/README.md`).  Adding an attribute to the XSD adds a
-`getNumber()`/`setNumber()` pair to the generated class, and `make update-api`
-records that delta in the API file -- the same freeze-and-review discipline
-AIDL interfaces get in §10.4.9, applied to XML schemas.
+`getNumber()`/`setNumber()` pair to the generated class.  Then `make update-api`
+records that delta in the API file.  This is the same freeze-and-review
+discipline that AIDL interfaces get in §10.4.9, applied to XML schemas.
 
 #### What the generated code looks like
 
 `xsdc` has two back ends, selected by the host tool's `--java` and `--cpp`
-flags (see `system/tools/xsdc/src/main/java/com/android/xsdc/Main.java`): a Java
-generator under `.../xsdc/java/` and a C++ generator under `.../xsdc/cpp/`.  For
-each `complexType` it produces a class with typed getters (and setters, when
-`gen_writer` is on); for each `simpleType` enumeration it produces an enum plus
-string-conversion helpers.  The C++ enums cooperate with the tiny runtime header
+flags (see `system/tools/xsdc/src/main/java/com/android/xsdc/Main.java`).  One
+is a Java generator under `.../xsdc/java/`.  The other is a C++ generator under
+`.../xsdc/cpp/`.  For each `complexType` it produces a class with typed getters
+(and setters, when `gen_writer` is on).  For each `simpleType` enumeration it
+produces an enum plus string-conversion helpers.  The C++ enums cooperate with the tiny runtime header
 `system/tools/xsdc/utils/include/xsdc/XsdcSupport.h`, which defines
 `xsdc_enum_range<Enum>` so callers can iterate every enumerator:
 
@@ -3373,17 +3400,21 @@ loop works without the consumer maintaining its own list of values.
 
 `xsd_config` appears in dozens of `Android.bp` files across the tree -- a
 `grep -c 'xsd_config {'` over the platform finds it declared more than fifty
-times outside `xsdc` itself.  The consumers most relevant to this chapter are
-the VINTF schemas: `system/libvintf/xsd/halManifest/` and
+times outside `xsdc` itself.
+
+The consumers most relevant to this chapter are
+the VINTF schemas.  `system/libvintf/xsd/halManifest/` and
 `system/libvintf/xsd/compatibilityMatrix/` define `hal_manifest.xsd` and
-`compatibility_matrix.xsd`, the formal schemas for the manifest and matrix XML
-shown in §10.5.2 and §10.5.3, and the generated parsers back the VTS tests that
-validate every device's manifest against the schema.  Other heavy users include
+`compatibility_matrix.xsd`.  These are the formal schemas for the manifest and
+matrix XML shown in §10.5.2 and §10.5.3.  The generated parsers back the VTS
+tests that validate the manifest of every device against the schema.
+
+Other heavy users include
 `system/apex/apexd/` (the `apex-info-list` parser *and* writer for
 `/apex/apex-info-list.xml`) and `frameworks/av/media/libstagefright/xmlparser/`
 (the `media_codecs` schema behind `MediaCodecsXmlParser`) and
-`frameworks/av/media/libmedia/xsd/` (the `media_profiles` schema).  In every case the pattern is the same: the `.xsd` is
-checked in as the contract, `xsdc` turns it into the parser, and no one
+`frameworks/av/media/libmedia/xsd/` (the `media_profiles` schema).  In every case the pattern is the same.  The `.xsd` is
+checked in as the contract.  `xsdc` turns it into the parser.  No one
 hand-maintains XML-walking code that could quietly disagree with the schema.
 
 ---
@@ -3686,7 +3717,7 @@ int main() {
 
 (The `android::binder::LazyServiceRegistrar` class in
 `frameworks/native/libs/binder/include/binder/LazyServiceRegistrar.h` serves
-the same purpose for services written against `libbinder` proper -- its
+the same purpose for services written against `libbinder` proper.  Its
 `registerService()` takes a `sp<IBinder>`, not the `AIBinder*` an NDK-backend
 service holds.)
 
@@ -3991,26 +4022,28 @@ AServiceManager_NotificationRegistration* reg =
 
 ## 10.7 New HAL Surface in Android 17
 
-Every release adds a handful of HAL packages, and Android 17's additions are
-worth a section of their own because they show where the platform is heading:
-on-device motion intelligence, a first-class NPU contract, and a family of
-"Trusted HALs" that live inside a TEE and are reachable only from protected
-virtual machines.  All of them are AIDL interfaces -- all `@VintfStability`
-except `ITrustedHalExt`, which is deliberately left unannotated -- and there is
-no HIDL in this story at all.  Most also appear in the Android 17 framework
-compatibility matrix
-(`hardware/interfaces/compatibility_matrices/compatibility_matrix.202604.xml`):
-`motioncontext`, `npu`, and the `security.see` hwcrypto/devicestate/storage/
-authmgr entries are all present, while `security.see.hdcp` and
-`security.see.ext` have no matrix entry at all (`ext` is deliberately not
-VINTF-stable).
+Every release adds a handful of HAL packages.  The additions in Android 17 are
+worth a section of their own because they show where the platform is heading.
+They are on-device motion intelligence, a first-class NPU contract, and a
+family of "Trusted HALs".  The Trusted HALs live inside a TEE and are reachable
+only from protected virtual machines.
+
+All of them are AIDL interfaces.  All
+are `@VintfStability` except `ITrustedHalExt`, which is deliberately left
+unannotated.  There is no HIDL in this story at all.  Most also appear in the
+Android 17 framework compatibility matrix
+(`hardware/interfaces/compatibility_matrices/compatibility_matrix.202604.xml`).
+The `motioncontext`, `npu`, and the `security.see`
+hwcrypto/devicestate/storage/ authmgr entries are all present.  But
+`security.see.hdcp` and `security.see.ext` have no matrix entry at all (`ext`
+is deliberately not VINTF-stable).
 
 ### 10.7.1 The Motion Context HAL
 
 `android.hardware.motioncontext` is an offloaded motion-classification service.
 A client subscribes to coarse motion signals (walking, in-vehicle, still, and
-so on) and the HAL delivers events from a low-power island instead of waking the
-application processor for every sample.  The root interface is tiny -- it is a
+so on).  The HAL delivers events from a low-power island instead of waking the
+application processor for every sample.  The root interface is tiny.  It is a
 factory that hands back a per-client object:
 
 ```java
@@ -4022,14 +4055,14 @@ interface IMotionContext {
 }
 ```
 
-The supporting types live in the same package:
-`IMotionContextClient` (the per-client handle used to configure subscriptions),
-`IMotionContextCallback` (the event sink), and the data parcelables
-`MotionEvent`, `MotionState`, `MotionSubscription`, `EventDeliveryReason`, and
-`ErrorCode`.  A client can attach a "dwell time" to a subscription so the HAL
-filters transient events on the offload engine, which is the whole point: the
-client gets the benefit of the full motion-signal suite while keeping the
-application processor asleep.
+The supporting types live in the same package.
+`IMotionContextClient` is the per-client handle used to configure
+subscriptions.  `IMotionContextCallback` is the event sink.  The data
+parcelables are `MotionEvent`, `MotionState`, `MotionSubscription`,
+`EventDeliveryReason`, and `ErrorCode`.  A client can attach a "dwell time" to a
+subscription so the HAL filters transient events on the offload engine.  This
+is the whole point: the client gets the benefit of the full motion-signal suite
+while the application processor stays asleep.
 
 The reference implementation under
 `hardware/interfaces/motioncontext/aidl/default/` registers a single
@@ -4070,21 +4103,22 @@ interface IScheduling {
 }
 ```
 
-Each `SchedulingConfig` carries a Linux `uid`, a `priority` in the range
-`MIN_PRIORITY = 0` (highest) to `MAX_PRIORITY = 1000` (lowest), and two policy
-booleans -- `hasDirectAccess` (may this UID submit work straight to the NPU?)
-and `canAttributeOtherUid` (may it bill work to other UIDs?), defined in
+Each `SchedulingConfig` carries a Linux `uid` and a `priority` in the range
+`MIN_PRIORITY = 0` (highest) to `MAX_PRIORITY = 1000` (lowest).  It also carries
+two policy booleans.  `hasDirectAccess` says whether this UID may submit work
+straight to the NPU.  `canAttributeOtherUid` says whether it may bill work to
+other UIDs.  The file
 `hardware/interfaces/npu/aidl/android/hardware/npu/SchedulingConfig.aidl`
-(lines 24-54).  The `ISchedulingCallback` lets the NPU report scheduling
+(lines 24-54) defines them.  The `ISchedulingCallback` lets the NPU report scheduling
 decisions back, using the `WorkInfo`, `StartReason`, `EndReason`, and `Uuid`
 parcelables in the same package.
 
 What is notable for the platform story is how the NPU HAL is delivered.  Its
 `aidl_interface` module in `hardware/interfaces/npu/aidl/Android.bp` marks the
 Java and NDK backends `apex_available` for both `//apex_available:platform` and
-`com.android.npumanager`, with `min_sdk_version: "36"`.  In other words the NPU
-HAL contract is packaged for the NPU Manager APEX -- a Mainline-style updatable
-module -- rather than being baked permanently into the system image.  The HAL is
+`com.android.npumanager`, with `min_sdk_version: "36"`.  In other words, the NPU
+HAL contract is packaged for the NPU Manager APEX, a Mainline-style updatable
+module.  It is not baked permanently into the system image.  The HAL is
 listed in the Android 17 matrix as an `aidl` entry at `<version>1</version>`
 with a `default` instance.
 
@@ -4115,23 +4149,30 @@ The family contains several independent HALs:
 | `android.hardware.security.see.hdcp` | `IHdcpAuthControl` | HDCP authentication control for protected media paths |
 | `android.hardware.security.see.ext` | `ITrustedHalExt` | A required, *non*-VINTF-stable extension on every Trusted HAL's root binder |
 
-The HwCrypto HAL is the workhorse.  Its README
+The HwCrypto HAL is the workhorse.
+
+Its README
 (`hardware/interfaces/security/see/hwcrypto/aidl/README.md`) describes
-DICE-bound key derivation (keys cryptographically tied to the device identity
-and the caller's software version), opaque keys whose material never leaves the
-secure environment (`IOpaqueKey`), a command-list interface that runs a sequence
-of crypto operations in a single IPC, and `ProtectionId`-scoped keys that bind
-key use to specific memory regions such as trusted video buffers.  The entry
+four features.  The first is DICE-bound key derivation (keys cryptographically
+tied to the device identity and the caller's software version).  The second is
+opaque keys whose material never leaves the secure environment (`IOpaqueKey`).
+The third is a command-list interface that runs a sequence of crypto operations
+in a single IPC.  The fourth is `ProtectionId`-scoped keys that bind key use to
+specific memory regions such as trusted video buffers.
+
+The entry
 point is `IHwCryptoKey`
 (`hardware/interfaces/security/see/hwcrypto/aidl/android/hardware/security/see/hwcrypto/IHwCryptoKey.aidl`).
 
 The AuthMgr HAL is the gatekeeper.  `IAuthMgrAuthorization`
 (`hardware/interfaces/security/see/authmgr/aidl/android/hardware/security/see/authmgr/IAuthMgrAuthorization.aidl`)
-runs a two-phase protocol: phase 1 authenticates the AuthMgr frontend (running
-inside a pVM) to the AuthMgr backend (in the TEE) by verifying a signature over a
-backend-issued challenge against a key recovered from a validated DICE
-certificate chain, and also enforces rollback protection; phase 2 then authorizes
-individual clients in that pVM to reach trusted services.  This is why the data
+runs a two-phase protocol.
+
+Phase 1 authenticates the AuthMgr frontend (running
+inside a pVM) to the AuthMgr backend (in the TEE).  It verifies a signature over
+a backend-issued challenge against a key recovered from a validated DICE
+certificate chain.  It also enforces rollback protection.  Phase 2 then
+authorizes individual clients in that pVM to reach trusted services.  This is why the data
 types in the package are DICE artifacts -- `DiceLeafArtifacts`,
 `DiceChainEntry`, `DicePolicy`, `ExplicitKeyDiceCertChain`, and
 `SignedConnectionRequest`.
@@ -4139,7 +4180,7 @@ types in the package are DICE artifacts -- `DiceLeafArtifacts`,
 The `ITrustedHalExt` requirement is a clever VTS hook.  Every top-level Trusted
 HAL must add `ITrustedHalExt`
 (`hardware/interfaces/security/see/ext/aidl/android/hardware/security/see/ext/ITrustedHalExt.aidl`)
-as an extension on its root binder.  The interface body is empty -- it exists
+as an extension on its root binder.  The interface body is empty.  It exists
 only so VTS can confirm that the binder library exposing the Trusted HAL was
 built with the correct *vendor* stability guarantees.  Deliberately, this
 extension is *not* VINTF-stable, which is the whole test: a correctly built
@@ -4164,16 +4205,18 @@ matrix, three of the `security.see` entries carry a new attribute:
 ```
 
 The `exclusive-to` attribute is backed by the `ExclusiveTo` enum in
-`system/libvintf/include/vintf/ExclusiveTo.h` (lines 26-40), which has exactly
-two values: `EMPTY` (the default -- a normal host-accessible service) and `VM`,
-serialized as the string `"virtual-machine"`.  Its comment is the contract:
-a `VM`-exclusive service is "Exclusive to processes inside virtual machines on
-devices" and "Host processes do not have access to these services."  VINTF
-threads `ExclusiveTo` through manifest and matrix matching across
-`system/libvintf/` (it appears in `HalManifest`, `ManifestHal`,
-`CompatibilityMatrix`, `MatrixHal`, and the instance classes), so a Trusted HAL
+`system/libvintf/include/vintf/ExclusiveTo.h` (lines 26-40).  The enum has
+exactly two values: `EMPTY` (the default -- a normal host-accessible service)
+and `VM`, serialized as the string `"virtual-machine"`.  Its comment is the
+contract.  It says a `VM`-exclusive service is "Exclusive to processes inside
+virtual machines on devices" and "Host processes do not have access to these
+services."  VINTF threads `ExclusiveTo` through manifest and matrix matching
+across `system/libvintf/` (it appears in `HalManifest`, `ManifestHal`,
+`CompatibilityMatrix`, `MatrixHal`, and the instance classes).  So a Trusted HAL
 declared `exclusive-to="virtual-machine"` is matched against pVM manifests, not
-the host manifest.  `devicestate`, `storage`, and `authmgr` are all marked this
+the host manifest.
+
+`devicestate`, `storage`, and `authmgr` are all marked this
 way; `hwcrypto` is not, because it is reachable from the host as well.
 
 This diagram shows where each new HAL sits relative to the host OS, a protected
@@ -4219,11 +4262,12 @@ While Android 17's target FCM level is 202604, the same tree already carries
 declared `level="202704"` on its root element.  Per the `Level` enum in
 `system/libvintf/include/vintf/Level.h` (line 48), 202704 is `Level::D`, which
 `analyze_matrix.cpp` prints as "Android 18 (D)".  This is AOSP's standard staging
-pattern: the next release's compatibility matrix is committed into the current
-tree (it was added in 2026) so HAL owners can register new version requirements
-for the upcoming release while the current one is still shipping.  The new
-HALs in this section appear in both the 202604 and 202704 matrices, so a device
-that adopts them is forward-compatible with the next level as well.
+pattern.  The next release's compatibility matrix is committed into the current
+tree (it was added in 2026).  So HAL owners can register new version
+requirements for the upcoming release while the current one is still shipping.
+
+The new HALs in this section appear in both the 202604 and 202704 matrices.  So
+a device that adopts them is forward-compatible with the next level as well.
 
 ```mermaid
 flowchart LR
@@ -4239,9 +4283,10 @@ flowchart LR
 
 ## 10.8 Try It: Write a Minimal AIDL HAL
 
-In this section, we will write a complete AIDL HAL from scratch: interface
-definition, implementation in both C++ and Rust, VINTF manifest, init.rc, build
-rules, and a client.  We will create a simple "Greeting" HAL that demonstrates
+In this section, we will write a complete AIDL HAL from scratch.  We will write
+the interface definition and the implementation in both C++ and Rust.  We will
+also write the VINTF manifest, init.rc, the build rules, and a client.  We will
+create a simple "Greeting" HAL that demonstrates
 all the concepts covered in this chapter.
 
 ### 10.8.1 Step 1: Define the AIDL Interface
@@ -4972,8 +5017,8 @@ parcelable GreetingResponse {
 }
 ```
 
-Note the use of `@nullable` for the new field -- this ensures backward
-compatibility, as old clients that do not know about this field will see it
+Note the use of `@nullable` for the new field.  This makes sure of backward
+compatibility: old clients that do not know about this field will see it
 as null/default.
 
 **Step 3: Freeze version 2:**
@@ -5090,11 +5135,11 @@ adb shell vintf dm
 adb shell vintf fm
 ```
 
-(The on-device `vintf` binary dumps VINTF metadata -- its targets are
-`legacy`, `dm`, `fm`, `dcm`, `fcm`, and `ri` -- and in its default `legacy`
+(The on-device `vintf` binary dumps VINTF metadata.  Its targets are
+`legacy`, `dm`, `fm`, `dcm`, `fcm`, and `ri`.  In its default `legacy`
 mode it also runs and prints on-device manifest-vs-matrix compatibility
-results.  Checking a full image tree, as the build and OTA flows require, is
-the job of the host-side `check_vintf --check-compat --rootdir=...` flow shown
+results.  The build and OTA flows require a check of a full image tree.  That
+check is the job of the host-side `check_vintf --check-compat --rootdir=...` flow shown
 in Section 10.5.7.2.)
 
 **Binder debugging:**
@@ -5335,8 +5380,8 @@ The HAL architecture continues to evolve:
    cross-partition interfaces use stable AIDL, including interfaces that
    currently use other mechanisms.
 
-The evolution from `dlopen()` to versioned Binder IPC reflects Android's
-transformation from a phone OS to a platform that must support independent
+The evolution from `dlopen()` to versioned Binder IPC reflects a change in
+Android.  It was a phone OS.  It is now a platform that must support independent
 updates across tens of thousands of device configurations.  Understanding the
 HAL layer is essential for anyone working on device bring-up, system
 architecture, or framework-vendor compatibility.
