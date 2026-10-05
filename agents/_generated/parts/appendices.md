@@ -18,9 +18,9 @@ path, a definition, or a changelog rather than narrative explanation.
 <!-- chapter:A-appendix-key-files -->
 # Appendix A: Key Files Reference
 
-This appendix provides a quick-reference table of the most important source files
-in AOSP, organized by subsystem and cross-referenced to the chapter where each
-file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
+This appendix is a quick-reference table of the most important source files
+in AOSP. The tables group the files by subsystem. Each heading gives the
+chapter where the files are discussed. Paths are relative to the AOSP root (`$AOSP/`).
 
 ---
 
@@ -76,9 +76,9 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 ## Kernel (Chapter 5)
 
 Unlike the rest of this appendix, these paths are relative to a separate Android
-Common Kernel checkout (its own `repo init`), where the kernel source tree is
-`common/` and the build tooling is `build/`. The platform checkout's `kernel/`
-directory holds only configs, prebuilts, and tests.
+Common Kernel checkout (its own `repo init`). In that checkout, the kernel
+source tree is `common/` and the build tooling is `build/`. The platform
+checkout's `kernel/` directory holds only configs, prebuilts, and tests.
 
 | File Path | Purpose |
 |-----------|---------|
@@ -537,8 +537,8 @@ throughout AOSP and this book.
 
 **ABI** (Application Binary Interface)
 : The low-level interface contract between compiled code and the operating
-  system, specifying calling conventions, data layout, and system call numbers
-  for a given architecture (e.g., arm64, x86_64, riscv64).
+  system. It specifies calling conventions, data layout, and system call
+  numbers for a given architecture (e.g., arm64, x86_64, riscv64).
 
 **ADB** (Android Debug Bridge)
 : Command-line tool and daemon for communicating with Android devices over USB
@@ -557,8 +557,8 @@ throughout AOSP and this book.
 
 **ANR** (Application Not Responding)
 : A system dialog triggered when an application's main thread is blocked for
-  too long (5 seconds for input events, 10 seconds for foreground broadcast
-  receivers, 60 seconds for background ones).
+  too long. The limits are 5 seconds for input events, 10 seconds for
+  foreground broadcast receivers, and 60 seconds for background ones.
   AMS monitors and enforces ANR timeouts.
 
 **AOT** (Ahead-Of-Time compilation)
@@ -603,8 +603,8 @@ throughout AOSP and this book.
   (MTE support), and Android-specific features (system properties).
 
 **BLAST**
-: A SurfaceFlinger codename (the source spells it out only as the "Buffer
-  State Layer" path; there is no official acronym expansion). The modern
+: A SurfaceFlinger codename. The source spells it out only as the "Buffer
+  State Layer" path; there is no official acronym expansion. The modern
   buffer submission path in SurfaceFlinger that replaces the legacy
   BufferQueue model. Bundles buffer submission with SurfaceFlinger
   transactions for atomic, synchronized updates, via `BLASTBufferQueue`.
@@ -617,7 +617,7 @@ throughout AOSP and this book.
 **BufferHub** (legacy/removed)
 : A former system for zero-copy buffer sharing between processes, associated
   with the old VR and low-latency display paths. Effectively removed in
-  modern AOSP (no `libui` headers remain, and VR support is gone); listed
+  modern AOSP: no `libui` headers remain, and VR support is gone. It is listed
   here only because older references still mention it.
 
 **BufferQueue**
@@ -721,11 +721,10 @@ throughout AOSP and this book.
   `InputMethodManagerService`.
 
 **InputFlinger**
-: The native input stack (`libinputflinger`) responsible for reading input
-  events from the kernel (`/dev/input/`), processing them, and dispatching
-  them to the correct window via `InputDispatcher`. Unlike SurfaceFlinger it
-  is not a standalone daemon; it is hosted inside `system_server` by
-  `InputManagerService`.
+: The native input stack (`libinputflinger`). It reads input events from the
+  kernel (`/dev/input/`), processes them, and dispatches them to the correct
+  window via `InputDispatcher`. Unlike SurfaceFlinger it is not a standalone
+  daemon. `InputManagerService` hosts it inside `system_server`.
 
 **Intent**
 : Android's message-passing object for requesting actions from components.
@@ -801,14 +800,14 @@ throughout AOSP and this book.
 **OAT**
 : The file format produced by `dex2oat` containing AOT-compiled native
   code plus metadata (`OatDexFile` headers, class offsets, vmap tables)
-  that references the DEX bytecode, which since Android O lives in the
-  companion VDEX file rather than inside the OAT. An OAT file is an ELF
+  that references the DEX bytecode. Since Android O, the DEX bytecode lives
+  in the companion VDEX file rather than inside the OAT. An OAT file is an ELF
   binary loaded by ART at runtime.
 
 **OTA** (Over-The-Air update)
 : The mechanism for delivering system updates wirelessly. Android
-  supports A/B (seamless) and Virtual A/B update strategies; Virtual A/B
-  builds on dm-snapshot, and Virtual A/B Compression (VABC) is served by
+  supports A/B (seamless) and Virtual A/B update strategies. Virtual A/B
+  builds on dm-snapshot. Virtual A/B Compression (VABC) is served by
   the userspace `snapuserd` daemon over dm-user.
 
 **Parcel**
@@ -953,34 +952,36 @@ throughout AOSP and this book.
 # Appendix C: Why AOSP Doesn't Adopt Kotlin for Public Framework APIs
 
 A reader new to AOSP quickly notices an asymmetry. Kotlin is everywhere in the
-upper layers of the tree — SystemUI, Settings, Launcher3, parts of CTS — yet the
+upper layers of the tree — SystemUI, Settings, Launcher3, parts of CTS. Yet the
 public framework APIs that apps compile against are still defined in Java. This
 appendix lays out the constraints that produce that asymmetry. It is not
-advocacy and does not predict when, or whether, the situation will change. It
-collects the engineering facts: where Kotlin is allowed, where it is not, the
-binary contract that gates the difference, and the toolchain that enforces that
-contract. After reading it you should be able to look at any class in
-`frameworks/base/` and predict whether Kotlin source there is risk-free or
-whether it would break something. The rule the appendix builds toward is
-straightforward: trace the class outward to its nearest API boundary. If the
-boundary is a `current.txt` member, an `@SystemApi`, a module-library export, or
-anything else apps or vendor code links against, the freeze applies and Kotlin
-source there imports kotlinc-emission risk. If the boundary is intra-process and
-recompiles in lock-step with the framework — a `LocalServices` interface, a
-binder server stub, a SystemUI internal — Kotlin is safe. The precise definition
-of "public API" used throughout the appendix is in the section titled "The
-Public API Contract".
+advocacy and does not predict when, or whether, the situation will change.
+
+It collects the engineering facts: where Kotlin is allowed and where it is not.
+It also covers the binary contract that gates the difference and the toolchain
+that enforces that contract. After reading it, you should be able to look at any
+class in `frameworks/base/`. You should be able to predict whether Kotlin source
+there is risk-free or whether it would break something.
+
+The rule the appendix builds toward is straightforward: trace the class outward
+to its nearest API boundary. If the boundary is a `current.txt` member, an
+`@SystemApi`, a module-library export, or anything else that apps or vendor code
+links against, the freeze applies. Kotlin source there imports kotlinc-emission
+risk. If the boundary is intra-process and recompiles in lock-step with the
+framework — a `LocalServices` interface, a binder server stub, a SystemUI
+internal — Kotlin is safe. The precise definition of "public API" used
+throughout the appendix is in the section titled "The Public API Contract".
 
 The appendix is organized to be read top to bottom but the sections can be
 consulted independently. The engineering core is "The Java/Kotlin ABI Gap" and
-"Toolchain Lock-In"; the surrounding sections frame the freeze, expand it to
-vendor and Mainline surfaces, and inventory where Kotlin already lives safely
-inside the platform.
+"Toolchain Lock-In". The surrounding sections frame the freeze and expand it to
+vendor and Mainline surfaces. They also inventory where Kotlin already lives
+safely inside the platform.
 
-A note on sourcing. Every concrete file path and tool name comes
-from inspecting the AOSP checkout directly. Where the appendix speaks in terms
-of scale, those figures were measured at one point in time and will drift as
-the tree evolves; the orders of magnitude are what the argument depends on.
+A note on sourcing. Every concrete file path and tool name comes from inspecting
+the AOSP checkout directly. Where the appendix speaks in terms of scale, those
+figures were measured at one point in time. They will drift as the tree evolves.
+The orders of magnitude are what the argument depends on.
 
 ## The Asymmetry
 
@@ -1001,10 +1002,10 @@ coexist across the tree, but they cluster in very different places. Running
 
 Two numbers in that table do most of the work for this appendix.
 
-The first is 45 — or, more precisely, zero. `frameworks/base/core/` is where
-the `android.*` classes that constitute the public Android SDK live. Every one
-of the 45 Kotlin files in this directory is test code under
-`frameworks/base/core/tests/`; the API-bearing `core/java/` tree — tens of
+The first is 45 — or, more precisely, zero. `frameworks/base/core/` is where the
+`android.*` classes that constitute the public Android SDK live. Every one of
+the 45 Kotlin files in this directory is test code under
+`frameworks/base/core/tests/`. The API-bearing `core/java/` tree — tens of
 thousands of Java files — contains no Kotlin at all. That is the most direct
 statement of the policy. The public API surface is defined in Java.
 
@@ -1027,12 +1028,12 @@ files that metalava produces and validates against:
 - `frameworks/base/services/api/current.txt` — the system-services API surface
   exposed to in-process callers.
 - The corresponding `system-current.txt` and `module-lib-current.txt` siblings
-  under `frameworks/base/*/api/` that define the `@SystemApi` surface (visible
-  to platform components signed with the platform key) and the module-library
-  surface (visible to Mainline modules at compile time).
+  are under `frameworks/base/*/api/`. They define the `@SystemApi` surface
+  (visible to platform components signed with the platform key) and the
+  module-library surface (visible to Mainline modules at compile time).
 
 These signature files are language-neutral text. Nothing in them depends on
-whether the implementing source was written in Java or Kotlin — but, as the rest
+whether the implementing source was written in Java or Kotlin. But, as the rest
 of this appendix shows, the JVM signatures they describe are not equally stable
 to produce from the two languages.
 
@@ -1050,11 +1051,12 @@ class up, not by where it lives in the source tree.
 A third observation: the directional asymmetry. SystemUI and the Settings app
 live "below" the framework in the dependency graph — they consume the public API
 surface but do not contribute to it. Their freedom to use Kotlin is
-unconstrained because nothing depends on their internal class shapes. The
-framework, in contrast, sits "above" them: its classes are what apps and vendor
-code link against, and freedom there is bought at the cost of binary stability.
-The same Kotlin source pattern that is risk-free in SystemUI is risk-bearing in
-`frameworks/base/core/java/android/`.
+unconstrained because nothing depends on their internal class shapes.
+
+The framework, in contrast, sits "above" them. Its classes are what apps and
+vendor code link against. Freedom there is bought at the cost of binary
+stability. The same Kotlin source pattern that is risk-free in SystemUI is
+risk-bearing in `frameworks/base/core/java/android/`.
 
 Where Kotlin is allowed across the AOSP API surface layers.
 
@@ -1085,13 +1087,13 @@ graph TB
 The diagram is not a build-time dependency graph. It is a freedom-of-language
 map. Each higher box constrains itself to Java so that the languages used below
 it cannot leak through. A class in `android.*` may end up calling a Kotlin
-implementation in a service, but the call goes through a binder interface or a
+implementation in a service. But the call goes through a binder interface or a
 manager-class facade whose signature is Java-shaped. The point at which a method
 is exposed to apps is the point at which Kotlin stops.
 
 ## The Public API Contract
 
-The phrase "public API" inside AOSP has a precise definition: it is the set of
+The phrase "public API" inside AOSP has a precise definition. It is the set of
 class members listed in `frameworks/base/core/api/current.txt` (and the adjacent
 `system-current.txt`, `module-lib-current.txt`, `test-current.txt`). This file
 is human-readable text. Its first lines look like:
@@ -1106,9 +1108,9 @@ package android {
 ```
 
 Every entry is a fully resolved JVM signature: package, modifiers, return type,
-parameter types, exceptions. There are no Kotlin keywords in the file because
-the format predates Kotlin and was designed to describe what the runtime sees,
-not what the source-level developer wrote.
+parameter types, exceptions. There are no Kotlin keywords in the file. This is because the
+format predates Kotlin and was designed to describe what the runtime sees, not
+what the source-level developer wrote.
 
 The shape of an entry is worth dwelling on. A class declaration nests inside a
 `package` block, with each member declared as a single line containing:
@@ -1124,22 +1126,24 @@ The shape of an entry is worth dwelling on. A class declaration nests inside a
 The format is whitespace-significant in places (each member starts with leading
 spaces matching its nesting depth) but otherwise has the regularity of a
 generated artifact. Diff tools have no trouble showing what changed between two
-snapshots, which matters because almost every framework change runs through the
-`m update-api` workflow and produces a textual delta that the API council
-reviews member by member.
+snapshots. This matters because almost every framework change runs through the
+`m update-api` workflow. That workflow produces a textual delta that the API
+council reviews member by member.
 
-Several signature surfaces exist in parallel — public (`current.txt`),
+Several signature surfaces exist in parallel. These are public (`current.txt`),
 `@SystemApi` (`system-current.txt`), the module-library surface used by Mainline
-(`module-lib-current.txt`), and `@TestApi` (`test-current.txt`) — plus per-
-subsystem files such as `frameworks/base/services/api/current.txt`. They all
-share the same format. Each surface is produced by **metalava**, a Kotlin tool
-at `tools/metalava/` that reads framework source — Java and Kotlin alike —
-through its default PSI source model (an alternative Turbine-based Java-only
-model can be selected with `--source-model-provider turbine`) and emits the
-language-neutral signature text. The build
-re-runs metalava, compares the generated snapshot against the checked-in
-`current.txt`, and fails the build on any drift; intentional additions go
-through `m update-api` plus API council review of the textual delta.
+(`module-lib-current.txt`), and `@TestApi` (`test-current.txt`). There are also
+per- subsystem files such as `frameworks/base/services/api/current.txt`. They
+all share the same format.
+
+Each surface is produced by **metalava**, a Kotlin tool at `tools/metalava/`.
+Metalava reads framework source — Java and Kotlin alike — through its default
+PSI source model and emits the language-neutral signature text. (An alternative
+Turbine-based Java-only model can be selected with
+`--source-model-provider turbine`.) The build re-runs metalava, compares the
+generated snapshot against the checked-in `current.txt`, and fails the build on
+any drift. Intentional additions go through `m update-api` plus API council
+review of the textual delta.
 
 How a framework class becomes part of the public API contract.
 
@@ -1167,11 +1171,11 @@ or return type, or changing the JVM signature behind an unchanged textual entry
 all count as breaking changes.
 
 Devices bake an SDK level in at manufacture, and that determines the "stable
-forever" promise. A phone that launched with SDK 30 will still be running
-SDK 30 four or five years later (longer for OEM long-life devices). Apps
-targeting `compileSdk = 30` must continue to install and run on that device.
-The OEM cannot fix a regression in the platform's binary contract by issuing a
-kotlinc upgrade or a metadata format update, because the original device's
+forever" promise. A phone that launched with SDK 30 will still be running SDK 30
+four or five years later (longer for OEM long-life devices). Apps targeting
+`compileSdk = 30` must continue to install and run on that device. The OEM
+cannot fix a regression in the platform's binary contract by issuing a kotlinc
+upgrade or a metadata format update. This is because the original device's
 runtime classloader is what defines compatibility.
 
 That window — roughly ten years from first ship to last realistic in-service
@@ -1232,12 +1236,12 @@ Within `frameworks/base/services/`, every `@JvmOverloads` usage sits under
 `TestUtils.kt`, `PersistentDataStoreTestUtils.kt`,
 `DisplayDeviceConfigTestUtils.kt`, and `ClamperTestUtils.kt`, plus one fake in
 `servicestests/`. No production service uses it. (The annotation is common in
-the app layer — SystemUI and Settings use it in over a hundred files between
-them — but those are apps consuming the SDK, not API-bearing framework code.)
+the app layer. SystemUI and Settings use it in over a hundred files between
+them. But those are apps consuming the SDK, not API-bearing framework code.)
+
 The reason for its absence from production services is straightforward:
-production service Kotlin in AOSP only calls into Java, never the reverse.
-There is no Java caller in the platform services that needs the synthesized
-overloads.
+production service Kotlin in AOSP only calls into Java, never the reverse. There
+is no Java caller in the platform services that needs the synthesized overloads.
 
 ### `@JvmStatic` and the `Companion.foo()` vs `Foo.foo()` choice
 
@@ -1284,8 +1288,8 @@ Now `Foo.bar()` works from Java too. The decision is observable in `current.txt`
 because both methods are part of the public surface. Once shipped, neither can
 be removed.
 
-The AOSP usage pattern of `@JvmStatic` confirms the asymmetry: every hit in
-`frameworks/base/services/` is inside the `services/tests/` subtree, where the
+The AOSP usage pattern of `@JvmStatic` confirms the asymmetry. Every hit in
+`frameworks/base/services/` is inside the `services/tests/` subtree. There the
 JUnit runner (Java) needs to invoke `@BeforeClass`/`@AfterClass` methods
 declared on Kotlin test companions. Concrete example from `ApexUpdateTest.kt`:
 
@@ -1299,7 +1303,7 @@ fun initApexHelper(testInformation: TestInformation) {
 
 Production Kotlin avoids `@JvmStatic` because nothing in the platform calls
 those Kotlin methods from Java. Public API code, by definition, must be callable
-from Java apps — so every static factory or constant in a public Kotlin class
+from Java apps. So every static factory or constant in a public Kotlin class
 would have to commit to one of these emission shapes and freeze it.
 
 ### `@JvmName` mangling
@@ -1343,8 +1347,8 @@ load(Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 The return type is erased to `Object` because the coroutine machinery delivers
 the result asynchronously. For an internal Kotlin caller, the source-level
 signature is what matters; the compiler hides the transformation. For a Java
-caller, the only thing visible is the JVM signature — including `Continuation`,
-including the erased return type, including the way exceptions get wrapped into
+caller, the only thing visible is the JVM signature. This includes
+`Continuation`, the erased return type, and the way exceptions get wrapped into
 `kotlin.Result` boxing.
 
 Two stability problems flow from this. First, `kotlin.coroutines.Continuation`
@@ -1357,30 +1361,30 @@ lowering for any reason could change the JVM signature of an unchanged source
 declaration.
 
 No public Android API exposes `suspend` today. Coroutine-based APIs in AndroidX
-live above the framework SDK and ship as separate artifacts, where the suspend
+live above the framework SDK and ship as separate artifacts. There the suspend
 signatures can evolve with the AndroidX artifact's own version cadence.
 
 ### `inline` functions exposing source bytecode
 
-An `inline` function in Kotlin is not just a hint to the optimizer; it is a
+An `inline` function in Kotlin is not just a hint to the optimizer. It is a
 contract that the function's body will be inlined at every call site. Kotlin
 uses this for `reified` type parameters (which require the type to be visible at
 the call site, not erased) and for performance-sensitive lambda-taking APIs.
 
-The implication for binary stability is that the compiled bytecode of an
-`inline` function — every instruction in its body, including references to
-private helpers — is copied into every caller's class file. If the framework
-declares a public `inline fun` and the source body changes between SDK releases,
-apps that compiled against the old version still contain the old body inline.
-Conversely, if the framework needs to fix a bug in an `inline` function, only
-newly recompiled callers see the fix.
+The implication for binary stability is simple. The compiled bytecode of an
+`inline` function is copied into every caller's class file. This includes every
+instruction in its body, even references to private helpers. Suppose the
+framework declares a public `inline fun`. If the source body changes between SDK
+releases, apps that compiled against the old version still contain the old body
+inline. Conversely, if the framework needs to fix a bug in an `inline` function,
+only newly recompiled callers see the fix.
 
 For a platform that ships compiled apps to billions of devices, "the fix only
 applies if every caller rebuilds" is not viable. Java has no equivalent: `static
 final` methods can be redirected at the implementation, but the JVM resolves
 them through the runtime classloader. A Kotlin `inline` function is closer to a
-C++ header-defined template than to a Java method, and the freezing semantics
-that work for Java methods do not work for inlined Kotlin bodies.
+C++ header-defined template than to a Java method. The freezing semantics that
+work for Java methods do not work for inlined Kotlin bodies.
 
 ### Value classes / inline classes and parameter-signature mangling
 
@@ -1395,19 +1399,20 @@ fun grantAccess(user: UserId)
 ```
 
 The JVM emission for `grantAccess` is not `grantAccess(LUserId;)V`. It is
-mangled: kotlinc inserts a hash of the parameter shape into the method name to
-avoid clashing with overloads where `UserId` and `Long` would erase to the same
-signature:
+mangled. kotlinc inserts a hash of the parameter shape into the method name.
+This avoids clashing with overloads where `UserId` and `Long` would erase to the
+same signature:
 
 ```
 grantAccess-{hash}(J)V
 ```
 
-The exact mangling scheme — what gets hashed, what character separates the
-original name from the hash, how synthetic constructors interact — has been
-refined across Kotlin releases. A frozen public API cannot tolerate the mangling
-scheme changing, and it cannot tolerate the developer inadvertently adding an
-overload that perturbs the hash of an existing method.
+The exact mangling scheme has been refined across Kotlin releases. The details
+include what gets hashed, what character separates the original name from the
+hash, and how synthetic constructors interact. A frozen public API cannot
+tolerate a change to the mangling scheme. It also cannot tolerate an overload
+that a developer adds inadvertently and that perturbs the hash of an existing
+method.
 
 ### `Result<T>` mangling on JVM
 
@@ -1488,16 +1493,17 @@ Each synthesized member is part of the binary surface. The `componentN`
 accessors enable Kotlin destructuring (`val (x, y) = point`); they are numbered
 by parameter position. Reordering the fields in source renames the components:
 what was `component1` becomes `component2`. The `copy` method takes the same
-parameters as the constructor; adding a new field at the end appends a parameter
-to `copy` and keeps the `copy$default` synthetic helper; reordering the fields
-again breaks compiled callers that named-arg `copy`.
+parameters as the constructor. If a new field goes at the end, it appends a
+parameter to `copy` and keeps the `copy$default` synthetic helper. If the fields
+are reordered again, compiled callers that named-arg `copy` break.
 
-A public `data class` would have to commit to its field order, its `componentN`
-numbering, the `copy` overload set, and the synthesized `equals`/`hashCode`
-semantics for the SDK lifetime. This is more constraint than a Java `record`
-(where only the canonical accessor names and the `equals`/`hashCode` contract
-are guaranteed) and it is more constraint than a hand-rolled Java class (where
-the developer chooses which of these members exist).
+A public `data class` would have to commit to its field order and its
+`componentN` numbering. It would also have to commit to the `copy` overload set
+and the synthesized `equals`/`hashCode` semantics for the SDK lifetime. This is
+more constraint than a Java `record` (where only the canonical accessor names
+and the `equals`/`hashCode` contract are guaranteed). It is also more constraint
+than a hand-rolled Java class (where the developer chooses which of these
+members exist).
 
 ### Top-level functions and the `Kt` synthetic class
 
@@ -1536,33 +1542,33 @@ the source-level decision.
 ### Boot classpath sharing forces one stdlib version on every app
 
 Everything above describes how a single Kotlin source declaration produces a
-*set* of JVM artifacts — signatures, helpers, mangled names, metadata blobs —
-that the framework would have to freeze. There is a second binary-stability
-concern operating one layer beneath signature shape: the Android runtime model
-loads the public framework API into a classloader that every app on the device
-shares, and a public Kotlin API would force `kotlin-stdlib.jar` into that
+*set* of JVM artifacts that the framework would have to freeze. These artifacts
+are signatures, helpers, mangled names, and metadata blobs. There is a second
+binary-stability concern one layer beneath signature shape. The Android runtime
+model loads the public framework API into a classloader that every app on the
+device shares. A public Kotlin API would force `kotlin-stdlib.jar` into that
 shared classloader too.
 
 The framework's public API ships as `framework.jar` (plus adjacent jars like
 `framework-graphics.jar`, `framework-location.jar`, `ext.jar`,
 `telephony-common.jar`) on the device's **boot classpath**. (`services.jar` is
 not among them: it sits on SYSTEMSERVERCLASSPATH and is loaded only by
-`system_server`.) The composition is
-configured by Soong via `PRODUCT_BOOT_JARS`, with the default set defined at
-`build/make/target/product/default_art_config.mk:38` — `framework-minus-apex`,
-`ext`, `telephony-common`, `framework-graphics`, `framework-location`, and the
-per-APEX jars (ART, conscrypt, i18n, and the rest). At device boot, ART
-ahead-of-time compiles these jars into a boot image and the zygote process
-loads it into its address space.
+`system_server`.) The composition is configured by Soong via
+`PRODUCT_BOOT_JARS`. The default set is defined at
+`build/make/target/product/default_art_config.mk:38`. It contains
+`framework-minus-apex`, `ext`, `telephony-common`, `framework-graphics`,
+`framework-location`, and the per-APEX jars (ART, conscrypt, i18n, and the
+rest). At device boot, ART ahead-of-time compiles these jars into a boot image
+and the zygote process loads it into its address space.
 
 `com.android.internal.os.ZygoteInit.preloadClasses()` at
 `frameworks/base/core/java/com/android/internal/os/ZygoteInit.java:284` reads
 the `/system/etc/preloaded-classes` text file and eagerly initializes every
-named class so that the boot image's class objects, static fields, and
-JIT-compiled code are resident in the zygote's heap before any app forks.
-Every app process started afterward is forked from that zygote and inherits
-the resolved class objects directly — `android.app.Activity` is literally the
-same class object in the zygote and in every app, with no per-app load step.
+named class. As a result, the boot image's class objects, static fields, and
+JIT-compiled code are resident in the zygote's heap before any app forks. Every
+app process started afterward is forked from that zygote and inherits the
+resolved class objects directly. `android.app.Activity` is literally the same
+class object in the zygote and in every app, with no per-app load step.
 
 App-specific code sits one classloader below. An installed APK is loaded by
 `dalvik.system.PathClassLoader`
@@ -1575,65 +1581,72 @@ class name that resolves in BOOTCLASSPATH wins over the same name in the
 app's APK.
 
 For Java this is unproblematic. The framework's transitive dependencies on
-`java.*` and `javax.*` are themselves part of the JDK's strictly-versioned
-core, evolving under OpenJDK with explicit JLS compatibility guarantees, and
-apps cannot ship their own `java.util.HashMap` even if they wanted to — the
+`java.*` and `javax.*` are themselves part of the JDK's strictly-versioned core.
+That core evolves under OpenJDK with explicit JLS compatibility guarantees. Apps
+cannot ship their own `java.util.HashMap` even if they wanted to. The
 classloader delegation hands every resolution back up to the platform copy by
-design. For Kotlin it is the central sticking point. A `suspend` function on
-the public surface drags in `kotlin.coroutines.Continuation`. A
-`Result<T>`-returning method drags in `kotlin.Result`. Even a plain class
-written in Kotlin emits a `@kotlin.Metadata` annotation that the Kotlin
-reflection layer reads when an app calls `Foo::class` on the class. All of
-those types live in `kotlin-stdlib.jar`.
+design.
+
+For Kotlin it is the central sticking point. A `suspend` function on the public
+surface drags in `kotlin.coroutines.Continuation`. A `Result<T>`-returning
+method drags in `kotlin.Result`. Even a plain class written in Kotlin emits a
+`@kotlin.Metadata` annotation that the Kotlin reflection layer reads when an app
+calls `Foo::class` on the class. All of those types live in `kotlin-stdlib.jar`.
 
 The verified state today: no boot classpath jar in AOSP links `kotlin-stdlib`.
-`external/kotlinc/Android.bp:59` declares `kotlin-stdlib` as a `java_import`
-of the prebuilt jar, but the modules that depend on it are non-boot. Soong's
-`static_kotlin_stdlib` property (documented in `build/soong/java/base.go` as
-"If true, package the kotlin stdlib into the jar. Defaults to true.") controls
-whether a Kotlin module bundles its own stdlib copy; SystemUI's plugin and
-shared subprojects set it to `false` so that the stdlib becomes a
-compile-time-only dependency for them and the containing APK supplies the
-single packaged copy. The platform's production Kotlin (the permission
-subsystem, see "Where Kotlin Already Lives in AOSP" below) runs inside
-`services.jar` on SYSTEMSERVERCLASSPATH — loaded only by `system_server`, not
-on the boot classpath — with its stdlib statically linked and jarjar-renamed,
-so no `kotlin-stdlib` reference reaches the shared classloader.
+`external/kotlinc/Android.bp:59` declares `kotlin-stdlib` as a `java_import` of
+the prebuilt jar, but the modules that depend on it are non-boot.
 
-Adding the first public Kotlin signature inverts that. The framework jar that
+Soong's `static_kotlin_stdlib` property (documented in
+`build/soong/java/base.go` as "If true, package the kotlin stdlib into the jar.
+Defaults to true.") controls whether a Kotlin module bundles its own stdlib
+copy. SystemUI's plugin and shared subprojects set it to `false`. As a result,
+the stdlib becomes a compile-time-only dependency for them, and the containing
+APK supplies the single packaged copy.
+
+The platform's production Kotlin (the permission subsystem, see "Where Kotlin
+Already Lives in AOSP" below) runs inside `services.jar` on
+SYSTEMSERVERCLASSPATH. That jar is loaded only by `system_server`, not on the
+boot classpath. Its stdlib is statically linked and jarjar-renamed, so no
+`kotlin-stdlib` reference reaches the shared classloader.
+
+Adding the first public Kotlin signature inverts that. Suppose the framework jar
 exposes a `Result<T>` return type, a `suspend` parameter, or even just a public
-top-level function's synthetic `Kt` class with Kotlin metadata must link
-against `kotlin-stdlib`, and that `kotlin-stdlib` would have to ship inside
+top-level function's synthetic `Kt` class with Kotlin metadata. Then it must
+link against `kotlin-stdlib`, and that `kotlin-stdlib` would have to ship inside
 the boot classpath. Every app process forked from the zygote would resolve
-`kotlin.Result`, `kotlin.coroutines.Continuation`, and the metadata-format
-types from the boot classpath — not from the version bundled in the app's own
-APK.
+`kotlin.Result`, `kotlin.coroutines.Continuation`, and the metadata-format types
+from the boot classpath. It would not resolve them from the version bundled in
+the app's own APK.
 
-This is more disruptive than the Java analogue because of where Kotlin sits on
-the version-stability spectrum. Apps today commonly ship with different
-`kotlin-stdlib` versions — a library compiled against Kotlin 1.6 in the same
-APK as application code on Kotlin 2.0, with R8/D8 at `prebuilts/r8/r8.jar`
-minifying the union into the APK's `classes.dex`. Parent-first delegation
-means the on-device boot classpath's `kotlin-stdlib` wins regardless of which
-version the app's Gradle build selected. If the device's `kotlin-stdlib` is
-older than the app's, methods the app linked against may be absent and
-`NoSuchMethodError` surfaces at runtime; if it is newer with a tightened
-nullability or generic signature, the app's compiled call sites may fail
-bytecode verification. The app developer has no recourse from inside the APK
-because the resolution happens above their classloader.
+This is more disruptive than the Java analog because of where Kotlin sits on the
+version-stability spectrum. Apps today commonly ship with different
+`kotlin-stdlib` versions. One example is a library compiled against Kotlin 1.6
+in the same APK as application code on Kotlin 2.0. R8/D8 at
+`prebuilts/r8/r8.jar` minifies the union into the APK's `classes.dex`.
+
+Parent-first delegation means the on-device boot classpath's `kotlin-stdlib`
+wins regardless of which version the app's Gradle build selected. If the
+device's `kotlin-stdlib` is older than the app's, methods the app linked against
+may be absent and `NoSuchMethodError` surfaces at runtime. If it is newer with a
+tightened nullability or generic signature, the app's compiled call sites may
+fail bytecode verification. The app developer has no recourse from inside the
+APK because the resolution happens above their classloader.
 
 The only existing AOSP precedent for working around this kind of conflict is
-classloader namespace isolation. WebView runs in a separate zygote —
+classloader namespace isolation. WebView runs in a separate zygote,
 `WebViewZygote` at
-`frameworks/base/core/java/android/webkit/WebViewZygote.java:32` — so the
-WebView APK's transitive dependencies do not have to coexist with the main
-zygote's preloaded class set. The cost is a second zygote process, a second
-copy of every shared library both processes touch, and an explicit inter-
-zygote contract for which classes are sharable. Replicating that pattern for
-"Kotlin-using" apps would mean either a per-stdlib-version zygote (which the
-system cannot predict at fork time) or a runtime classloader rewrite that
-lets each app see its own `kotlin-stdlib` while still resolving `android.*`
-from the boot — neither of which exists today.
+`frameworks/base/core/java/android/webkit/WebViewZygote.java:32`. So the WebView
+APK's transitive dependencies do not have to coexist with the main zygote's
+preloaded class set.
+
+The cost is a second zygote process and a second copy of every shared library
+both processes touch. There is also an explicit inter- zygote contract for which
+classes are sharable. Replicating that pattern for "Kotlin-using" apps would
+mean one of two things. One is a per-stdlib-version zygote, which the system
+cannot predict at fork time. The other is a runtime classloader rewrite that
+lets each app see its own `kotlin-stdlib` while still resolving `android.*` from
+the boot. Neither exists today.
 
 Java method-signature stability vs. Kotlin metadata pinning.
 
@@ -1656,17 +1669,19 @@ flowchart TB
 The contrast in that diagram is the engineering crux. For Java, a single source
 declaration maps to a single, well-defined JVM signature, and `javac` versions
 do not change that mapping. For Kotlin, a single source declaration maps to a
-*set* of JVM artifacts — signatures, synthetic helpers, mangled names,
-`Continuation` parameters, value-class hashes, plus the `kotlin.Metadata`
-annotation blob that the Kotlin reflection and tooling layers parse to
-reconstruct source-level semantics. The shape of that set depends on the kotlinc
-version, the metadata format version, and the interop annotations the source
-uses. To freeze a Kotlin public API the way Java APIs are frozen, every piece of
-that machinery would need to be declared a binary contract — kotlinc cannot
-evolve any of them without breaking compiled callers. And, as the boot
-classpath section above showed, that contract would extend past the
-framework's own signatures into the `kotlin-stdlib` version that the device's
-shared classloader would force on every Kotlin-using app.
+*set* of JVM artifacts. These are signatures, synthetic helpers, mangled names,
+`Continuation` parameters, value-class hashes, and the `kotlin.Metadata`
+annotation blob. The Kotlin reflection and tooling layers parse that blob to
+reconstruct source-level semantics.
+
+The shape of that set depends on the kotlinc version, the metadata format
+version, and the interop annotations the source uses. To freeze a Kotlin public
+API the way Java APIs are frozen, every piece of that machinery would need to be
+declared a binary contract. kotlinc cannot evolve any of them without breaking
+compiled callers. And, as the boot classpath section above showed, that contract
+would extend past the framework's own signatures. It would reach the
+`kotlin-stdlib` version that the device's shared classloader would force on
+every Kotlin-using app.
 
 ## Toolchain Lock-In
 
@@ -1676,38 +1691,44 @@ Kotlin, their input and output formats are designed for the Java/JVM signature
 model.
 
 **Metalava** lives at `tools/metalava/`. It is itself a Kotlin tool — 784 `.kt`
-files across its sub-modules. That metalava is written in Kotlin while operating
-on a Java-shaped API is part of the constraint, not a contradiction: metalava
-can consume Kotlin source to produce signatures, and the signature format
+files across its sub-modules. That metalava is written in Kotlin while it
+operates on a Java-shaped API is part of the constraint, not a contradiction.
+Metalava can consume Kotlin source to produce signatures. The signature format
 (defined in `tools/metalava/FORMAT.md`) can already express Kotlin modifiers
 (`sealed`, `inline`, `value`, `suspend`, `data`, `operator`, `infix`), Kotlin
-properties, parameter names, and default values. But those extensions were
-designed for the androidx signature files, where the library source is Kotlin;
-the platform SDK surface does not use them. The `current.txt` for the
-`android.*` classes is marked `// - style=java` and contains no Kotlin
-construct. A Kotlin source file that used those features on the platform
-surface would be flattened to its JVM-visible projection (losing the
-source-level semantics) or rejected by API lint.
+properties, parameter names, and default values.
 
-The flattening is informative. Metalava has a unified `Item` model — a class is
-an `Item`, a method is an `Item`, a field is an `Item` — and that model is
-intentionally language-neutral. The PSI frontend (the default source model,
-which reads both Java and Kotlin source) and the Turbine frontend (an
-alternative Java-only source model) both produce Items in the same shape. When metalava emits a signature, it walks the Items and writes them in
-the format spec. A Kotlin `data class Foo(val x: Int)` is read by the PSI
-frontend, then projected to the equivalent Java declarations: a class with a
-final field-style accessor `getX`, a synthesized constructor, and the
+But those extensions were designed for the androidx signature files, where the
+library source is Kotlin; the platform SDK surface does not use them. The
+`current.txt` for the `android.*` classes is marked `// - style=java` and
+contains no Kotlin construct. A Kotlin source file that used those features on
+the platform surface would be flattened to its JVM-visible projection or
+rejected by API lint. The flattened form loses the source-level semantics.
+
+The flattening is informative. Metalava has a unified `Item` model. A class is
+an `Item`, a method is an `Item`, and a field is an `Item`. That model is
+intentionally language-neutral.
+
+The PSI frontend is the default source model, and it reads both Java and Kotlin
+source. The Turbine frontend is an alternative Java-only source model. Both
+produce Items in the same shape. When metalava emits a signature, it walks the
+Items and writes them in the format spec.
+
+A Kotlin `data class Foo(val x: Int)` is read by the PSI frontend. It is then
+projected to the equivalent Java declarations. These are a class with a final
+field-style accessor `getX`, a synthesized constructor, and the
 `equals`/`hashCode`/`toString`/`copy`/`componentN` cluster. The signature file
 shows the projection, not the source. The frozen-forever contract is the
 projection; the source is implementation detail.
 
-This also means that an internal Kotlin source change — refactoring a `data
-class` to add a new field, splitting a sealed hierarchy, renaming a top-level
-function — does not show up in `current.txt` as long as the Kotlin members are
-not part of the public surface. Metalava only includes members it sees as
-`public` or `protected` and that are not annotated `@hide`. The Kotlin files
-under `frameworks/base/core/` are all test code under `core/tests/`, which the
-API check never scans — the API-bearing `core/java/` tree is pure Java, so no
+This also means that an internal Kotlin source change does not show up in
+`current.txt`. Examples of such a change are refactoring a `data
+class` to add a new field, splitting a sealed hierarchy, and renaming a
+top-level function. This holds as long as the Kotlin
+members are not part of the public surface. Metalava only includes members it
+sees as `public` or `protected` and that are not annotated `@hide`. The Kotlin
+files under `frameworks/base/core/` are all test code under `core/tests/`, which
+the API check never scans. The API-bearing `core/java/` tree is pure Java, so no
 Kotlin declaration even reaches metalava there.
 
 The metalava module layout shows the separation of concerns:
@@ -1732,17 +1753,18 @@ round-trip, every Kotlin construct it would admit on the public surface.
 
 **Documentation generation**. The in-tree platform reference documentation
 pipeline is metalava plus Doclava (the historical Javadoc-derived tool at
-`external/doclava/`): raw sources pass through metalava into stub sources, and
-Doclava renders the stubs into API docs (the pipeline is sketched in
-`frameworks/base/api/ApiDocs.bp`). Dackka, Google's newer Kotlin-aware doc
-tool, is used for AndroidX documentation but is not checked into AOSP. Either
-way, the published documentation describes the Java-projection of Kotlin APIs
-— because that is what app developers see in their IDE when they call into the
-platform. A Kotlin `data
+`external/doclava/`). Raw sources pass through metalava into stub sources, and
+Doclava renders the stubs into API docs. The pipeline is sketched in
+`frameworks/base/api/ApiDocs.bp`. Dackka, Google's newer Kotlin-aware doc tool,
+is used for AndroidX documentation but is not checked into AOSP.
+
+Either way, the published documentation describes the Java-projection of Kotlin
+APIs. It does so because that is what app developers see in their IDE when they
+call into the platform. A Kotlin `data
 class` shows up in the docs with its synthesized `equals`, `hashCode`,
-`toString`, `copy`, and `componentN` methods listed individually, because that
-is what Java callers see. The documentation can show source-level Kotlin shape
-only when the reader is in Kotlin mode; the underlying contract is still the JVM
+`toString`, `copy`, and `componentN` methods listed individually. This is what Java callers
+see. The documentation can show source-level Kotlin shape only
+when the reader is in Kotlin mode; the underlying contract is still the JVM
 projection.
 
 **Hidden API enforcement** is the second pillar of the Java-shaped toolchain.
@@ -1762,8 +1784,8 @@ The blocklist is maintained in plain-text files under
   priority.
 
 Hidden members not named in any of these files default to the `blocked`
-category — the hard-denied case — so the lists carve out exemptions rather
-than declare the blocks.
+category, the hard-denied case. So the lists carve out exemptions rather than
+declare the blocks.
 
 A blocked Kotlin extension function appears as
 `Lcom/example/UtilsKt;->extensionMethod(Lcom/example/Receiver;)V`, not by its
@@ -1771,7 +1793,7 @@ Kotlin source signature. Each line in these files is a JVM descriptor in the
 form `Lpackage/Class;->method(Lpackage/Type;)Lpackage/Return;`. The format is
 the same form used by `dexdump`, by ART's runtime checks, and by every tool that
 introspects compiled class files. Kotlin source compiles into JVM class files,
-so Kotlin code is reachable via these descriptors — but the descriptor uses the
+so Kotlin code is reachable via these descriptors. But the descriptor uses the
 kotlinc-emitted shape, not the source-level Kotlin name.
 
 The build system merges the source text files into a single generated CSV:
@@ -1792,28 +1814,31 @@ Landroid/Manifest$permission;->ACCESSIBILITY_MOTION_EVENT_OBSERVING:Ljava/lang/S
 
 The CSV is consumed at build time by the `hiddenapi` tool
 (`art/tools/hiddenapi/hiddenapi.cc`), which stamps the flags into each dex
-file's `HiddenapiClassData` section; ART then reads those per-member dex flags
-at runtime — it never opens the CSV. When an app accesses
+file's `HiddenapiClassData` section. ART then reads those per-member dex flags
+at runtime. It never opens the CSV. When an app accesses
 `Manifest.permission.ACCESSIBILITY_MOTION_EVENT_OBSERVING`, the runtime checks
 the flags. `blocked` triggers a hard exception; the various `max-target-*` flags
 trigger softer warnings or version-gated blocks. The granularity is
-per-descriptor. A Kotlin API that emits multiple descriptors per source
-declaration (overloads from `@JvmOverloads`, the `Companion` accessor plus the
-`@JvmStatic` projection, the value-class-mangled name plus an unmangled erased
-fallback) would multiply the entries needed to express the same source-level
+per-descriptor.
+
+A Kotlin API emits multiple descriptors per source declaration. Examples are
+overloads from `@JvmOverloads`, the `Companion` accessor plus the `@JvmStatic`
+projection, and the value-class-mangled name plus an unmangled erased fallback.
+Such an API would multiply the entries needed to express the same source-level
 intent in this CSV.
 
 **jarjar rules**. Several framework modules rewrite their dependency class names
 during build to avoid colliding with app-visible classes. The rules live in
-`jarjar-rules.txt` files wired in through Soong's `jarjar_rules:` property —
-the permission subsystem applies exactly this rewrite to its statically linked
+`jarjar-rules.txt` files wired in through Soong's `jarjar_rules:` property. The
+permission subsystem applies exactly this rewrite to its statically linked
 stdlib (`frameworks/base/services/permission/jarjar-rules.txt` renames
-`kotlin.**` to `com.android.server.permission.jarjar.kotlin.**`), viable there
-because the subsystem does not rely on Kotlin reflection over the renamed
-classes. Kotlin metadata annotations
-(`kotlin.Metadata`) embed string references to the original class names — a
-jarjar rewrite that renames `kotlin.collections.MapsKt` to
-`com.android.internal.kotlin.collections.MapsKt` would mismatch with the
+`kotlin.**` to `com.android.server.permission.jarjar.kotlin.**`). The rewrite is
+viable there because the subsystem does not rely on Kotlin reflection over the
+renamed classes.
+
+Kotlin metadata annotations (`kotlin.Metadata`) embed string references to the
+original class names. A jarjar rewrite that renames `kotlin.collections.MapsKt`
+to `com.android.internal.kotlin.collections.MapsKt` would mismatch with the
 metadata blob and break Kotlin reflection at runtime. Java has no equivalent
 embedded metadata; jarjar over Java is a straightforward textual rewrite.
 
@@ -1821,34 +1846,35 @@ embedded metadata; jarjar over Java is a straightforward textual rewrite.
 hidden API toolchain. `@SystemApi` widens the surface for platform-signed
 callers; the corresponding `system-current.txt` is its frozen signature.
 `@UnsupportedAppUsage` is the annotation framework code uses to mark members
-that should land in the hidden API CSV with a specific max-target flag — a
-Kotlin equivalent of these annotations would need both a Kotlin source-level
-annotation type and a metalava rule to project that annotation into the
+that should land in the hidden API CSV with a specific max-target flag. A Kotlin
+equivalent of these annotations would need both a Kotlin source-level annotation
+type and a metalava rule. The rule would project that annotation into the
 generated CSV correctly.
 
 The annotations themselves come with subtle constraints. `@SystemApi` accepts
 client-type arguments (`MODULE_LIBRARIES`, `PRIVILEGED_APPS`, `SYSTEM_SERVER`)
 that gate which downstream consumers see the member. Metalava reads those
-arguments and routes the member into the appropriate signature surface; an
+arguments and routes the member into the appropriate signature surface. An
 incorrectly routed annotation leaks into the wrong `current.txt`, and the
-build's `m checkapi` step catches the leak. For Java source, the annotation
-processing is unambiguous: the annotation sits on the declaration, metalava
-reads the AST node, the routing happens. For Kotlin source, metalava has to
-reach the same conclusion via a Kotlin source frontend — and any future Kotlin
-annotation that has source-level shape (file-level annotations, target-class
-extensions, repeating annotations with non-trivial retention semantics) needs
-explicit support in the metalava annotation extraction logic in
-`tools/metalava/.../ExtractAnnotations.kt`.
+build's `m checkapi` step catches the leak.
+
+For Java source, the annotation processing is unambiguous: the annotation sits
+on the declaration, metalava reads the AST node, the routing happens. For Kotlin
+source, metalava has to reach the same conclusion via a Kotlin source frontend.
+Any future Kotlin annotation that has source-level shape needs explicit support
+in the metalava annotation extraction logic in
+`tools/metalava/.../ExtractAnnotations.kt`. Examples are file-level annotations,
+target-class extensions, and repeating annotations with non-trivial retention
+semantics.
 
 The `out/soong/hiddenapi/hiddenapi-flags.csv` artifact is the merge point of
-every input mentioned above: source `.txt` blocklists, `@SystemApi` membership,
+every input mentioned above. Source `.txt` blocklists, `@SystemApi` membership,
 `@UnsupportedAppUsage` annotations, and public-API stub descriptors all flow
 through Soong into a single descriptor-keyed table. The same machinery feeds
 `prebuilts/runtime/appcompat/hiddenapi-flags.csv`, the prebuilt table used by
 the host-side veridex/`appcompat.sh` APK scanner (no on-device runtime reads
-it). Any change to the descriptor
-shape, the flag vocabulary, or the way Kotlin members map to descriptors flows
-through this pipeline.
+it). Any change to the descriptor shape, the flag vocabulary, or the way Kotlin
+members map to descriptors flows through this pipeline.
 
 ## OEM, Vendor, and Mainline Constraints
 
@@ -1877,8 +1903,8 @@ surface at that SDK level. The APEX-build rules live in
 enforce that an APEX file does not depend on symbols outside its declared SDK
 floor.
 
-A Mainline module that ships in Play Store updates to a five-year-old device
-must still resolve every symbol it references against that device's frozen
+A Mainline module ships in Play Store updates to a five-year-old device. It must
+still resolve every symbol it references against that device's frozen
 module-library surface. If the framework introduced a new Kotlin-shaped public
 method between SDK N and SDK N+3, the device at SDK N would not have it. The
 Mainline module either has to declare a higher `min_sdk_version` (losing reach)
@@ -1914,34 +1940,40 @@ compiling the platform's Kotlin modules in a single pass.
 The pinned kotlinc version is the source of a coupling problem. AOSP picks a
 version, validates it across the tree, ships it. Public APIs compiled with that
 kotlinc emit the JVM signatures that version produces. Upgrading kotlinc to a
-newer version (for a Compose update, for a Kotlin language feature the platform
-wants internally, for a security fix) could change the emitted signatures of any
-public Kotlin class. The current solution to that risk is to keep public classes
-Java. The risk does not arise.
+newer version could change the emitted signatures of any public Kotlin class.
+Reasons for an upgrade include a Compose update, a Kotlin language feature the
+platform wants internally, or a security fix.
+
+The current solution to that risk is to keep public classes Java. The risk does
+not arise.
 
 For internal Kotlin (services, SystemUI, Settings, apps), the kotlinc pin is
 fine. Everything internal recompiles when kotlinc is upgraded. The frozen
-artifacts are the public stubs and the hidden API CSV; both are regenerated as
-part of the kotlinc bump and the changes are validated by the API and hidden API
-checks before the bump lands.
+artifacts are the public stubs and the hidden API CSV. Both are regenerated as
+part of the kotlinc bump. The API and hidden API checks validate the changes
+before the bump lands.
 
-A concrete way to see the cadence problem is to walk through what would happen
-if the framework added a single Kotlin public method to `android.os.SomeClass`.
+Consider what would happen if the framework added a single Kotlin public method
+to `android.os.SomeClass`. This is a concrete example of the cadence problem.
 The method ships in SDK level N, compiled by kotlinc 2.2.0. The frozen artifact
 at `prebuilts/sdk/N/public/api/android.txt` records the JVM signature kotlinc
 2.2.0 produced. Devices launch with SDK N and bake that artifact into their stub
-jar. A year later, AOSP picks up kotlinc 2.4.0 to enable a new Compose feature.
-If kotlinc 2.4.0's emission of the same source class produces a different JVM
-signature — even slightly, even for an opaque mangling reason — apps that
-compiled against the SDK N stub will fail to resolve the method on devices
-running the new framework. The framework either has to keep the old kotlinc
-emission shape pinned (defeating the purpose of the upgrade) or to ship a
-compatibility shim that forwards the new shape to the old shape (multiplying the
-surface). Java has neither problem because `javac` does not have feature
-versions that affect emitted signatures.
+jar.
+
+A year later, AOSP picks up kotlinc 2.4.0 to enable a new Compose feature.
+Suppose kotlinc 2.4.0's emission of the same source class produces a different
+JVM signature, even slightly, even for an opaque mangling reason. Then apps that
+compiled against the SDK N stub will fail to resolve the method on devices that
+run the new framework.
+
+The framework has two options. It can keep the old kotlinc emission shape
+pinned, which defeats the purpose of the upgrade. Or it can ship a compatibility
+shim that forwards the new shape to the old shape, which multiplies the surface.
+Java has neither problem because `javac` does not have feature versions that
+affect emitted signatures.
 
 The vendor-side mirror of the kotlinc problem is that vendor partitions are
-typically built once, at device launch, and not rebuilt for the life of the
+typically built once, at device launch. They are not rebuilt for the life of the
 device. A vendor service that links against a framework Kotlin API gets the
 kotlinc-N emission baked in. When the framework is updated to kotlinc N+1 via an
 OS upgrade, the vendor partition still expects kotlinc-N emission. The framework
@@ -1960,9 +1992,9 @@ to use it, the module either:
    type checking).
 3. Stays on the equivalent Java API.
 
-Option 3 is the path of least resistance, which is what the inventory above
-shows: Mainline modules are Java-shaped on their entry points, even when their
-internal implementations are Kotlin.
+Option 3 is the path of least resistance. The inventory above shows this:
+Mainline modules are Java-shaped on their entry points, even when their internal
+implementations are Kotlin.
 
 The historical context matters as well. Project Treble formalized the
 framework-vendor split, and the system-API surface was retrofitted to be a
@@ -2036,23 +2068,23 @@ internal inline fun <T> getState(action: GetStateScope.() -> T): T {
 ```
 
 This single declaration uses three Kotlin features that would each be
-problematic on a public surface: a function type with receiver
-(`GetStateScope.() -> T`) which has no Java equivalent; an `inline` function
-with a `reified`-adjacent lambda parameter that gets inlined into every caller's
-bytecode; and the experimental `contract` API from `kotlin.contracts`, which is
-itself opt-in and source-level only. The function is `internal`, the package is
-`com.android.server.permission.access` (server-only), and the only callers are
-other Kotlin classes in the same package. Every one of the three problematic
-features is fine here because the boundary is intra-Kotlin within a single
-subsystem.
+problematic on a public surface. The first is a function type with receiver
+(`GetStateScope.() -> T`), which has no Java equivalent. The second is an
+`inline` function with a `reified`-adjacent lambda parameter that gets inlined
+into every caller's bytecode. The third is the experimental `contract` API from
+`kotlin.contracts`, which is itself opt-in and source-level only. The function
+is `internal`, the package is `com.android.server.permission.access`
+(server-only), and the only callers are other Kotlin classes in the same
+package. Every one of the three problematic features is fine here because the
+boundary is intra-Kotlin within a single subsystem.
 
 Compare with how the same pattern would have to be expressed if `getState` were
 on a public Java surface. The `inline` function would have to become a regular
 method (no inlining benefit). The function type with receiver would have to
-become an explicit `GetStateScope` parameter. The `contract` would have no equivalent. The
-result would be uglier and slower than either the Kotlin original or what an
-equivalent Java design would produce — which is one of the reasons the team
-chose to keep the implementation Kotlin and the boundary Java.
+become an explicit `GetStateScope` parameter. The `contract` would have no
+equivalent. The result would be uglier and slower than either the Kotlin
+original or what an equivalent Java design would produce. This is one of the
+reasons the team chose to keep the implementation Kotlin and the boundary Java.
 
 **`AccessPolicy.kt`** —
 `frameworks/base/services/permission/java/com/android/server/permission/access/AccessPolicy.kt`.
@@ -2068,13 +2100,13 @@ private constructor(
 ```
 
 with an abstract `SchemePolicy` base class declared later in the file. The
-abstract-class-plus-subclasses pattern is purely internal:
+abstract-class-plus-subclasses pattern is purely internal.
 `AppIdPermissionPolicy`, `DevicePermissionPolicy`, `AppIdAppOpPolicy`,
 `PackageAppOpPolicy`, and `AppIdAppFunctionAccessPolicy` are all plain public
-Kotlin classes (Kotlin has no package-private visibility), but they stay
-confined to the permission subsystem by build visibility — the library's
-`Android.bp` sets `visibility: ["//frameworks/base/services"]` — and none of
-them appears in any signature file.
+Kotlin classes (Kotlin has no package-private visibility). But they stay
+confined to the permission subsystem by build visibility. The library's
+`Android.bp` sets `visibility: ["//frameworks/base/services"]`, and none of them
+appears in any signature file.
 
 **`Permission.kt`** —
 `frameworks/base/services/permission/java/com/android/server/permission/access/permission/Permission.kt`.
@@ -2100,10 +2132,10 @@ data class Permission(
 }
 ```
 
-This file shows the features that would be a public-API liability — `data class`
+This file shows the features that would be a public-API liability: `data class`
 synthesizing `equals`, `hashCode`, `toString`, `copy`, `componentN`; default
-parameter values; companion-object constants — all present here without
-consequence because nothing outside `services/permission/` references
+parameter values; companion-object constants. All are present here without
+consequence, because nothing outside `services/permission/` references
 `Permission` by type.
 
 **Permission subsystem testing**. The `services/tests/` Kotlin files round out
@@ -2112,22 +2144,24 @@ setup, the Java runner needs a static method on the test class. Kotlin test code
 therefore puts the setup inside a `companion object` and annotates it
 `@JvmStatic`. The test utility files in `services/tests/displayservicetests/`
 use `@JvmOverloads` to expose default-parameter helpers to Java test code that
-has not been migrated to Kotlin. These usages do not appear in production
-because production Kotlin in AOSP only calls into Java; only the Java test
-runner actually needs to reach into Kotlin from outside.
+has not been migrated to Kotlin.
+
+These usages do not appear in production, because production Kotlin in AOSP only
+calls into Java. Only the Java test runner actually needs to reach into Kotlin
+from outside.
 
 A few additional notes on where Kotlin appears help round out the picture:
 
 **The CTS Kotlin tests.** Roughly 1,200 Kotlin files live under `cts/`. CTS
-validates that an OEM build conforms to the Android compatibility definition;
-tests in CTS are necessarily Java-callable from the test runner, but the test
+validates that an OEM build conforms to the Android compatibility definition.
+Tests in CTS are necessarily Java-callable from the test runner, but the test
 bodies themselves can be Kotlin. CTS uses Kotlin freely because the tests do not
 ship in the OS — they run against the OS. The frozen-forever constraint does not
 apply.
 
 **Settings, Launcher3, and the app layer.** These apps ship with the system
 image but are functionally apps. They compile against the public SDK and share
-the same lifecycle constraints as third-party apps; their Kotlin use is governed
+the same lifecycle constraints as third-party apps. Their Kotlin use is governed
 by the same rules as any well-managed Kotlin codebase. The ABI between Settings
 and the framework is the public + system-API surface — Java-shaped — even though
 Settings' internal classes are heavily Kotlin.
@@ -2147,26 +2181,27 @@ subsystem testing" appears throughout `services/tests/`; see those subsections.
 
 **`frameworks/base/core/` Kotlin.** The 45 files here are all test code under
 `frameworks/base/core/tests/` — there is zero production Kotlin in the
-API-bearing `core/java/` tree. Nothing there can appear as a public-API entry
-in `current.txt`, because metalava reads the production source and the
-production source is pure Java. In principle, Kotlin source could sit in
-`core/java/` as long as it stayed out of the public API surface — the API
-check is what enforces that boundary — but today none does.
+API-bearing `core/java/` tree. Nothing there can appear as a public-API entry in
+`current.txt`, because metalava reads the production source and the production
+source is pure Java. In principle, Kotlin source could sit in `core/java/` as
+long as it stayed out of the public API surface. The API check is what enforces
+that boundary. But today none does.
 
 **The kotlin-stdlib linkage.** `kotlin-stdlib` is not on the boot classpath at
-all. The one production consumer in the platform, the permission subsystem,
+all. The one production consumer in the platform is the permission subsystem. It
 statically links the stdlib into its library
-(`frameworks/base/services/permission/Android.bp`), which lands in
-`services.jar` on SYSTEMSERVERCLASSPATH — loaded only by `system_server` — and
-jarjar-renames every stdlib class to
+(`frameworks/base/services/permission/Android.bp`). That library lands in
+`services.jar` on SYSTEMSERVERCLASSPATH, loaded only by `system_server`. The
+subsystem also jarjar-renames every stdlib class to
 `com.android.server.permission.jarjar.kotlin.**`
-(`frameworks/base/services/permission/jarjar-rules.txt`). Stdlib types like
-`kotlin.collections.MapsKt`, `kotlin.coroutines.Continuation`, and
-`kotlin.Result` are therefore not reachable from app processes. A future
-Kotlin-on-the-public-surface story would need to decide whether stdlib types
-are part of the public API (they would be, transitively, through any public
-method that returns a stdlib type) or whether the public API can use only a
-vetted subset of stdlib.
+(`frameworks/base/services/permission/jarjar-rules.txt`).
+
+Stdlib types like `kotlin.collections.MapsKt`, `kotlin.coroutines.Continuation`,
+and `kotlin.Result` are therefore not reachable from app processes. A future
+Kotlin-on-the-public-surface story would need to decide whether stdlib types are
+part of the public API. They would be, transitively, through any public method
+that returns a stdlib type. The alternative is that the public API can use only
+a vetted subset of stdlib.
 
 ## The Kotlin Features Hardest for a Public Surface
 
@@ -2175,113 +2210,124 @@ steps back and groups the same features by the kind of design pressure they put
 on a frozen public surface.
 
 **Companion objects.** As detailed in the `@JvmStatic` subsection of "The
-Java/Kotlin ABI Gap", every companion object pins a choice of whether to expose
-statics on the outer class. The choice is observable in `current.txt`; once made
-it cannot be undone. For internal code the default — Java callers go through
-`Foo.Companion` — is fine because there are no Java callers. For a public class,
-the choice is permanent and influences the IDE experience of every app
-developer. There is also a downstream subtlety: companion-object members marked
+Java/Kotlin ABI Gap", every companion object pins a choice. The choice is
+whether to expose statics on the outer class. The choice is observable in
+`current.txt`; once made it cannot be undone. For internal code the default —
+Java callers go through `Foo.Companion` — is fine because there are no Java
+callers. For a public class, the choice is permanent and influences the IDE
+experience of every app developer.
+
+There is also a downstream subtlety. Companion-object members marked
 `@JvmStatic` are duplicated in the bytecode, once on the companion class and
-once on the outer class. Any reflective lookup of the member sees both copies,
-and tooling that walks the class hierarchy (Hilt-style dependency injection,
-mock generators, runtime annotation scanners) has to reckon with the
-duplication.
+once on the outer class. Any reflective lookup of the member sees both copies.
+Tooling that walks the class hierarchy (Hilt-style dependency injection, mock
+generators, runtime annotation scanners) has to reckon with the duplication.
 
 **Default arguments.** Detailed under the `@JvmOverloads` subsection. The
-frozen-forever consequence is that reordering parameters in a public Kotlin
-function would silently break previously synthesized overloads, and adding
+frozen-forever consequence has two parts. Reordering parameters in a public
+Kotlin function would silently break previously synthesized overloads. Adding
 `@JvmOverloads` later (or removing it) changes the size of the overload set.
-There is a related concern around evolution: even within Kotlin, adding a new
+
+There is a related concern around evolution. Even within Kotlin, adding a new
 defaulted parameter at the *end* of an existing function is source-compatible
-but not always binary-compatible, because the synthetic `$default` helper takes
-a bitmask whose width is parameter-count-dependent. A function that crosses an
-internal kotlinc width threshold gets a different `$default` synthetic shape
-and requires recompilation of all callers. Java has no equivalent; you either
-add a new overload or you do not.
+but not always binary-compatible. The reason is that the synthetic `$default`
+helper takes a bitmask whose width is parameter-count-dependent. A function that
+crosses an internal kotlinc width threshold gets a different `$default`
+synthetic shape and requires recompilation of all callers. Java has no
+equivalent; you either add a new overload or you do not.
 
 **Inline classes / value classes.** Detailed under the value-class subsection.
-The mangling scheme depends on kotlinc; the inferred JVM signature of every
+The mangling scheme depends on kotlinc. The inferred JVM signature of every
 method that takes or returns a value class is a hash, not a stable string. For a
 public API, the entire mangling discipline would need to be declared a binary
-contract that kotlinc could not evolve. There is a second-order concern as well:
-value classes "unbox" at certain call boundaries and "box" at others. The exact
-unboxing rules — when a `UserId` is passed as a `long` versus when it is passed
-as an object reference — is also a kotlinc emission decision that affects the
-JVM signatures observable to Java callers.
+contract that kotlinc could not evolve.
+
+There is a second-order concern as well: value classes "unbox" at certain call
+boundaries and "box" at others. The exact unboxing rules are also a kotlinc
+emission decision that affects the JVM signatures observable to Java callers.
+These rules decide when a `UserId` is passed as a `long` versus when it is
+passed as an object reference.
 
 **Typealiases.** Kotlin typealiases are source-level only. `typealias UserId =
 Long` resolves to `Long` at the JVM level — no signature impact. They are
 entirely safe in internal Kotlin and also safe at the public boundary,
 *provided* metalava is taught to expand them before emitting `current.txt`.
 Today metalava does this for the Kotlin source it consumes. The risk is purely
-tooling. The flip side is that a typealias does not carry its own identity into
-the API: two typealiases that resolve to the same underlying type are
-indistinguishable at the JVM level, so `current.txt` can only ever show the
-resolved type, not the alias the source author used. For a public API where
-naming is part of the contract, this is a source-level pleasantry that must be
-flattened away at the API boundary.
+tooling.
+
+The flip side is that a typealias does not carry its own identity into the API.
+Two typealiases that resolve to the same underlying type are indistinguishable
+at the JVM level. So `current.txt` can only ever show the resolved type, not the
+alias the source author used. For a public API where naming is part of the
+contract, this is a source-level pleasantry that must be flattened away at the
+API boundary.
 
 **`suspend` functions.** Detailed under the suspend subsection. The
 `Continuation` parameter and the `Object` erased return type encode kotlinc's
 choice of coroutine lowering. For a frozen public API the lowering would need to
-be a contract. The lowering also entangles the public API with the coroutines
-runtime: the `Continuation` interface lives in `kotlin.coroutines`, but the
-actual coroutine machinery (dispatchers, contexts, cancellation, structured
-concurrency) lives in `kotlinx.coroutines`, a separate library that has its own
-version cadence and is not part of the boot classpath. A public `suspend` API
-would have to declare which coroutine runtime is the implicit contract, or it
-would have to ship its own runtime, or it would have to remain agnostic — all of
-which are non-trivial decisions.
+be a contract.
+
+The lowering also entangles the public API with the coroutines runtime. The
+`Continuation` interface lives in `kotlin.coroutines`. But the actual coroutine
+machinery (dispatchers, contexts, cancellation, structured concurrency) lives in
+`kotlinx.coroutines`, a separate library. That library has its own version
+cadence and is not part of the boot classpath. A public `suspend` API would have
+to either declare which coroutine runtime is the implicit contract, ship its own
+runtime, or remain agnostic. All of these are non-trivial decisions.
 
 **Nullability annotations.** Kotlin's `T?` vs `T` is reflected in JVM method
 signatures as `@Nullable`/`@NonNull` annotations (typically the JetBrains
 annotations `org.jetbrains.annotations.Nullable` and `.NotNull`). For Java
 callers, these annotations are advisory — the bytecode signature is the same
 with or without them. For Kotlin callers consuming a Java API, the annotations
-matter: they determine whether Kotlin infers `T` or `T?`. Public framework Java
-uses the hidden platform annotations
+matter: they determine whether Kotlin infers `T` or `T?`.
+
+Public framework Java uses the hidden platform annotations
 `android.annotation.NonNull`/`android.annotation.Nullable` to express the same
 intent, which metalava projects into androidx-flavored annotations in the
-generated stubs. Migrating to Kotlin source would either preserve those annotations
-explicitly or rely on kotlinc emitting JetBrains-flavor annotations — and the
-framework's nullability story would have to declare which annotation namespace
-is the contract. There is also a quieter concern around `platform types`: when
-Kotlin code consumes a Java API without nullability annotations, the parameter
-or return type becomes a "platform type" with no compile-time null check. The
-reverse — a Kotlin public API consumed from Java — drops the nullability
-information entirely unless metalava is taught to project it into Java-callable
-annotations.
+generated stubs. Migrating to Kotlin source would either preserve those
+annotations explicitly or rely on kotlinc to emit JetBrains-flavor annotations.
+Either way, the framework's nullability story would have to declare which
+annotation namespace is the contract. There is also a quieter concern around
+`platform types`. When Kotlin code consumes a Java API without nullability
+annotations, the parameter or return type becomes a "platform type" with no
+compile-time null check. The reverse — a Kotlin public API consumed from Java —
+drops the nullability information entirely unless metalava is taught to project
+it into Java-callable annotations.
 
 **Sealed classes and sealed interfaces.** A Kotlin `sealed` class restricts
 subclassing to a known set of types declared in the same file or module. The
 bytecode marks the class with a `kotlin.Metadata` flag, and Kotlin's exhaustive
 `when` checking relies on it. From Java, the sealing is invisible at the
-language level: a Java caller can extend the sealed class if the source-level
-subclass restriction is not enforced by the JVM. kotlinc only emits the JVM
-`PermittedSubclasses` attribute when targeting JVM 17+, so a public Kotlin
-sealed class's enforcement floor depends on the kotlinc target version — itself
-a freeze axis. A public Kotlin sealed class would have to commit to a specific
-sealing semantics that survives both Kotlin and Java consumers across the SDK
-lifetime.
+language level. A Java caller can extend the sealed class if the source-level
+subclass restriction is not enforced by the JVM.
+
+kotlinc only emits the JVM `PermittedSubclasses` attribute when it targets JVM
+17+. So a public Kotlin sealed class's enforcement floor depends on the kotlinc
+target version, which is itself a freeze axis. A public Kotlin sealed class
+would have to commit to a specific sealing semantics that survives both Kotlin
+and Java consumers across the SDK lifetime.
 
 **Extension functions.** A Kotlin extension function — `fun
 String.lastSegment(): String` — compiles to a static method whose first
 parameter is the receiver. The class containing the static method is named after
 the source file (`UtilsKt`, by default). For Java callers, the extension
-function is just a static method on a synthetic class; for Kotlin callers, it is
-reachable via dot-notation on the receiver. Adding a public extension function
-to the framework would put a new static method on a new (or existing) Kt class,
-and removing it would delete the method. The choices about which file the
-extension lives in and whether the receiver is the first or last parameter are
-all observable in `current.txt`.
+function is just a static method on a synthetic class. For Kotlin callers, it is
+reachable via dot-notation on the receiver.
+
+Adding a public extension function to the framework would put a new static
+method on a new (or existing) Kt class. Removing it would delete the method. The
+choices about which file the extension lives in and whether the receiver is the
+first or last parameter are all observable in `current.txt`.
 
 In every case, the feature is convenient internally and constrained externally.
-The recurring theme is the same one the ABI section described: Kotlin's
-source-level abstractions are richer than Java's, and the cost of that richness
-is paid at compile time by mapping a single declaration into a *set* of JVM
-artifacts whose exact composition depends on the compiler. A frozen-forever
-surface needs each artifact to be individually nameable, individually citable,
-and individually preserved across every future compiler upgrade.
+The recurring theme is the same one the ABI section described. Kotlin's
+source-level abstractions are richer than Java's. The cost of that richness is
+paid at compile time, when a single declaration is mapped into a *set* of JVM
+artifacts. The exact composition of that set depends on the compiler. A
+frozen-forever surface needs each artifact to be individually nameable,
+individually citable, and individually preserved across every future compiler
+upgrade.
 
 ## What Adoption Would Require
 
@@ -2296,54 +2342,60 @@ item presupposes the earlier ones.
    lowering) that Kotlin reflection and tooling consume. Today the format is
    versioned and kotlinc-coupled. The Kotlin community has discussed binary
    stability through KEEP (Kotlin Evolution and Enhancement Process) proposals.
-   For AOSP to consume Kotlin on the public surface, the metadata format would
-   have to be a declared, externally-versioned binary contract, with explicit
-   backward and forward compatibility guarantees and a deprecation policy that
-   matches AOSP's ten-year horizon. The current per-`kotlin.Metadata`-version
-   compatibility behaviour is "kotlinc N can read metadata from kotlinc N-K for
-   some bounded K" — bounded enough for Gradle-driven Kotlin projects that
-   recompile frequently, but not bounded for ten years.
 
-2. **A Kotlin-aware metalava pipeline for the platform surface.** The
-   signature format defined in `tools/metalava/FORMAT.md` already has syntax
-   for Kotlin modifiers (`sealed`, `inline`, `value`, `suspend`, `data`,
-   `operator`, `infix`), Kotlin properties, and default arguments — built for
-   the androidx signature files, whose sources are Kotlin — and the text model
-   in `tools/metalava/metalava-model-text/` parses those tokens today. What
-   does not exist is their adoption on the platform SDK surface: the platform
-   `current.txt` is `style=java`, and each Kotlin construct admitted there is
-   an API design problem in itself — the syntax must round-trip through the
-   text model, survive future kotlinc evolution, and cover the gaps the format
-   still has (`companion object` shape, nullability as a first-class
-   contract). The comparison logic in
-   `tools/metalava/metalava/src/main/.../ComparisonVisitor.kt` would need
-   rules for which Kotlin-specific changes constitute breaking deltas. Today
-   metalava reads Kotlin source via its PSI model
-   (`tools/metalava/metalava-model-psi/`) but emits a Java-projection
-   signature for the platform.
+    For AOSP to consume Kotlin on the public surface, the metadata format would
+    have to be a declared, externally-versioned binary contract. That contract
+    would need explicit backward and forward compatibility guarantees. It would
+    also need a deprecation policy that matches AOSP's ten-year horizon. The
+    current per-`kotlin.Metadata`-version compatibility behavior is "kotlinc N
+    can read metadata from kotlinc N-K for some bounded K". That bound is enough
+    for Gradle-driven Kotlin projects that recompile frequently, but not for ten
+    years.
+
+2. **A Kotlin-aware metalava pipeline for the platform surface.** The signature
+   format defined in `tools/metalava/FORMAT.md` already has syntax for Kotlin
+   modifiers (`sealed`, `inline`, `value`, `suspend`, `data`, `operator`,
+   `infix`), Kotlin properties, and default arguments. The syntax was built for
+   the androidx signature files, whose sources are Kotlin. The text model in
+   `tools/metalava/metalava-model-text/` parses those tokens today. What does
+   not exist is their adoption on the platform SDK surface.
+
+    The platform `current.txt` is `style=java`. Each Kotlin construct admitted
+    there is an API design problem in itself. The syntax must round-trip through
+    the text model and survive future kotlinc evolution. It must also cover the
+    gaps the format still has (`companion object` shape, nullability as a
+    first-class contract). The comparison logic in
+    `tools/metalava/metalava/src/main/.../ComparisonVisitor.kt` would need rules
+    for which Kotlin-specific changes constitute breaking deltas. Today metalava
+    reads Kotlin source via its PSI model (`tools/metalava/metalava-model-psi/`)
+    but emits a Java-projection signature for the platform.
 
 3. **Hidden API enforcement that tracks Kotlin descriptors.** The CSV at
    `out/soong/hiddenapi/hiddenapi-flags.csv` uses raw JVM descriptors. Kotlin
-   classes already appear in it via their kotlinc-emitted shapes, but the
-   per-source-feature multiplicity (one `@JvmOverloads` declaration producing N
-   descriptor rows) makes per-source policy hard to express. A descriptor-level
-   CSV would need a higher-level companion that maps "source declaration X is in
-   the public API" to "JVM descriptors {d1, d2, ..., dN} must all be flagged
-   consistently". Without that mapping, an author updating a Kotlin public API
-   has no easy way to confirm that all the resulting descriptors landed in the
-   right hidden API category.
+   classes already appear in it via their kotlinc-emitted shapes. But the
+   per-source-feature multiplicity (one `@JvmOverloads` declaration produces N
+   descriptor rows) makes per-source policy hard to express.
+
+    A descriptor-level CSV would need a higher-level companion. That companion
+    would map "source declaration X is in the public API" to "JVM descriptors
+    {d1, d2, ..., dN} must all be flagged consistently". Without it, an author
+    who updates a Kotlin public API cannot easily confirm that all the resulting
+    descriptors landed in the right hidden API category.
 
 4. **Updated documentation tooling.** Dackka (Google's Kotlin-aware doc tool,
-   used for AndroidX and not checked into AOSP) understands Kotlin source
-   today, but the platform reference docs would need a shared model where the Kotlin
-   source-level view and the Java JVM-projection view are both first-class. App
-   developers using Java tooling against a Kotlin platform API must see a
-   coherent Javadoc; app developers using Kotlin tooling must see source-level
-   Kotlin signatures. The current model assumes the underlying API is
-   Java-shaped. A genuinely bilingual API surface implies bilingual
-   documentation, with the toolchain understanding that, for instance, a Kotlin
-   `data class` should be rendered with its source-level fields when viewed from
-   Kotlin and with its synthesized `componentN` methods when viewed from Java.
+   used for AndroidX and not checked into AOSP) understands Kotlin source today.
+   But the platform reference docs would need a shared model. In that model, the
+   Kotlin source-level view and the Java JVM-projection view are both
+   first-class.
+
+    App developers using Java tooling against a Kotlin platform API must see a
+    coherent Javadoc; app developers using Kotlin tooling must see source-level
+    Kotlin signatures. The current model assumes the underlying API is
+    Java-shaped. A genuinely bilingual API surface implies bilingual
+    documentation. The toolchain would have to understand this. For instance, a
+    Kotlin `data class` should be rendered with its source-level fields when
+    viewed from Kotlin. It should be rendered with its synthesized `componentN`
+    methods when viewed from Java.
 
 5. **An API Council ruling on naming convention rules.** The lint rules in
    `tools/metalava/API-LINT.md` are calibrated to Java naming conventions
@@ -2351,8 +2403,8 @@ item presupposes the earlier ones.
    callback registration patterns). Kotlin idioms — property syntax, operator
    overloads, infix functions, extension functions — would need explicit
    acceptance or rejection rules, ratified by the API Council as policy. The
-   rules also have to compose with the Java-callable projection: a Kotlin `var`
-   on a public class compiles to `getX`/`setX` Java accessors, but the rule body
+   rules also have to compose with the Java-callable projection. A Kotlin `var`
+   on a public class compiles to `getX`/`setX` Java accessors. But the rule body
    would need to specify whether the Kotlin source uses `var`, the Java accessor
    names, or both as the canonical contract.
 
@@ -2361,32 +2413,35 @@ item presupposes the earlier ones.
    class. This is the strongest constraint because it ties two independent
    organizations' release cycles together. AOSP cuts a major SDK roughly
    annually; the kotlinc release train is faster and not aligned to SDK
-   boundaries. The practical mitigation is to declare a "frozen kotlinc version
-   per public API surface" — a Kotlin equivalent of `LOCAL_SDK_VERSION` — so
-   that every shipped SDK is bound to the kotlinc that produced its signatures.
-   Implementing that requires Soong machinery to track which kotlinc compiled
-   which `current.txt` and to enforce the binding for downstream Mainline
-   modules.
+   boundaries.
+
+    The practical mitigation is to declare a "frozen kotlinc version per public
+    API surface", a Kotlin equivalent of `LOCAL_SDK_VERSION`. Then every shipped
+    SDK is bound to the kotlinc that produced its signatures. Implementing that
+    requires Soong machinery to track which kotlinc compiled which `current.txt`
+    and to enforce the binding for downstream Mainline modules.
 
 7. **Tooling for migration and audit.** Even if all of the above were in place,
    the AOSP project would face a one-time migration cost. Each existing Java
-   public-API class proposed for Kotlinization would need a side-by-side audit:
-   confirm that the source declarations, when run through the new Kotlin-aware
-   metalava, produce the same `current.txt` entries as the Java source did.
-   Anywhere the entries differ is a binary break. The audit tooling does not
-   exist today.
+   public-API class proposed for Kotlinization would need a side-by-side audit.
+   The audit would confirm that the source declarations, when run through the
+   new Kotlin-aware metalava, produce the same `current.txt` entries as the Java
+   source did. Anywhere the entries differ is a binary break. The audit tooling
+   does not exist today.
 
 8. **A coroutines-runtime decision for `suspend` APIs.** As discussed in "The
    Kotlin Features Hardest for a Public Surface", a public `suspend` API ties
-   consumers to a coroutines runtime. AOSP would have to either (a) declare
-   `kotlinx.coroutines` as a frozen platform library, with all the binary
-   stability that entails, or (b) ship its own minimal coroutine runtime, or (c)
-   avoid `suspend` entirely on the public surface. Each option is a multi-year
-   commitment.
+   consumers to a coroutines runtime. AOSP would have to choose one of three
+   options. Option (a) is to declare `kotlinx.coroutines` as a frozen platform
+   library, with all the binary stability that entails. Option (b) is to ship
+   its own minimal coroutine runtime. Option (c) is to avoid `suspend` entirely
+   on the public surface.
+
+    Each option is a multi-year commitment.
 
 This list is a snapshot of the constraints visible from inside the AOSP tree
 today. It is not a prediction of how (or whether) these constraints will be
-addressed, and it is not advocacy for any of the items being undertaken.
+addressed. It is not advocacy for any of the items being undertaken.
 
 ## Try It
 
@@ -2397,7 +2452,7 @@ AOSP checkout. Each uses commands that work from the AOSP root.
 
 The asymmetry table at the top of the appendix is generated by counting `.kt`
 files in selected paths. Run the same `find` commands to confirm the numbers in
-your local tree, then compare against the inventory table in this appendix.
+your local tree. Then compare them against the inventory table in this appendix.
 
 ```bash
 cd $AOSP
@@ -2412,8 +2467,8 @@ echo "frameworks/base total Kotlin:    $(find frameworks/base -name '*.kt' | wc 
 echo "frameworks/base total Java:      $(find frameworks/base -name '*.java' | wc -l)"
 ```
 
-**Expected output**: numbers in the same orders of magnitude as the table, with
-`frameworks/base/core` and `frameworks/base/services` both small relative to the
+**Expected output**: numbers in the same orders of magnitude as the table. Both
+`frameworks/base/core` and `frameworks/base/services` are small relative to the
 Java total. The exact counts will drift as the tree evolves.
 
 ### Exercise C-2: Inspect a public API signature file
@@ -2439,11 +2494,11 @@ head -3 frameworks/base/core/java/android/app/Activity.java
 
 **What to look for**: the signature file opens with `// Signature format: 6.0`,
 then a `// - style=java` marker line, then `package android {`. Every class is
-described in Java-flavor syntax. The `Activity.java` source file should exist
-at `frameworks/base/core/java/android/app/Activity.java` and be Java, not
-Kotlin. (Note that `android.Manifest`, whose entry also appears near the top of
-`current.txt`, has no checked-in source file at all — aapt2 generates it at
-build time from the permission declarations in
+described in Java-flavor syntax. The `Activity.java` source file should exist at
+`frameworks/base/core/java/android/app/Activity.java` and be Java, not Kotlin.
+(Note that `android.Manifest`, whose entry also appears near the top of
+`current.txt`, has no checked-in source file at all. aapt2 generates it at build
+time from the permission declarations in
 `frameworks/base/core/res/AndroidManifest.xml`.)
 
 ### Exercise C-3: Trace a Kotlin-implementing service across binder
@@ -2471,7 +2526,7 @@ find frameworks/base -name 'IPermissionManager.aidl'
 ```
 
 **What to look for**: `AccessCheckingService` extends the Java `SystemService`
-base class, registers Java interfaces, and the corresponding binder surface is
+base class and registers Java interfaces. The corresponding binder surface is
 defined in an `.aidl` file that compiles to Java stubs. The Kotlin
 implementation never crosses the process boundary as Kotlin.
 
@@ -2497,8 +2552,8 @@ grep -rln '@JvmOverloads' frameworks/base/services/ | grep -v '/tests/' | head -
 
 **What to look for**: every hit in the first two searches is inside a `tests/`
 subdirectory. The third and fourth searches return no results. The takeaway:
-AOSP service Kotlin is one-direction Kotlin-to-Java; it does not need to project
-itself back into Java-callable shape, which is why `@JvmStatic` and
+AOSP service Kotlin is one-direction Kotlin-to-Java. It does not need to project
+itself back into Java-callable shape. This is why `@JvmStatic` and
 `@JvmOverloads` are absent from production. A public API would need these
 annotations everywhere, and would have to commit to their emission shape
 forever.
@@ -2535,12 +2590,12 @@ find tools/metalava -name '*.kt' | wc -l
 ```
 
 **What to look for**: the tool is itself Kotlin (the `.kt` count should be
-roughly 800), and `FORMAT.md` contains "Support Kotlin Modifiers" and "Support
-Default Values" sections — Kotlin-specific syntax built for the androidx
-signature files — yet the platform's `current.txt` is `style=java` and uses
-none of it. The compatibility policy is what gates whether a change to
-`current.txt` is allowed; it does not have a separate Kotlin track. The module list
-(`metalava-*` directories) shows the language frontends and the text model.
+roughly 800). `FORMAT.md` contains "Support Kotlin Modifiers" and "Support
+Default Values" sections, which are Kotlin-specific syntax built for the
+androidx signature files. Yet the platform's `current.txt` is `style=java` and
+uses none of it. The compatibility policy is what gates whether a change to
+`current.txt` is allowed. It does not have a separate Kotlin track. The module
+list (`metalava-*` directories) shows the language frontends and the text model.
 Running metalava as a tool requires a built binary and is not part of this
 exercise.
 
@@ -2548,7 +2603,7 @@ exercise.
 
 The asymmetry between Kotlin's role inside AOSP and its absence from the public
 API surface is not a stylistic preference. It is a consequence of four
-constraints that all bear on the same artifact, the per-SDK frozen signature
+constraints. They all bear on the same artifact, the per-SDK frozen signature
 snapshot in `prebuilts/sdk/<N>/public/api/android.txt` and its live source
 `frameworks/base/core/api/current.txt`.
 
@@ -2561,11 +2616,12 @@ compiler-emitted signatures is absorbed by recompilation in the next build.
 
 The second constraint is the binary mapping. Java source declarations map to JVM
 signatures one-to-one. Kotlin source declarations map to a set of JVM artifacts
-— overloads, mangled names, companion accessors, synthetic helpers,
-`Continuation` parameters, metadata blobs — whose composition depends on the
-compiler. Freezing the set requires freezing each piece independently. The
-"Java/Kotlin ABI Gap" section walked through eight feature categories where this
-multiplicity manifests; each category is independently a freezing problem.
+whose composition depends on the compiler. These artifacts are overloads,
+mangled names, companion accessors, synthetic helpers, `Continuation`
+parameters, and metadata blobs. Freezing the set requires freezing each piece
+independently. The "Java/Kotlin ABI Gap" section walked through eight feature
+categories where this multiplicity manifests; each category is independently a
+freezing problem.
 
 The third constraint is the toolchain. Metalava, hidden API enforcement,
 Doclava, jarjar, and the `@SystemApi`/`@UnsupportedAppUsage` annotation
@@ -2576,14 +2632,15 @@ public API would require parallel tooling that admits Kotlin constructs as
 first-class. The toolchain itself is not in opposition to Kotlin; it simply does
 not yet model the Kotlin source layer.
 
-The fourth constraint is runtime sharing. Framework jars load into a single
-boot classpath shared with every app process forked from the zygote, and
-parent-first classloader delegation means any type in BOOTCLASSPATH wins over
-the same name in the app's APK. Putting Kotlin signatures on the public API
-forces `kotlin-stdlib` into the boot classpath, which then overrides whatever
-`kotlin-stdlib` version each app's Gradle build bundled. The OEM cannot fix
-this from inside the device's image and the app developer cannot fix it from
-inside the APK; the only escape is WebView-style per-process zygote
+The fourth constraint is runtime sharing. Framework jars load into a single boot
+classpath shared with every app process forked from the zygote. Parent-first
+classloader delegation means any type in BOOTCLASSPATH wins over the same name
+in the app's APK. Putting Kotlin signatures on the public API forces
+`kotlin-stdlib` into the boot classpath, which then overrides whatever
+`kotlin-stdlib` version each app's Gradle build bundled.
+
+The OEM cannot fix this from inside the device's image. The app developer cannot
+fix it from inside the APK. The only escape is WebView-style per-process zygote
 isolation, which AOSP only pays the cost of in one well-justified case today.
 
 The result is what the inventory shows. Kotlin lives in the app and UI layer,
@@ -2643,15 +2700,19 @@ full.
 <!-- chapter:D-appendix-android-17-updates -->
 # Appendix D: Android 17 Updates
 
-This appendix summarizes the important platform changes between Android 16 (the `android-16.0.0_r4` tag) and Android 17 (the `android17-release` branch). It is derived from a per-repository diff of the two releases and verified against the Android 17 source tree. The focus is new projects, new code modules, and architecture changes; `external/*` dependencies are covered only by how they are integrated, and routine bugfixes and version bumps are omitted. Where a change is still flag-gated or scaffolded-but-not-default in 17, that status is called out.
+This appendix summarizes the important platform changes between Android 16 (the `android-16.0.0_r4` tag) and Android 17 (the `android17-release` branch). It is derived from a per-repository diff of the two releases and verified against the Android 17 source tree. The focus is new projects, new code modules, and architecture changes. The appendix covers `external/*` dependencies only by how they are integrated. It omits routine bugfixes and version bumps. Where a change is still flag-gated or scaffolded-but-not-default in 17, that status is called out.
 
 ## D.1 How to read this appendix
 
-The appendix is organized by book Part (subsystem), in chapter order. Within each Part, changes are grouped by category: **New projects** (new top-level repositories), **New modules** (new code modules, APEXes, or HAL packages inside existing repos), **Architecture changes** (structural reworks), and **Notable integrations** (how new or external pieces are wired into the platform). Every claim cites real AOSP paths, and a closing **Key Source Files Reference** table (D.16) collects the standout files per Part.
+The appendix is organized by book Part (subsystem), in chapter order. Within each Part, changes are grouped by category.
+
+**New projects** are new top-level repositories. **New modules** are new code modules, APEXes, or HAL packages inside existing repos. **Architecture changes** are structural reworks. **Notable integrations** show how new or external pieces are wired into the platform.
+
+Every claim cites real AOSP paths, and a closing **Key Source Files Reference** table (D.16) collects the standout files per Part.
 
 ## D.2 Kernel & Boot
 
-Android 17 carves USB accessory handling out into its own top-level repo, moves snapshot-based OTA toward a userspace block-device (UBLK) backend, and ships the first `android17-6.18` GKI configs. The init first-stage mount path also finishes splitting Android-specific logic from Microdroid.
+Android 17 carves USB accessory handling out into its own top-level repo. It moves snapshot-based OTA toward a userspace block-device (UBLK) backend. It also ships the first `android17-6.18` GKI configs. The init first-stage mount path also finishes splitting Android-specific logic from Microdroid.
 
 ### New projects
 
@@ -2660,7 +2721,7 @@ Android 17 carves USB accessory handling out into its own top-level repo, moves 
 - An AIDL contract `android.hardware.usb.aoa` (`system/usb/aoa/aidl/android/hardware/usb/aoa/IUsbAoa.aidl`) exposing `openAccessory()`, `openAccessoryForInputStream/OutputStream()`, `getMaxPacketSize()`, `getAccessoryStrings()`, `getInitializationStatus()`, and `isStartRequested()`. Clients such as `UsbDeviceManager` call `getInitializationStatus()` to confirm the userspace AOA path is healthy.
 - The daemon itself (`system/usb/aoa/daemon/main.cpp`), registering the `aoad` Binder service, plus `UsbAoaService.cpp`, `VendorControlRequestMonitor.cpp`, and `AccessoryLegacyBridgeThread.cpp` (built into `libaoad_core` per `system/usb/aoa/daemon/Android.bp`).
 
-The architectural move is from a kernel gadget function to a **FunctionFS (FFS) + userspace** model: `VendorControlRequestMonitor` (`system/usb/aoa/daemon/VendorControlRequestMonitor.h`) opens the FFS control endpoint `ep0`, epoll-waits, and decodes the AOA vendor control requests (`ACCESSORY_GET_PROTOCOL=51`, `..._SEND_STRING=52`, `..._START=53`, HID requests `54..57`, `..._SET_AUDIO_MODE=58`) entirely in userspace. HID-over-AOA is bridged to `/dev/uhid`. The daemon is gated off by default and only starts when opted in.
+The architectural move is from a kernel gadget function to a **FunctionFS (FFS) + userspace** model. `VendorControlRequestMonitor` (`system/usb/aoa/daemon/VendorControlRequestMonitor.h`) opens the FFS control endpoint `ep0` and epoll-waits. It decodes the AOA vendor control requests (`ACCESSORY_GET_PROTOCOL=51`, `..._SEND_STRING=52`, `..._START=53`, HID requests `54..57`, `..._SET_AUDIO_MODE=58`) entirely in userspace. HID-over-AOA is bridged to `/dev/uhid`. The daemon is gated off by default and only starts when opted in.
 
 Userspace AOA daemon startup gate
 
@@ -2683,25 +2744,25 @@ flowchart TD
 
 **update_engine COW/compression updates.** Android 17 adds **zstd compression for REPLACE ops** (plus a `zstd_extent_writer` unittest) and a flag to disable REPLACE compression. It also **removes squashfs support** and retrofit-dynamic-partition logic, drops `SnapshotMergeStats`, and stops saving manifest bytes / frees manifest partition memory after use to cut peak RAM. Large patches are now written to a file and applied via fd rather than held in memory.
 
-**First-stage init: Microdroid vs Android separation.** The first-stage mount logic was refactored so Android-specific mounting no longer compiles into Microdroid (and vice versa): `system/core/init/first_stage_mount_android.cpp/.h` and `first_stage_mount_microdroid.cpp` now sit beside the shared `first_stage_mount.cpp`, the `FirstStageMount` virtual base class was removed, and second-stage init no longer pulls in first-stage mount/main.
+**First-stage init: Microdroid vs Android separation.** The first-stage mount logic was refactored so Android-specific mounting no longer compiles into Microdroid (and vice versa). `system/core/init/first_stage_mount_android.cpp/.h` and `first_stage_mount_microdroid.cpp` now sit beside the shared `first_stage_mount.cpp`. The `FirstStageMount` virtual base class was removed. Second-stage init no longer pulls in first-stage mount/main.
 
-**Other init/boot changes.** A reworked **boot monitor** lands, though enabling it by default was reverted again this cycle. Boot analysis gains `ro.boottime.event.*` properties and richer bootchart capture (early bootcharting via kernel command line, full-command-line capture, CPU model detection from `/proc/cpuinfo`). Init now passes the shutdown reason to the kernel on reboot, adds reboot reasons for long power-key presses, mounts `securityfs`, and removes the interactive FDR prompt when the TPM has been cleared. `ueventd` gains wildcard matching in sysfs attribute specs and can pull firmware from bootstrap APEXes before the full APEX set is ready.
+**Other init/boot changes.** A reworked **boot monitor** lands, though enabling it by default was reverted again this cycle. Boot analysis gains `ro.boottime.event.*` properties and richer bootchart capture (early bootcharting via kernel command line, full-command-line capture, CPU model detection from `/proc/cpuinfo`). Init now passes the shutdown reason to the kernel on reboot and adds reboot reasons for long power-key presses. It also mounts `securityfs` and removes the interactive FDR prompt when the TPM has been cleared. `ueventd` gains wildcard matching in sysfs attribute specs and can pull firmware from bootstrap APEXes before the full APEX set is ready.
 
-**ION allocator removed (dma-buf heaps only).** `BufferAllocator` (`system/memory/libdmabufheap/BufferAllocator.cpp`) now allocates only from `/dev/dma_heap/*`; the legacy ION path (`system/memory/libion`) is reduced to deprecated no-op shims, so DMA-buf heaps are the single graphics/media buffer allocator.
+**ION allocator removed (dma-buf heaps only).** `BufferAllocator` (`system/memory/libdmabufheap/BufferAllocator.cpp`) now allocates only from `/dev/dma_heap/*`. The legacy ION path (`system/memory/libion`) is reduced to deprecated no-op shims. As a result, DMA-buf heaps are the single graphics/media buffer allocator.
 
-**Read-only AOSP source tree at build time.** Soong now mounts the checkout read-only during a sandboxed build: `SandboxConfig.SrcDirMountFlag()` returns `-R` (`build/soong/ui/build/sandbox_config.go`) so build actions cannot write back into the tree and all generated output is confined to `out/`.
+**Read-only AOSP source tree at build time.** Soong now mounts the checkout read-only during a sandboxed build. `SandboxConfig.SrcDirMountFlag()` returns `-R` (`build/soong/ui/build/sandbox_config.go`). As a result, build actions cannot write back into the tree, and all generated output is confined to `out/`.
 
-**Memory Limiter system service.** A new `MemoryLimiter` service (`frameworks/base/services/core/java/com/android/server/am/MemoryLimiter.java`, JNI `com_android_server_am_MemoryLimiter.cpp`, flag `memory_limiter_enable`) applies cgroup-v2 per-process limits to app UIDs, soft-throttling at `memory.high` and killing a process whose combined anon+swap stays over budget; it complements the system-wide `mmd` swap daemon and the vendor-process-scoped `pmgd` (D.7).
+**Memory Limiter system service.** A new `MemoryLimiter` service (`frameworks/base/services/core/java/com/android/server/am/MemoryLimiter.java`, JNI `com_android_server_am_MemoryLimiter.cpp`, flag `memory_limiter_enable`) applies cgroup-v2 per-process limits to app UIDs. It soft-throttles at `memory.high` and kills a process whose combined anon+swap stays over budget. It complements the system-wide `mmd` swap daemon and the vendor-process-scoped `pmgd` (D.7).
 
 ### Notable integrations
 
-- **GKI kernel: first `android17-6.18` configs.** `kernel/configs` adds the `android17-6.18` branch targeting the Linux 6.18 GKI kernel, while pruning Android R configs and refreshing OGKI approved-build lists and `kernel-lifetimes.xml`.
-- **Shared OTA headers across init/fastboot/recovery.** `libupdate_engine_headers` is exported so `init`, `fastboot`, and recovery's `libinstall` can find `file_descriptor.h` (`system/core` and `bootable/recovery`), tightening the coupling between the OTA engine and the boot/recovery tooling that feeds it.
+- **GKI kernel: first `android17-6.18` configs.** `kernel/configs` adds the `android17-6.18` branch, which targets the Linux 6.18 GKI kernel. It also prunes Android R configs and refreshes OGKI approved-build lists and `kernel-lifetimes.xml`.
+- **Shared OTA headers across init/fastboot/recovery.** `libupdate_engine_headers` is exported so `init`, `fastboot`, and recovery's `libinstall` can find `file_descriptor.h` (`system/core` and `bootable/recovery`). This tightens the coupling between the OTA engine and the boot/recovery tooling that feeds it.
 - **Recovery (`bootable/recovery`).** Picks up F2FS `packed_ssa` support, a `binder=c` bit in `MISC_KCMDLINE`, and a configurable `recovery_ui` graphics timeout.
 
 ## D.3 Native Foundation
 
-The native layer of Android 17 is dominated by two stories: a much larger AIDL HAL surface (820 commits in `hardware/interfaces`, a new framework compatibility matrix, several new device contracts), and a structural maturation of berberis, the dynamic binary translator (439 commits), which grows beyond riscv64-on-x86_64 into a multi-guest engine with arm64 scaffolded in. bionic and libcore round it out with page-size/memory-tagging hardening and an OpenJDK uprev aimed at jdk-25.
+The native layer of Android 17 is dominated by two stories. The first is a much larger AIDL HAL surface (820 commits in `hardware/interfaces`, a new framework compatibility matrix, several new device contracts). The second is a structural maturation of berberis, the dynamic binary translator (439 commits). It grows beyond riscv64-on-x86_64 into a multi-guest engine with arm64 scaffolded in. bionic and libcore round it out with page-size/memory-tagging hardening and an OpenJDK uprev aimed at jdk-25.
 
 ### New projects
 
@@ -2712,13 +2773,13 @@ No entirely new repositories enter this Part. The notable additions are new *HAL
 New AIDL HAL contracts shipped in `hardware/interfaces` and declared in the Android 17 framework compatibility matrix `compatibility_matrices/compatibility_matrix.202704.xml` (FCM `level="202704"`):
 
 - **Motion Context HAL** — `hardware/interfaces/motioncontext/aidl/android/hardware/motioncontext/` defines `IMotionContext`, `IMotionContextClient`, `IMotionContextCallback`, plus `MotionState`, `MotionEvent`, `MotionSubscription`, `EventDeliveryReason`: a subscription-based stream of device motion state to framework clients.
-- **NPU HAL** — `hardware/interfaces/npu/aidl/android/hardware/npu/` adds `IScheduling` and `ISchedulingCallback` with `SchedulingConfig`, `WorkInfo`, `StartReason`, `EndReason`, `Uuid`. Per `npu/README.md`, the first revision lets Android inform a neural-processing unit of application priorities (0-1000, 0 = most important) and receive callbacks when NPU work starts/ends.
-- **`libwrapfd` (`system/memory/libwrapfd`)** -- a new Rust/LLNDK library (`rust/lib.rs`, `cc_library_shared libwrapfd`) over a new `/dev/wrapfd` kernel driver. It wraps an existing fd and controls how it may be `mmap`ed: `wrapfd_driver_wrap()` pins a `PROT_READ`/`PROT_WRITE`/`PROT_NONE` mask, with ioctls to query state and acquire/release ownership. It is `apex_available` to `com.android.npumanager`, backing NPU-buffer protection.
+- **NPU HAL** — `hardware/interfaces/npu/aidl/android/hardware/npu/` adds `IScheduling` and `ISchedulingCallback` with `SchedulingConfig`, `WorkInfo`, `StartReason`, `EndReason`, `Uuid`. Per `npu/README.md`, the first revision lets Android inform a neural-processing unit of application priorities (0-1000, 0 = most important). It also lets Android receive callbacks when NPU work starts/ends.
+- **`libwrapfd` (`system/memory/libwrapfd`)** -- a new Rust/LLNDK library (`rust/lib.rs`, `cc_library_shared libwrapfd`) over a new `/dev/wrapfd` kernel driver. It wraps an existing fd and controls how it may be `mmap`ed. `wrapfd_driver_wrap()` pins a `PROT_READ`/`PROT_WRITE`/`PROT_NONE` mask. Ioctls exist to query state and acquire/release ownership. It is `apex_available` to `com.android.npumanager`, backing NPU-buffer protection.
 - **Secure Execution Environment (SEE) family** — a large new `hardware/interfaces/security/see/` tree, all declared in the 202704 matrix:
   - `security/see/hwcrypto/aidl/.../hwcrypto/` — `IHwCryptoOperations`, `IOpaqueKey`, `ICryptoOperationContext` (+`CryptoOperation`, `CryptoOperationSet`, `KeyPolicy`, `MemoryBufferParameter`): a TEE-side crypto operation surface using opaque key handles.
   - `security/see/storage/aidl/.../storage/` — `ISecureStorage`, `IStorageSession`, `IDir`, `IFile` (+`CreationMode`, `Integrity`, `Availability`, `Filesystem`, `OpenOptions`): a tamper-evident/rollback-protected secure filesystem contract.
   - `security/see/devicestate/.../IDeviceState`, `security/see/authmgr/`, and `security/see/ext/.../ITrustedHalExt.aidl` — an extension point letting a trusted HAL be reached from the SEE.
-- **Existing HAL version bumps**: health AIDL V5 (battery manufacturer/model/voltage-min-design), Weaver V3, Bluetooth Audio V6 (LE Audio peripheral/broadcast-sink, LE Audio over HDT phy, ISO parameter update), Channel Sounding additions (`UpdateChannelSoundingConfig`, `GetVelocity`), wifi Proximity Ranging, USB `PortPartnerStatus`/`Bc12Type`, and a new "timestamp HAL".
+- **Existing HAL version bumps**: health AIDL V5 (battery manufacturer/model/voltage-min-design) and Weaver V3. Bluetooth Audio V6 adds LE Audio peripheral/broadcast-sink, LE Audio over HDT phy, and ISO parameter update. Other changes are Channel Sounding additions (`UpdateChannelSoundingConfig`, `GetVelocity`), wifi Proximity Ranging, USB `PortPartnerStatus`/`Bc12Type`, and a new "timestamp HAL".
 
 berberis adds a `cpu_emulation/` umbrella module (below) and splits the riscv64 translator into its own libraries (`translator_riscv64`, `runtime_library`).
 
@@ -2728,7 +2789,7 @@ berberis adds a `cpu_emulation/` umbrella module (below) and splits the riscv64 
 
 - `cpu_emulation/interpreter/` — first-tier interpreter (riscv64).
 - `cpu_emulation/lite_translator/` — fast, low-optimization JIT (`lite_translator/riscv64_to_x86_64`).
-- `cpu_emulation/heavy_optimizer/` — optimizing JIT (`heavy_optimizer/riscv64`), the focus of the 17 cycle: global guest context optimization is implemented and enabled by default, plus `LoopGuestContextOptimizer` for irreducible loops and register-lifetime work in `LocalGuestContextOptimizer`.
+- `cpu_emulation/heavy_optimizer/` — optimizing JIT (`heavy_optimizer/riscv64`), the focus of the 17 cycle. Global guest context optimization is implemented and enabled by default. The tier also adds `LoopGuestContextOptimizer` for irreducible loops and register-lifetime work in `LocalGuestContextOptimizer`.
 - shared support: `cpu_emulation/{decoder,assembler,backend/x86_64,code_gen_lib,intrinsics}/`.
 
 The arm64 guest is now scaffolded across the tree. New arch directories appear under `runtime/arm64/` and `runtime/arm64_to_x86_64/`, `guest_loader/arm64/`, `guest_state/arm64/` (with `get_cpu_state.cc`), `guest_abi/arm64/`, `guest_os_primitives/arm64/`, `kernel_api/arm64/`, plus `cpu_emulation/insn_tests/arm64/` and intrinsic-mapping dirs (`intrinsics/riscv64_to_arm64/`, `code_gen_lib/arm64_to_x86_64/`, `arm64_to_all/`). So while `README.md` still advertises riscv64-on-x86_64, the 17 codebase generalizes the abstractions to host more than one guest ISA. Runtime hardening in the same cycle increases the translation host stack to 1 MB with guard pages and adds `clone3` syscall emulation.
@@ -2746,27 +2807,31 @@ flowchart LR
   backend --> host["host x86_64 code"]
 ```
 
-**AIDL toolchain.** `system/tools/aidl` (78 commits) gains the `@VersionSupport(version=N)` interface annotation, registered in `system/tools/aidl/aidl_language.cpp` (`AidlAnnotation::Type::VERSION_SUPPORT`) and enforced by `AidlInterface::VersionSpecificCheckValid()` plus `GetVersionSupportVersion()` in `aidl_language.h:372` — it pins a declared version to the interface's actual version. The Rust backend gains `no_std` variants, Soong rules are progressively sandboxed, and C++ tracing in generated code is now off by default.
+**AIDL toolchain.** `system/tools/aidl` (78 commits) gains the `@VersionSupport(version=N)` interface annotation. It is registered in `system/tools/aidl/aidl_language.cpp` (`AidlAnnotation::Type::VERSION_SUPPORT`) and enforced by `AidlInterface::VersionSpecificCheckValid()` plus `GetVersionSupportVersion()` in `aidl_language.h:372`. The annotation pins a declared version to the interface's actual version. The Rust backend gains `no_std` variants, Soong rules are progressively sandboxed, and C++ tracing in generated code is now off by default.
 
-**VINTF.** `system/libvintf` is quiet (8 commits, no contract change), but the compatibility surface advances via the new `compatibility_matrix.202704.xml` FCM plus placeholder values for the next dessert release.
+**VINTF.** `system/libvintf` is quiet (8 commits, no contract change). However, the compatibility surface advances via the new `compatibility_matrix.202704.xml` FCM plus placeholder values for the next dessert release.
 
 ### Notable integrations
 
-- **bionic memory/page-size hardening.** The 16 KB page-size transition continues: a padded ELF test library, 16 KB backcompat-mode guard pages (added then reverted), and `RWX_MiddlePageProtection` regression coverage. The dynamic linker re-enables execute-only memory (XOM) in the linker binary, adds missing BTI instructions/ELF notes, and refines MTE handling (only calling `get_tagged_address` on readable sections). String routines move toward portable-SIMD (`strlen.cpp` from psimd, rustlib's x86_64 strlen replaced with psimd), plus optimized `wmemset`/`wmemcpy`/`memccpy`.
-- **libcore OpenJDK uprev.** libcore (205 commits) imports broadly from `jdk-25.0.1-ga` and `jdk-25+26` — `java.util.concurrent` (+`.locks`, `.atomic`), `java.time.chrono`, `Character`, `ClassValue`, `Collections`, `Invokers`/`NamedParameterSpec` — alongside OpenJDK 21's 3 new `String` API methods. An `OpenJDK 25` entry is added to the `libcore-openjdk-analyzer` tool, signalling the class libraries tracking toward JDK 25.
+- **bionic memory/page-size hardening.** The 16 KB page-size transition continues. It brings a padded ELF test library, 16 KB backcompat-mode guard pages (added then reverted), and `RWX_MiddlePageProtection` regression coverage. The dynamic linker re-enables execute-only memory (XOM) in the linker binary, and adds missing BTI instructions/ELF notes. It also refines MTE handling: it calls `get_tagged_address` only on readable sections. String routines move toward portable-SIMD (`strlen.cpp` from psimd, rustlib's x86_64 strlen replaced with psimd), plus optimized `wmemset`/`wmemcpy`/`memccpy`.
+- **libcore OpenJDK uprev.** libcore (205 commits) imports broadly from `jdk-25.0.1-ga` and `jdk-25+26`. The imports include `java.util.concurrent` (+`.locks`, `.atomic`), `java.time.chrono`, `Character`, `ClassValue`, `Collections`, and `Invokers`/`NamedParameterSpec`. libcore also imports OpenJDK 21's 3 new `String` API methods. An `OpenJDK 25` entry is added to the `libcore-openjdk-analyzer` tool. This signals that the class libraries track toward JDK 25.
 
 ## D.4 Native Services & Media
 
-Android 17's native-services and media layer advances on several fronts. SurfaceFlinger gains scaffolding for **out-of-process rendering (OOPR)** -- a shared-memory render-command channel that lets a client record draw commands instead of pushing finished buffers -- plus a reworked multi-display modeset path. libbinder grows a generic-netlink diagnostics channel. On the media side, codec2 splits a stable NDK codec surface (`libapexcodecs`) out for the media APEX, the camera service adds a multi-client *shared session* mode, and the Photo Picker grows search and a category grid.
+Android 17's native-services and media layer advances on several fronts. SurfaceFlinger gains scaffolding for **out-of-process rendering (OOPR)**. OOPR is a shared-memory render-command channel that lets a client record draw commands instead of pushing finished buffers. SurfaceFlinger also gains a reworked multi-display modeset path. libbinder grows a generic-netlink diagnostics channel.
+
+On the media side, codec2 splits a stable NDK codec surface (`libapexcodecs`) out for the media APEX. The camera service adds a multi-client *shared session* mode. The Photo Picker grows search and a category grid.
 
 ### New modules
 
-- **`libapexcodecs` -- stable C2 codec NDK for the media APEX.** `frameworks/av/media/module/libapexcodecs/include/apex/ApexCodecs.h` defines a C ABI (`ApexCodec_ComponentStore`, `ApexCodec_Component`, `ApexCodec_Buffer`, with `ApexCodec_Component_create/start/flush/reset/process`, all `__INTRODUCED_IN(36)`) so the updatable media (swcodec) APEX can expose Codec2 software components across the APEX boundary. The 17 cycle wires real decoders onto it (`C2ApexAacDec`, `C2ApexOpusDec`) and `Codec2Client` learns to enumerate and rank ApexCodecs-based components.
-- **libgui lockless IPC primitives for OOPR.** A cluster of new headers under `frameworks/native/libs/gui/include/gui/` -- `RenderCommandBuffer{,Producer,Consumer}.h`, plus the lock-free building blocks `MagicRingBuffer.h`, `LocklessStaticQueue.h`, `LocklessTripleBuffer.h`, `LocklessQueue.h`, and `RPointer.h` (relative pointers for shared memory) -- back the render-command channel below.
+- **`libapexcodecs` -- stable C2 codec NDK for the media APEX.** `frameworks/av/media/module/libapexcodecs/include/apex/ApexCodecs.h` defines a C ABI (`ApexCodec_ComponentStore`, `ApexCodec_Component`, `ApexCodec_Buffer`, with `ApexCodec_Component_create/start/flush/reset/process`, all `__INTRODUCED_IN(36)`). The ABI lets the updatable media (swcodec) APEX expose Codec2 software components across the APEX boundary. The 17 cycle wires real decoders onto it (`C2ApexAacDec`, `C2ApexOpusDec`) and `Codec2Client` learns to enumerate and rank ApexCodecs-based components.
+- **libgui lockless IPC primitives for OOPR.** A cluster of new headers under `frameworks/native/libs/gui/include/gui/` backs the render-command channel below. These are `RenderCommandBuffer{,Producer,Consumer}.h`, plus the lock-free building blocks `MagicRingBuffer.h`, `LocklessStaticQueue.h`, `LocklessTripleBuffer.h`, `LocklessQueue.h`, and `RPointer.h` (relative pointers for shared memory).
 
 ### Architecture changes
 
-**SurfaceFlinger out-of-process rendering (OOPR).** The largest SF theme of the cycle. Instead of rendering into a `GraphicBuffer` and queueing it, a client records Skia draw operations into an ashmem-backed `RenderCommandBuffer` that SurfaceFlinger replays at composition time. `RenderCommandBufferProducer` (`frameworks/native/libs/gui/include/gui/RenderCommandBufferProducer.h`) owns the ashmem `IpcRenderRegion`, exposes `startRecording()`/`finishRecordingAndPostFrame()`, and attaches to a layer via a new `SurfaceComposerClient::Transaction` setter; bulk uploads move through the lock-free `MagicRingBuffer`. SF-side support adds `RenderResourceCache` (`frameworks/native/services/surfaceflinger/RenderResourceCache.{h,cpp}`), composition shaders, a frameId plumbed end-to-end for sync, and OOPR-aware stats. The path sits behind an aconfig flag; in 17 it is infrastructure, not yet the default render path.
+**SurfaceFlinger out-of-process rendering (OOPR).** The largest SF theme of the cycle. A client does not render into a `GraphicBuffer` and queue it. Instead, it records Skia draw operations into an ashmem-backed `RenderCommandBuffer` that SurfaceFlinger replays at composition time.
+
+`RenderCommandBufferProducer` (`frameworks/native/libs/gui/include/gui/RenderCommandBufferProducer.h`) owns the ashmem `IpcRenderRegion` and exposes `startRecording()`/`finishRecordingAndPostFrame()`. It attaches to a layer via a new `SurfaceComposerClient::Transaction` setter. Bulk uploads move through the lock-free `MagicRingBuffer`. SF-side support adds `RenderResourceCache` (`frameworks/native/services/surfaceflinger/RenderResourceCache.{h,cpp}`), composition shaders, a frameId plumbed end-to-end for sync, and OOPR-aware stats. The path sits behind an aconfig flag; in 17 it is infrastructure, not yet the default render path.
 
 #### OOPR render-command channel versus the classic buffer-queue path
 
@@ -2786,30 +2851,30 @@ flowchart LR
   comp --> hwc["HWComposer / display"]
 ```
 
-**Multi-display atomic modeset.** SF reworks how mode changes are committed across displays: a new display-command modeset implementation and state machine, a `SurfaceControl` API to drive an atomic modeset (`gui: Plumb SurfaceControl API for atomic modeset`), and flag-gated enablement. Related scheduler work moves pacesetter selection to peak FPS rather than vsync rate. HIDL power is removed from SF.
+**Multi-display atomic modeset.** SF reworks how mode changes are committed across displays. The rework adds a new display-command modeset implementation and state machine, and a `SurfaceControl` API to drive an atomic modeset (`gui: Plumb SurfaceControl API for atomic modeset`). Enablement is flag-gated. Related scheduler work moves pacesetter selection to peak FPS rather than vsync rate. HIDL power is removed from SF.
 
-**libbinder generic-netlink reporting.** A new `frameworks/native/libs/binder/BinderNetlink.cpp` opens a generic-netlink socket to the kernel binder driver's `"binder"` family and consumes asynchronous reports: `BinderNetlink::open()/getReport()/readReport()` decode `BINDER_A_REPORT_ERROR` / `BINDER_A_REPORT_CONTEXT` attributes, giving userspace a diagnostics stream of driver-side binder errors keyed by context. The cycle also continues libbinder_rs `no_std` enablement plus RPC `IAccessor`/Parcel performance cleanups, and SensorService suspends events for frozen clients.
+**libbinder generic-netlink reporting.** A new `frameworks/native/libs/binder/BinderNetlink.cpp` opens a generic-netlink socket to the kernel binder driver's `"binder"` family and consumes asynchronous reports. `BinderNetlink::open()/getReport()/readReport()` decode `BINDER_A_REPORT_ERROR` / `BINDER_A_REPORT_CONTEXT` attributes. This gives userspace a diagnostics stream of driver-side binder errors keyed by context. The cycle also continues libbinder_rs `no_std` enablement plus RPC `IAccessor`/Parcel performance cleanups, and SensorService suspends events for frozen clients.
 
-**Camera multi-client shared session.** The camera service adds a *shared session* mode letting multiple clients observe one camera. `frameworks/av/services/camera/libcameraservice/config/SharedSessionConfigReader.h` parses an XML descriptor of shared output streams (`SharedSessionConfig` with `surfaceType`, `streamUseCase`, `dataSpace`, color space); the `camera_multi_client` flag is retired and metrics for shared mode / current surface id are added, mirrored in metadata by a brand-new section (below).
+**Camera multi-client shared session.** The camera service adds a *shared session* mode that lets multiple clients observe one camera. `frameworks/av/services/camera/libcameraservice/config/SharedSessionConfigReader.h` parses an XML descriptor of shared output streams (`SharedSessionConfig` with `surfaceType`, `streamUseCase`, `dataSpace`, color space). The `camera_multi_client` flag is retired. Metrics for shared mode / current surface id are added, mirrored in metadata by a brand-new section (below).
 
 ### Notable integrations
 
-- **New camera-metadata sections (`system/media`).** `system/media/camera/include/system/camera_metadata_tags.h` adds two sections ahead of `ANDROID_SECTION_COUNT`: `ANDROID_SHARED_SESSION` (`..._COLOR_SPACE`, `..._OUTPUT_CONFIGURATIONS`, both `fwk_only`) backing the shared-session feature, and `ANDROID_DESKTOP_EFFECTS` (`..._CAPABILITIES`, `..._BACKGROUND_BLUR_MODES`, `system`/HIDL v3.2) for camera-pipeline background blur. The cycle also adds an AGTM dynamic-range-profile entry and promotes `libcamera_metadata` to LLNDK.
+- **New camera-metadata sections (`system/media`).** `system/media/camera/include/system/camera_metadata_tags.h` adds two sections ahead of `ANDROID_SECTION_COUNT`. `ANDROID_SHARED_SESSION` (`..._COLOR_SPACE`, `..._OUTPUT_CONFIGURATIONS`, both `fwk_only`) backs the shared-session feature. `ANDROID_DESKTOP_EFFECTS` (`..._CAPABILITIES`, `..._BACKGROUND_BLUR_MODES`, `system`/HIDL v3.2) is for camera-pipeline background blur. The cycle also adds an AGTM dynamic-range-profile entry and promotes `libcamera_metadata` to LLNDK.
 - **codec2 surface migration and 10-bit color.** Codec2 migrates its `GraphicsTracker` and allocator onto `Surface`, and the codec stack gains 10-bit RGB / YUV support. The xHE-AAC encoder (`C2SoftXheAacEnc`) is fleshed out (presentation id, end-of-frame marking, live mode).
 - **New Codec2 software components and AudioFlinger MMAP AIDL.** `frameworks/av/media/codec2/components/` gains APV codecs (`libcodec2_soft_apvdec`/`...apvenc`, `apv/C2SoftApvDec.cpp`) and an IAMF decoder (`libcodec2_soft_iamfdec`, `iamf/C2SoftIamfDec.cpp`). AudioFlinger also moves MMAP stream control onto stable AIDL via `IMmapStream` (`frameworks/av/media/libaudioclient/aidl/android/media/IMmapStream.aidl`, `createMmapBuffer`/`startTrack`/`stopTrack`).
-- **Photo Picker: search and categories (`packages/providers/MediaProvider`).** The Kotlin Photo Picker becomes default on T+ and grows two major features under `photopicker/src/com/android/photopicker/features/`: a `search/` feature (local on-device search backed by AppSearch with a 50k-document limit and restricted-word filtering, plus a cloud-provider `SearchMediaService` SPI) and a `categorygrid/` feature (album/category browsing, including SD-card categories). The embedded picker gains a V2 API surface, `PhotoPickerSelectionParams`, and a location-metadata feature flag.
-- **`packages/modules/Media` API surface.** Mostly housekeeping, but `MediaParser` is migrated onto Media3/ExoPlayer, gains track-aware seeking (per-track duration in `MediaFormat`), deprecates `SAMPLE_FLAG_DECODE_ONLY`, and the media-metrics AIDL is converted to stable AIDL.
-- **VVC / H.266 framework plumbing.** The media framework adds the `MEDIA_MIMETYPE_VIDEO_VVC` MIME type (`frameworks/av/media/module/foundation/MediaDefs.cpp`) and VVC profile/level mappings (`frameworks/av/media/codec2/vndk/C2Config.cpp`, `PROFILE_VVC_MAIN_10`) so a vendor VVC codec can plug into `MediaCodec`. No software VVC codec is bundled, unlike the new APV/IAMF components.
+- **Photo Picker: search and categories (`packages/providers/MediaProvider`).** The Kotlin Photo Picker becomes default on T+ and grows two major features under `photopicker/src/com/android/photopicker/features/`. The first is a `search/` feature (local on-device search backed by AppSearch with a 50k-document limit and restricted-word filtering, plus a cloud-provider `SearchMediaService` SPI). The second is a `categorygrid/` feature (album/category browsing, including SD-card categories). The embedded picker gains a V2 API surface, `PhotoPickerSelectionParams`, and a location-metadata feature flag.
+- **`packages/modules/Media` API surface.** Mostly housekeeping, but `MediaParser` is migrated onto Media3/ExoPlayer. It gains track-aware seeking (per-track duration in `MediaFormat`) and deprecates `SAMPLE_FLAG_DECODE_ONLY`. The media-metrics AIDL is converted to stable AIDL.
+- **VVC / H.266 framework plumbing.** The media framework adds the `MEDIA_MIMETYPE_VIDEO_VVC` MIME type (`frameworks/av/media/module/foundation/MediaDefs.cpp`) and VVC profile/level mappings (`frameworks/av/media/codec2/vndk/C2Config.cpp`, `PROFILE_VVC_MAIN_10`). With these, a vendor VVC codec can plug into `MediaCodec`. No software VVC codec is bundled, unlike the new APV/IAMF components.
 - **Constant-quality video recording.** `MediaRecorder.setVideoEncodingQuality(int)` (`frameworks/base/media/java/android/media/MediaRecorder.java`) holds a fixed quality level and lets the bitrate float, plumbed through `StagefrightRecorder.cpp` and `MediaCodecSource::adjustMediaFormatForConstantQuality()` onto encoders supporting `BITRATE_MODE_CQ`.
-- **Dynamic camera session output updates + logical multi-camera metadata.** `CameraCaptureSession.updateOutputConfigurations(List<OutputConfiguration>)` (`frameworks/base/core/java/android/hardware/camera2/CameraCaptureSession.java`, AIDL `ICameraDeviceUser.aidl`) swaps a session's output surfaces in place without tearing it down, and `LOGICAL_MULTI_CAMERA_ADDITIONAL_RESULTS` (`CaptureRequest.java`) requests per-physical-camera metadata without dedicated physical streams.
-- **Background audio hardening at SDK 37.** `HardeningEnforcer` (`frameworks/base/services/core/java/com/android/server/audio/HardeningEnforcer.java`) blocks audio-focus and volume-control requests from background apps targeting SDK 37 unless they hold an exemption, enforced through AppOps (`OP_TAKE_AUDIO_FOCUS`, `OP_CONTROL_AUDIO`) from `AudioService`.
-- **Audio-managed Bluetooth SCO.** The audio HAL gains `IBluetooth.setScoConfig(ScoConfig)` (`hardware/interfaces/audio/aidl/android/hardware/audio/core/IBluetooth.aidl`) so the audio framework owns the SCO link lifecycle (selected via `AudioManager.setCommunicationDevice`) rather than the Bluetooth stack, gated by `bluetooth.sco.managed_by_audio` and `AudioDeviceBroker`'s `mScoManagedByAudio`.
-- **Dedicated Assistant volume stream.** Android 17 adds `AudioManager.MODE_ASSISTANT_CONVERSATION` (= `AudioSystem.MODE_ASSISTANT_CONVERSATION = 7`, `frameworks/base/media/java/android/media/AudioSystem.java:236`, `AudioManager.java:3869`), giving assistant playback -- tagged `USAGE_ASSISTANT` (`AudioAttributes.java:216`) -- its own volume curve so it can be raised or muted independently of media. A companion capture permission `BYPASS_CONCURRENT_RECORD_AUDIO_RESTRICTION` (`frameworks/base/core/res/AndroidManifest.xml:7511`) lets a privileged assistant or accessibility component capture audio during a call or another otherwise-exclusive session. See Chapter 15, Section 15.3.13.
-- **WebGPU is announced but is not in the platform image.** The Android 17 developer materials list a WebGPU Kotlin/Java graphics-and-compute API over Vulkan, but it is not part of the AOSP platform source: there is no `external/dawn` / `external/webgpu` project and no `webgpu` API surface in `frameworks/base`. The only in-tree WebGPU/Dawn code is Skia's internal Graphite/Dawn GPU backend and its WGSL shader codegen inside `external/skia` -- rendering infrastructure, not an app-facing Android API. The developer-facing WebGPU surface ships as a Jetpack/library layer on top of the platform's Vulkan stack (Chapter 13).
+- **Dynamic camera session output updates + logical multi-camera metadata.** `CameraCaptureSession.updateOutputConfigurations(List<OutputConfiguration>)` (`frameworks/base/core/java/android/hardware/camera2/CameraCaptureSession.java`, AIDL `ICameraDeviceUser.aidl`) swaps a session's output surfaces in place without a teardown. `LOGICAL_MULTI_CAMERA_ADDITIONAL_RESULTS` (`CaptureRequest.java`) requests per-physical-camera metadata without dedicated physical streams.
+- **Background audio hardening at SDK 37.** `HardeningEnforcer` (`frameworks/base/services/core/java/com/android/server/audio/HardeningEnforcer.java`) blocks audio-focus and volume-control requests from background apps that target SDK 37, unless they hold an exemption. `AudioService` enforces this through AppOps (`OP_TAKE_AUDIO_FOCUS`, `OP_CONTROL_AUDIO`).
+- **Audio-managed Bluetooth SCO.** The audio HAL gains `IBluetooth.setScoConfig(ScoConfig)` (`hardware/interfaces/audio/aidl/android/hardware/audio/core/IBluetooth.aidl`). With it, the audio framework owns the SCO link lifecycle (selected via `AudioManager.setCommunicationDevice`) rather than the Bluetooth stack. The change is gated by `bluetooth.sco.managed_by_audio` and `AudioDeviceBroker`'s `mScoManagedByAudio`.
+- **Dedicated Assistant volume stream.** Android 17 adds `AudioManager.MODE_ASSISTANT_CONVERSATION` (= `AudioSystem.MODE_ASSISTANT_CONVERSATION = 7`, `frameworks/base/media/java/android/media/AudioSystem.java:236`, `AudioManager.java:3869`). Assistant playback, tagged `USAGE_ASSISTANT` (`AudioAttributes.java:216`), gets its own volume curve. This lets assistant playback be raised or muted independently of media. A companion capture permission `BYPASS_CONCURRENT_RECORD_AUDIO_RESTRICTION` (`frameworks/base/core/res/AndroidManifest.xml:7511`) lets a privileged assistant or accessibility component capture audio during a call or another otherwise-exclusive session. See Chapter 15, Section 15.3.13.
+- **WebGPU is announced but is not in the platform image.** The Android 17 developer materials list a WebGPU Kotlin/Java graphics-and-compute API over Vulkan, but it is not part of the AOSP platform source. There is no `external/dawn` / `external/webgpu` project and no `webgpu` API surface in `frameworks/base`. The only in-tree WebGPU/Dawn code is Skia's internal Graphite/Dawn GPU backend and its WGSL shader codegen inside `external/skia`. This is rendering infrastructure, not an app-facing Android API. The developer-facing WebGPU surface ships as a Jetpack/library layer on top of the platform's Vulkan stack (Chapter 13).
 
 ## D.5 Runtime
 
-Android 17 reshapes the lowest layers of the managed runtime. The headline is a ground-up rewrite of the Zygote in Rust as a new top-level project, alongside a new x86 micro-architecture target in ART and continued shrinking of the APEX-mounted runtime surface.
+Android 17 reshapes the lowest layers of the managed runtime. The headline is a ground-up rewrite of the Zygote in Rust as a new top-level project. Android 17 also adds a new x86 micro-architecture target in ART. The APEX-mounted runtime surface continues to shrink.
 
 ### New projects
 
@@ -2826,7 +2891,7 @@ The classic `frameworks/base` `ZygoteInit` Java path still exists; `zygote_next`
 
 **The Species / subspecies process model.** Rather than the old fork-and-specialize flow, `zygote_next` models each preload-and-spawn environment as a *Species* (`system/zygote/zygote/src/species.rs`). The `Species` trait (lines 82-181) is a vtable of callbacks (`gather_reinitialization_data`, `speciate`, `gestate`, `set_seccomp_filters`, `sync_fd_state`, file/socket allow-list checks). Three implementations are registered statically: `AndroidNative` (`.../species/android_native.rs`), `LibApp`, and a `Mock` "Turtle" used in tests.
 
-A key new capability is the **subspecies**: the schema defines `SpawnSubspecies` and the `SpawnSubspeciesAndroidNative` payload (`messages.fbs` lines 31-43, 87-93), and the server can spawn a *native child Zygote* on demand that re-initializes itself as a subspecies (`speciate()` runs before `re_initialize_as_subspecies()`). This generalizes the old "child zygote" idea into a first-class, per-payload spawn command carrying its own library paths, ABI list, preload function, and UID/GID range.
+A key new capability is the **subspecies**. The schema defines `SpawnSubspecies` and the `SpawnSubspeciesAndroidNative` payload (`messages.fbs` lines 31-43, 87-93). The server can spawn a *native child Zygote* on demand that re-initializes itself as a subspecies (`speciate()` runs before `re_initialize_as_subspecies()`). This generalizes the old "child zygote" idea into a first-class, per-payload spawn command. The command carries its own library paths, ABI list, preload function, and UID/GID range.
 
 Native Zygote spawn dispatch through the Species abstraction
 
@@ -2843,31 +2908,35 @@ flowchart TD
     SPEC --> APP["new app process"]
 ```
 
-FD inheritance is now governed by explicit, dated allow-lists in each species (`android_native.rs` lines 41-77): each `AllowListEntry` records a reviewer and review date, and a unit test (`species.rs` `allow_list_audit`) fails the build when an entry goes stale (> 365 days). The transport also moved from a hand-rolled loop to `epoll`, with coalesced `SIGCHLD` handling and child exit status forwarded to ActivityManager over the unsolicited Zygote socket.
+FD inheritance is now governed by explicit, dated allow-lists in each species (`android_native.rs` lines 41-77). Each `AllowListEntry` records a reviewer and review date. A unit test (`species.rs` `allow_list_audit`) fails the build when an entry goes stale (> 365 days). The transport also moved from a hand-rolled loop to `epoll`. It has coalesced `SIGCHLD` handling, and child exit status is forwarded to ActivityManager over the unsolicited Zygote socket.
 
-**ART: pantherlake x86 target.** ART adds Intel **Panther Lake** -- Intel's client (consumer/mobile) CPU generation, newer than the Kaby Lake / Alder Lake parts already known to ART -- as a recognized x86 / x86-64 instruction-set variant (`art/runtime/arch/x86/instruction_set_features_x86.cc` lines 43-115). Like other Intel client silicon it exposes AVX/AVX2 but not server-only AVX-512, so the variant is registered with SSSE3, SSE4.1/4.2, POPCNT, and AVX/AVX2 (feature string `ssse3,sse4.1,sse4.2,avx,avx2,popcnt`, bitmap 63) -- the same AVX2 tier as `alderlake`/`kabylake`, verified by the `X86FeaturesFromPantherlakeVariant` unit test for both 32- and 64-bit. Naming this variant lets `dex2oat` emit 256-bit AVX2-vectorized code for these CPUs on x86-64 Android targets such as the emulator and x86 form factors.
+**ART: pantherlake x86 target.** ART adds Intel **Panther Lake** as a recognized x86 / x86-64 instruction-set variant (`art/runtime/arch/x86/instruction_set_features_x86.cc` lines 43-115). Panther Lake is Intel's client (consumer/mobile) CPU generation, newer than the Kaby Lake / Alder Lake parts already known to ART.
 
-**DEX container format V41.** The runtime treats DEX **version 41** as the container format (`art/libdexfile/dex/dex_file.h` line 112, `kDexContainerVersion = 41`; `HeaderV41` at line 181). V41 files carry a container offset/size so multiple logical DEX files share one backing buffer; profile machinery was updated for the V41-only location syntax. `HasDexContainer()` / `ContainerSize()` (lines 165-174) gate the new behavior.
+Like other Intel client silicon, it exposes AVX/AVX2 but not server-only AVX-512. So the variant is registered with SSSE3, SSE4.1/4.2, POPCNT, and AVX/AVX2 (feature string `ssse3,sse4.1,sse4.2,avx,avx2,popcnt`, bitmap 63). This is the same AVX2 tier as `alderlake`/`kabylake`. The `X86FeaturesFromPantherlakeVariant` unit test verifies it for both 32- and 64-bit. This named variant lets `dex2oat` emit 256-bit AVX2-vectorized code for these CPUs on x86-64 Android targets such as the emulator and x86 form factors.
+
+**DEX container format V41.** The runtime treats DEX **version 41** as the container format (`art/libdexfile/dex/dex_file.h` line 112, `kDexContainerVersion = 41`; `HeaderV41` at line 181). V41 files carry a container offset/size so multiple logical DEX files share one backing buffer. Profile machinery was updated for the V41-only location syntax. `HasDexContainer()` / `ContainerSize()` (lines 165-174) gate the new behavior.
 
 **Value and record classes.** `mirror::Class` gains first-class `IsValueClass()`/`SetValueClass()` and `IsRecordClass()`/`SetRecordClass()` accessors (`art/runtime/mirror/class.h` lines 341-357), backed by new `mirror::Class` flags (`kClassFlagValue`/`kClassFlagRecord`). This is groundwork for Valhalla-style value classes; records are now treated as normal classes carrying the record flag.
 
-**GC tuning.** The collector re-enables eager `MADV_FREE`-based page release under the concurrent-copying GC (reverting an earlier temporary disable; `art/runtime/gc/collector/garbage_collector.cc` ~line 465), and GC knobs are now reported through the `ArtDeviceStatus` pulled atom for fleet telemetry.
+**GC tuning.** The collector re-enables eager `MADV_FREE`-based page release under the concurrent-copying GC. This reverts an earlier temporary disable (`art/runtime/gc/collector/garbage_collector.cc` ~line 465). GC knobs are now reported through the `ArtDeviceStatus` pulled atom for fleet telemetry.
 
 **Generational mark-compact (CMC) GC.** The mark-compact collector gains a generational mode behind the `use_generational_cmc` aconfig flag (`art/build/flags/art-flags.aconfig`, `art_performance` namespace), gated at runtime by `ShouldUseGenerationalGC()` (`art/runtime/gc/collector/mark_compact.cc`). A minor GC traces and compacts only recently-allocated objects rather than the whole heap, promoting survivors by age.
 
-**Static final fields no longer reflectively writable at SDK 37.** For apps targeting SDK 37, `ArtField::IsUnmodifiable()` (`art/runtime/art_field-inl.h`) returns true for ordinary `static final` fields, so reflective (`java_lang_reflect_Field.cc`) and JNI (`jni_internal.cc`) writes throw `IllegalAccessException` instead of silently mutating a constant.
+**Static final fields no longer reflectively writable at SDK 37.** For apps that target SDK 37, `ArtField::IsUnmodifiable()` (`art/runtime/art_field-inl.h`) returns true for ordinary `static final` fields. Reflective (`java_lang_reflect_Field.cc`) and JNI (`jni_internal.cc`) writes therefore throw `IllegalAccessException` instead of silently changing a constant.
 
-**Lock-free `MessageQueue` at SDK 37.** Android 17 adds a concurrent `MessageQueue` reimplementation selected by the `release_package_messagequeue_implementation` Soong config; the default `CombinedMessageQueue` (`frameworks/base/core/java/android/os/CombinedMessageQueue/MessageQueue.java`, the config's `conditions_default`) picks at runtime between the legacy `synchronized` queue and a `VarHandle`-CAS "DeliQueue", switching to the lock-free path for system processes and apps gated by the `USE_NEW_MESSAGEQUEUE` compat change (`@EnabledAfter(BAKLAVA)`, SDK 37+).
+**Lock-free `MessageQueue` at SDK 37.** Android 17 adds a concurrent `MessageQueue` reimplementation selected by the `release_package_messagequeue_implementation` Soong config. The default `CombinedMessageQueue` (`frameworks/base/core/java/android/os/CombinedMessageQueue/MessageQueue.java`, the config's `conditions_default`) picks at runtime between the legacy `synchronized` queue and a `VarHandle`-CAS "DeliQueue". It switches to the lock-free path for system processes and apps gated by the `USE_NEW_MESSAGEQUEUE` compat change (`@EnabledAfter(BAKLAVA)`, SDK 37+).
 
 ### Notable integrations
 
-**APEX: shrinking the runtime mount surface.** `apexd` continues to remove runtime components from the bootstrap APEX set. The `com.android.runtime` APEX is now gated behind `RELEASE_DEPRECATE_RUNTIME_APEX` in the bootstrap list (`system/apex/apexd/apexd.cpp` lines 169-180): when set, the runtime APEX disappears and its contents move into the base system image.
+**APEX: shrinking the runtime mount surface.** `apexd` continues to remove runtime components from the bootstrap APEX set. The `com.android.runtime` APEX is now gated behind `RELEASE_DEPRECATE_RUNTIME_APEX` in the bootstrap list (`system/apex/apexd/apexd.cpp` lines 169-180). When the flag is set, the runtime APEX disappears and its contents move into the base system image.
 
-**EROFS file-backed mounts (no loop device).** A major mounting change lets `apexd` mount EROFS-format APEX payloads directly from the file, skipping the loop device entirely (`system/apex/apexd/apexd.cpp` lines 522-534): when file-backed mount is enabled, the payload is mounted with a `fsoffset=` option pointing at the in-APEX image. This is controlled by the `erofs_file_backed_mount` aconfig flag and runtime properties (`apexd_mount.cpp` lines 38-120). A companion `microdroid_no_loop_device` flag lets Microdroid activate block APEXes via `dm-linear` instead of loop devices. Together these cut the per-APEX loop-device cost as the mainline module set keeps growing. `apexd` also enables Direct I/O on loop devices and dm-verity verification in a tasklet for APEX payloads.
+**EROFS file-backed mounts (no loop device).** A major mounting change lets `apexd` mount EROFS-format APEX payloads directly from the file. It skips the loop device entirely (`system/apex/apexd/apexd.cpp` lines 522-534). When file-backed mount is enabled, the payload is mounted with a `fsoffset=` option that points at the in-APEX image. This is controlled by the `erofs_file_backed_mount` aconfig flag and runtime properties (`apexd_mount.cpp` lines 38-120).
+
+A companion `microdroid_no_loop_device` flag lets Microdroid activate block APEXes via `dm-linear` instead of loop devices. Together these cut the per-APEX loop-device cost as the mainline module set keeps growing. `apexd` also enables Direct I/O on loop devices and dm-verity verification in a tasklet for APEX payloads.
 
 ## D.6 Framework Core
 
-The Framework Core delta is dominated by `frameworks/base` (15,196 commits). This section covers the genuinely platform-level changes: the new SDK level, new system services with public/system API surfaces, a new mainline SDK-extension version, and the maturation of desktop windowing in WindowManager Shell.
+The Framework Core delta is dominated by `frameworks/base` (15,196 commits). This section covers the genuinely platform-level changes. The changes are the new SDK level and new system services with public/system API surfaces. They also include a new mainline SDK-extension version and the maturation of desktop windowing in WindowManager Shell.
 
 ### New API level
 
@@ -2884,7 +2953,7 @@ The 17 public API surface is `core/api/current.txt`; new feature areas surface t
 
 - System service: `frameworks/base/services/core/java/com/android/server/security/advancedprotection/AdvancedProtectionService.java`, registered in `services/java/com/android/server/SystemServer.java:1868`.
 - Public/system API: `frameworks/base/core/java/android/security/advancedprotection/AdvancedProtectionManager.java`, reachable via `Context.ADVANCED_PROTECTION_SERVICE = "advanced_protection"` (`Context.java:6873`); `isAdvancedProtectionEnabled()` plus register/unregister callbacks are public (`core/api/current.txt:42225`).
-- Feature hooks under `.../advancedprotection/features/`: `DisallowCellular2GAdvancedProtectionHook`, `DisallowInstallUnknownSourcesAdvancedProtectionHook`, `UsbDataAdvancedProtectionHook`, `MemoryTaggingExtensionHook` (MTE). `AdvancedProtectionManager` declares seven `@SystemApi` feature IDs, but only four (DISALLOW_CELLULAR_2G=0, DISALLOW_INSTALL_UNKNOWN_SOURCES=1, DISALLOW_USB=2, ENABLE_MTE=4) have matching hook classes registered by `AdvancedProtectionService`; DISALLOW_WEP=3, DISALLOW_INSECURE_WIFI_AUTOJOIN=5, and RESTRICT_NON_TOOL_A11Y_SERVICES=6 are enforced elsewhere (e.g. via `WifiManagerFeatureProvider`) rather than by hooks in `.../advancedprotection/features/`.
+- Feature hooks under `.../advancedprotection/features/`: `DisallowCellular2GAdvancedProtectionHook`, `DisallowInstallUnknownSourcesAdvancedProtectionHook`, `UsbDataAdvancedProtectionHook`, `MemoryTaggingExtensionHook` (MTE). `AdvancedProtectionManager` declares seven `@SystemApi` feature IDs, but only four (DISALLOW_CELLULAR_2G=0, DISALLOW_INSTALL_UNKNOWN_SOURCES=1, DISALLOW_USB=2, ENABLE_MTE=4) have matching hook classes registered by `AdvancedProtectionService`. DISALLOW_WEP=3, DISALLOW_INSECURE_WIFI_AUTOJOIN=5, and RESTRICT_NON_TOOL_A11Y_SERVICES=6 are enforced elsewhere (e.g. via `WifiManagerFeatureProvider`) rather than by hooks in `.../advancedprotection/features/`.
 
 **SupervisionService** — a first-class supervision (parental-controls) framework, splitting supervision out from DevicePolicy.
 
@@ -2896,11 +2965,11 @@ The 17 public API surface is `core/api/current.txt`; new feature areas surface t
 - Service: `AiSealSystemService`, registered at `SystemServer.java:3024`.
 - API (`@SystemApi`, flag-gated `android.aiseal.aiseal_host_apis`): `frameworks/base/core/java/android/aiseal/AiSealManager.java` with `connectService(String)`, plus `Context.AISEAL_HOST_SERVICE = "aiseal_host"` and `PackageManager.FEATURE_AISEAL` (`core/api/system-current.txt:674`, `:4513`, `:5065`).
 
-**NpuManager** (`npu`) — a flag-gated (`com.android.npumanager.npumanager_enabled`) NPU model-management surface. Only mock dirs exist under `core/java/android/npumanager/mock` and `core/java/android/ranging/mock`; the API hooks (`Context.NPU_SERVICE = "npu"`, `PackageManager.FEATURE_NEURAL_PROCESSING_UNIT`, system permissions) are declared in `core/api/*.txt` behind the flag, so treat this as a reserved/preview surface in `frameworks/base` rather than a shipped service (the real module lives under `packages/modules/NpuManager`, see D.12).
+**NpuManager** (`npu`) — a flag-gated (`com.android.npumanager.npumanager_enabled`) NPU model-management surface. Only mock dirs exist under `core/java/android/npumanager/mock` and `core/java/android/ranging/mock`. The API hooks (`Context.NPU_SERVICE = "npu"`, `PackageManager.FEATURE_NEURAL_PROCESSING_UNIT`, system permissions) are declared in `core/api/*.txt` behind the flag. Therefore, treat this as a reserved/preview surface in `frameworks/base` rather than a shipped service (the real module lives under `packages/modules/NpuManager`, see D.12).
 
 ### Architecture changes
 
-**Desktop windowing maturation (WindowManager Shell).** The largest WM-Shell expansion is the `desktopmode` package: `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/` is now one of WM-Shell's largest packages. `DesktopTasksController.kt` is the core orchestrator; supporting pieces include `DesktopImmersiveController`, `DesktopUserRepositories`, `DesktopMixedTransitionHandler`, `DragToDesktopTransitionHandler`, `DesktopModeMoveToDisplayTransitionHandler`/`CrossDisplay` handling, `DesktopWallpaperActivity`, and a sibling `desktopai/` package. Multi-display desktop (move-to-display, cross-display transitions), home-screen peek hot corners, and per-user desktop repositories are the notable additions over 16.
+**Desktop windowing maturation (WindowManager Shell).** The largest WM-Shell expansion is the `desktopmode` package. `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/` is now one of WM-Shell's largest packages. `DesktopTasksController.kt` is the core orchestrator. Supporting pieces include `DesktopImmersiveController`, `DesktopUserRepositories`, `DesktopMixedTransitionHandler`, `DragToDesktopTransitionHandler`, `DesktopModeMoveToDisplayTransitionHandler`/`CrossDisplay` handling, `DesktopWallpaperActivity`, and a sibling `desktopai/` package. Multi-display desktop (move-to-display, cross-display transitions), home-screen peek hot corners, and per-user desktop repositories are the notable additions over 16.
 
 Desktop windowing transition flow (Shell):
 
@@ -2919,20 +2988,20 @@ flowchart TD
 
 **SystemUI scene container (flexiglass).** SystemUI continues the shade/keyguard rewrite around the scene framework under `frameworks/base/packages/SystemUI/src/com/android/systemui/scene/` (`data`, `domain`, `ui/{view,viewmodel,compose}`, `shared`). Numerous `[flexiglass]` and `[Desktop]` shade/status-bar commits feed this; the Compose-backed `SceneWindowRootView` path is the direction of travel for the shade and lockscreen.
 
-**Large-screen orientation/resizability opt-out removed at SDK 37.** For apps targeting SDK 37, the window manager stops honoring `resizeableActivity` and the restricted-resizability property on large screens (>600dp), forcing universal resizability; the SDK gate is `DISABLE_OPT_OUT_UNIVERSAL_RESIZABLE_BY_DEFAULT` (`frameworks/base/services/core/java/com/android/server/wm/AppCompatResizeOverrides.java`).
+**Large-screen orientation/resizability opt-out removed at SDK 37.** For apps that target SDK 37, the window manager no longer honors `resizeableActivity` and the restricted-resizability property on large screens (>600dp). This forces universal resizability. The SDK gate is `DISABLE_OPT_OUT_UNIVERSAL_RESIZABLE_BY_DEFAULT` (`frameworks/base/services/core/java/com/android/server/wm/AppCompatResizeOverrides.java`).
 
-**Reduced activity relaunch on config changes.** At SDK 37 a set of config changes (keyboard, keyboard-hidden, navigation, touchscreen, color-mode) no longer recreates the activity by default; the masked set is `RECREATE_ON_CONFIG_CHANGES_MASK` (`frameworks/base/core/java/com/android/internal/pm/pkg/component/ParsedActivityUtils.java`) and an app opts a change back into relaunch via the `android:recreateOnConfigChanges` manifest attribute, enforced by `AppCompatRecreateOnConfigChangePolicy`.
+**Reduced activity relaunch on config changes.** At SDK 37 a set of config changes (keyboard, keyboard-hidden, navigation, touchscreen, color-mode) no longer recreates the activity by default. The masked set is `RECREATE_ON_CONFIG_CHANGES_MASK` (`frameworks/base/core/java/com/android/internal/pm/pkg/component/ParsedActivityUtils.java`). An app opts a change back into relaunch via the `android:recreateOnConfigChanges` manifest attribute, enforced by `AppCompatRecreateOnConfigChangePolicy`.
 
-**Custom notification view memory cap.** SystemUI now verifies that a notification's custom `RemoteViews` stay under a memory limit (`config_notificationStripRemoteViewSizeBytes`, ~5 MB) via `NotificationCustomContentMemoryVerifier` (`frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotificationCustomContentMemoryVerifier.kt`); for SDK 37 apps an oversized view drops the notification rather than only logging a warning.
+**Custom notification view memory cap.** SystemUI now verifies that a notification's custom `RemoteViews` stay under a memory limit (`config_notificationStripRemoteViewSizeBytes`, ~5 MB) via `NotificationCustomContentMemoryVerifier` (`frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotificationCustomContentMemoryVerifier.kt`). For SDK 37 apps, an oversized view drops the notification instead of only writing a warning to the log.
 
 ### Notable integrations
 
-**SDK Extensions version 22 + new "C" extension.** `packages/modules/SdkExtensions` bumped the extension database to **version 22** (`gen_sdk/extensions_db.textpb` tail — ART/CONSCRYPT/MEDIA/MEDIAPROVIDER/PERMISSIONS/STATSD/TETHERING/APPSEARCH/etc. all at 22). The releases mechanism gained a new per-dessert extension axis for Android 17, "**c**":
+**SDK Extensions version 22 + new "C" extension.** `packages/modules/SdkExtensions` bumped the extension database to **version 22**. In the tail of `gen_sdk/extensions_db.textpb`, ART/CONSCRYPT/MEDIA/MEDIAPROVIDER/PERMISSIONS/STATSD/TETHERING/APPSEARCH/etc. are all at 22. The releases mechanism gained a new per-dessert extension axis for Android 17, "**c**":
 
 - `derive_sdk/derive_sdk.cpp:85` iterates desserts `{"r","s","t","ad_services","u","v","b","c"}`; `:244` adds `relevant_modules.insert(kCModules…)` and sets the `c` extension when `IsAtLeastC()`.
 - `sdk-extensions-info.xml` gained the C extension entries; Conscrypt was added to SDK extensions (incl. `EchConfigList`/`InvalidEchDataException` ECH APIs), and `android.net.dns`/`DnsResolver` were exposed S+. AD_SERVICES/EXT_SERVICES are frozen at 20 per `gen_sdk/gen_sdk.py:134`.
 
-This is the mainline-API mechanism that lets modules ship API additions to older OS versions independently of the OS dessert; v22 is the Android 17 baseline, and the new `c` axis lets future module updates target "Android 17+".
+This is the mainline-API mechanism that lets modules ship API additions to older OS versions independently of the OS dessert. v22 is the Android 17 baseline, and the new `c` axis lets future module updates target "Android 17+".
 
 ## D.7 Framework Services
 
@@ -2940,11 +3009,13 @@ Android 17 reorganizes several framework-service-adjacent subsystems. The headli
 
 ### New projects
 
-**`system/memory/mmd` (Modern Memory Daemon).** Android 17 introduces `mmd`, a new native Rust daemon centralizing memory-management configuration and ZRAM tunables (`system/memory/mmd/README.md`), unifying what was fragmented across `swapon_all`, `config.xml` overlays and `ro.zram.*` properties and pulling swap management out of system_server. It registers a Binder service named `mmd` (`system/memory/mmd/src/main.rs:203-205`) exposing the `IMmd` AIDL interface (`system/memory/mmd/aidl/android/os/IMmd.aidl`). A dedicated `mmd_setup` service (`system/memory/mmd/src/mmd_setup.rs`), started by init, performs first-boot ZRAM activation. When `mmd.zram.enabled` is set, ZRAM setup inside `swapon_all` becomes a no-op and the legacy overlay config is ignored.
+**`system/memory/mmd` (Modern Memory Daemon).** Android 17 introduces `mmd`, a new native Rust daemon (`system/memory/mmd/README.md`). It centralizes memory-management configuration and ZRAM tunables, and it unifies what was fragmented across `swapon_all`, `config.xml` overlays and `ro.zram.*` properties. It also pulls swap management out of system_server.
+
+It registers a Binder service named `mmd` (`system/memory/mmd/src/main.rs:203-205`) exposing the `IMmd` AIDL interface (`system/memory/mmd/aidl/android/os/IMmd.aidl`). A dedicated `mmd_setup` service (`system/memory/mmd/src/mmd_setup.rs`), started by init, performs first-boot ZRAM activation. When `mmd.zram.enabled` is set, ZRAM setup inside `swapon_all` becomes a no-op and the legacy overlay config is ignored.
 
 ### New modules
 
-**UprobeStats prebuilt module SDK.** The uprobe-based tracing module (attaching BPF uprobes to instrument method calls and emitting results as statsd atoms) now ships a prebuilt module SDK: `sdk { name: "uprobestats-module-sdk" }` (`packages/modules/UprobeStats/apex/Android.bp:87-88`). In A17 its Rust `core` crate gained a typed `UprobeStatsError` and a `Handler` trait carrying `MAP_PATH`/`PROG_PATH` constants, granular BPF-attachment error reporting, and batched event delivery in `UprobeStatsBridgeServiceImpl`. New BPF handlers cover accessibility and "disruptive app" detection, plus generic instrumentation resolving primitive call arguments from registers.
+**UprobeStats prebuilt module SDK.** The uprobe-based tracing module (attaching BPF uprobes to instrument method calls and emitting results as statsd atoms) now ships a prebuilt module SDK: `sdk { name: "uprobestats-module-sdk" }` (`packages/modules/UprobeStats/apex/Android.bp:87-88`). In A17 its Rust `core` crate gained a typed `UprobeStatsError` and a `Handler` trait that carries `MAP_PATH`/`PROG_PATH` constants. It also gained granular BPF-attachment error reporting and batched event delivery in `UprobeStatsBridgeServiceImpl`. New BPF handlers cover accessibility and "disruptive app" detection, plus generic instrumentation resolving primitive call arguments from registers.
 
 **Profiling prebuilt module SDK + anomaly detector.** The on-device Profiling module likewise ships `sdk { name: "profiling-module-sdk" }` (`packages/modules/Profiling/apex/Android.bp:103-104`). A17 adds an `AnomalyDetectorService` (`.../anomaly-detector/service/java/com/android/os/profiling/anomaly/AnomalyDetectorService.java`), gated by an `anomaly_detector_core_c` flag, that evaluates rule-based signals (such as a `BinderSpamAnomalyDetector`) and triggers Perfetto traces. A dedicated `MemoryAnomalyRateLimiter` throttles memory-limit anomaly profiling before requests reach `ProfilingService`.
 
@@ -2952,17 +3023,17 @@ Android 17 reorganizes several framework-service-adjacent subsystems. The headli
 
 **Wired Serial API + native daemon.** A wired serial-port API (`Context.SERIAL_SERVICE`, `"serial"`), distinct from USB serial: `SerialManager`/`SerialPort` in `frameworks/base/core/java/android/hardware/serial/`, backed by `SerialManagerService` in `SystemServer.java`. A Rust daemon registers the lazy binder `native_serial` behind the `enable_wired_serial_api` flag (`frameworks/native/services/serialservice/rust/service.rs:53`).
 
-**Process Memory Guardian Daemon (pmgd).** Native Rust per-process daemon watching each target process's cgroup-v2 `memory.high` pressure and `anon_limit_in_mb`, killing offenders after a reclaim grace period and emitting kill telemetry as statsd atoms (`system/memory/guardian/README.md`). Complements `mmd` with granular per-process enforcement.
+**Process Memory Guardian Daemon (pmgd).** Native Rust per-process daemon. It watches each target process's cgroup-v2 `memory.high` pressure and `anon_limit_in_mb`. It kills offenders after a reclaim grace period and emits kill telemetry as statsd atoms (`system/memory/guardian/README.md`). Complements `mmd` with granular per-process enforcement.
 
 **New system_server services.** Three managers join `SystemServer.java`, each with a `Context.*_SERVICE` constant: `MultisensoryService` (audio-haptic, `MULTISENSORY_MANAGER_SERVICE`), `ContentRestrictionService` (`CONTENT_RESTRICTION_SERVICE`), and `PccSandboxManagerService` (Private Compute Core, `PCC_SANDBOX_SERVICE`) (`frameworks/base/core/java/android/content/Context.java`).
 
 ### Architecture changes
 
-**mmd ZRAM lifecycle and per-process writeback/prefetch.** After boot, `mmd_setup` activates ZRAM and calls `swapon` with an optional swap priority; A17 added explicit swap-priority and multi-device support (`mmd.zram.num_devices`, per-device properties), packing priority into the swap flags via `SWAP_FLAG_PREFER` (`system/memory/mmd/src/zram/setup.rs:40-73`). ZRAM maintenance (idle writeback, recompression) is no longer driven by system_server's own logic; system_server sends `doZramMaintenanceAsync()` hints over Binder and `mmd` applies its own policy.
+**mmd ZRAM lifecycle and per-process writeback/prefetch.** After boot, `mmd_setup` activates ZRAM and calls `swapon` with an optional swap priority. A17 added explicit swap-priority and multi-device support (`mmd.zram.num_devices`, per-device properties). The priority is packed into the swap flags via `SWAP_FLAG_PREFER` (`system/memory/mmd/src/zram/setup.rs:40-73`). ZRAM maintenance (idle writeback, recompression) is no longer driven by system_server's own logic; system_server sends `doZramMaintenanceAsync()` hints over Binder and `mmd` applies its own policy.
 
 The genuinely new low-memory path is **per-process** ZRAM operations. `IMmd` gained `supportsProcessMemoryZramOps()`, `asyncWritebackProcessZramMemory(pidfd, callback)` and `asyncPrefetchProcessZramMemory(pidfd)` (`system/memory/mmd/aidl/android/os/IMmd.aidl:51-80`). Writeback targets a single process by `pidfd`, pushes its ZRAM-resident pages to the backing device, and reports a `WritebackStatus` plus bytes written through `IMmdProcessWritebackCallback`. Prefetch is the inverse: it pulls a process's written-back pages back into the compressed pool before a cached app is resumed. These ride new zram kernel ioctls (`ZRAM_ANDROID_IOC_PROCESS_WRITEBACK_CMD`, `..._PREFETCH_CMD`) wrapped in `system/memory/mmd/src/zram/per_process_ioctls.rs`.
 
-Internally `MmdService` runs a two-level work queue (`system/memory/mmd/src/service.rs:68-146`): prefetch goes on a high-priority `prefetch_work` deque, writeback and periodic maintenance on low-priority `other_work`. A prefetch request for a pid cancels any still-pending writeback for that process (matched via `pidfds_likely_equals`), so a resume cannot race a writeback about to evict the very pages being prefetched.
+Internally `MmdService` runs a two-level work queue (`system/memory/mmd/src/service.rs:68-146`): prefetch goes on a high-priority `prefetch_work` deque, writeback and periodic maintenance on low-priority `other_work`. A prefetch request for a pid cancels any still-pending writeback for that process (matched via `pidfds_likely_equals`). As a result, a resume cannot race a writeback about to evict the very pages being prefetched.
 
 mmd per-process ZRAM writeback and prefetch flow
 
@@ -2979,49 +3050,51 @@ flowchart TD
     WB -->|"onProcessMemoryWritebackComplete(status, bytesWritten)"| SS
 ```
 
-**Permission / Privacy: agent activity and PCC awareness.** The Permission module (PermissionController, role-controller, Safety Center, 533 commits) has two architectural threads. First, a new *agent activity / agent timeline* privacy surface tracks which AI agents accessed user data, with 24-hour and 7-day windows, under new `appinteraction` and `appfunctions` source trees (e.g. `.../permissioncontroller/appinteraction/domain/model/v31/AgentActivityItem.kt`, `.../appfunctions/ui/handheld/v37/AgentUsageDetailsFragment.kt`) behind an agent-activity flag. Second, Private Compute Core awareness threads through permission/Safety Center UID checks: Safety Center resolves a PCC sandbox UID back to its owning app UID before comparison (`packages/modules/Permission/.../safetycenter/SafetyCenterService.java`), and the `PERSONAL_CONTEXT_*` signature permissions are now marked `allowedInPrivateComputeCore`.
+**Permission / Privacy: agent activity and PCC awareness.** The Permission module (PermissionController, role-controller, Safety Center, 533 commits) has two architectural threads. First, a new *agent activity / agent timeline* privacy surface tracks which AI agents accessed user data, with 24-hour and 7-day windows. It lives under new `appinteraction` and `appfunctions` source trees (e.g. `.../permissioncontroller/appinteraction/domain/model/v31/AgentActivityItem.kt`, `.../appfunctions/ui/handheld/v37/AgentUsageDetailsFragment.kt`) behind an agent-activity flag.
 
-**Private space role policy.** Role qualification gained per-package and cross-user hooks. `RoleBehavior` adds `isPackageAllowedToBypassQualificationAsUser(...)`, and `Role` now treats `EXCLUSIVITY_PROFILE_GROUP` roles as unavailable to private-space profiles unless the device is organization-owned (`.../role-controller/java/com/android/role/controller/model/{RoleBehavior,Role}.java`).
+Second, Private Compute Core awareness threads through permission/Safety Center UID checks. Safety Center resolves a PCC sandbox UID back to its owning app UID before comparison (`packages/modules/Permission/.../safetycenter/SafetyCenterService.java`). The `PERSONAL_CONTEXT_*` signature permissions are now marked `allowedInPrivateComputeCore`.
+
+**Private space role policy.** Role qualification gained per-package and cross-user hooks. `RoleBehavior` adds `isPackageAllowedToBypassQualificationAsUser(...)`. `Role` now treats `EXCLUSIVITY_PROFILE_GROUP` roles as unavailable to private-space profiles unless the device is organization-owned (`.../role-controller/java/com/android/role/controller/model/{RoleBehavior,Role}.java`).
 
 ### Notable integrations
 
-**statsd metrics pipeline and io_uring.** The StatsD module (130 commits) added an `io_uring`-based socket listener for atom ingestion, guarded behind a new minimum API level 37: `IO_URING_API_VERSION 37`, activated only when both `flags::use_iouring_socket_listener()` and runtime support are present (`packages/modules/StatsD/statsd/src/main.cpp:52-119`). statsd also handles `SIGTERM` cleanly via its `stop()` path and refines UID mapping for sandbox/SDK-sandbox UIDs.
+**statsd metrics pipeline and io_uring.** The StatsD module (130 commits) added an `io_uring`-based socket listener for atom ingestion. It is guarded behind a new minimum API level 37: `IO_URING_API_VERSION 37`. It is activated only when both `flags::use_iouring_socket_listener()` and runtime support are present (`packages/modules/StatsD/statsd/src/main.cpp:52-119`). statsd also handles `SIGTERM` cleanly via its `stop()` path and refines UID mapping for sandbox/SDK-sandbox UIDs.
 
-**mmd as a statsd producer.** `mmd` reports its own ZRAM telemetry as statsd atoms via `statslog_rust`: `ZramSetupExecuted` from the setup service, plus `ZramMaintenanceExecuted`/`ZramMmStatMmd`/`ZramIoStatMmd`/`ZramBdStatMmd` from maintenance (`system/memory/mmd/src/atom.rs:29-39`). UprobeStats and the Profiling anomaly detector are likewise statsd producers, so A17's memory, tracing, profiling and metrics subsystems are increasingly stitched together through the statsd pipeline.
+**mmd as a statsd producer.** `mmd` reports its own ZRAM telemetry as statsd atoms via `statslog_rust`: `ZramSetupExecuted` from the setup service, plus `ZramMaintenanceExecuted`/`ZramMmStatMmd`/`ZramIoStatMmd`/`ZramBdStatMmd` from maintenance (`system/memory/mmd/src/atom.rs:29-39`). UprobeStats and the Profiling anomaly detector are likewise statsd producers. As a result, A17's memory, tracing, profiling and metrics subsystems are increasingly stitched together through the statsd pipeline.
 
-**PartnerBookmarksProvider** (`packages/providers/PartnerBookmarksProvider`) is a small read-only provider exposing an OEM/carrier's preloaded browser bookmarks; `query()` serves rows from `res/values/` string arrays through a `MatrixCursor` while `insert`/`update`/`delete` throw `UnsupportedOperationException`.
+**PartnerBookmarksProvider** (`packages/providers/PartnerBookmarksProvider`) is a small read-only provider that exposes an OEM/carrier's preloaded browser bookmarks. `query()` serves rows from `res/values/` string arrays through a `MatrixCursor`. `insert`/`update`/`delete` throw `UnsupportedOperationException`.
 
-**Notification semantic color API.** `Notification.createSemanticStyleAnnotation(int)` (`frameworks/base/core/java/android/app/Notification.java:1039`, flag `api_notification_semantic_style`) lets a Live Update tag text spans with a *meaning* -- `SEMANTIC_STYLE_INFO`/`SAFE`/`CAUTION`/`DANGER` (`Notification.java:967`-1009) -- and the platform picks a palette (blue/green/orange/red) that survives Material You theming, dark mode, and high-contrast accessibility instead of hard-coding RGB. See Chapter 28, Section 28.20.5.
+**Notification semantic color API.** `Notification.createSemanticStyleAnnotation(int)` (`frameworks/base/core/java/android/app/Notification.java:1039`, flag `api_notification_semantic_style`) lets a Live Update tag text spans with a *meaning*. The meanings are `SEMANTIC_STYLE_INFO`/`SAFE`/`CAUTION`/`DANGER` (`Notification.java:967`-1009). The platform picks a palette (blue/green/orange/red) that survives Material You theming, dark mode, and high-contrast accessibility, unlike hard-coded RGB. See Chapter 28, Section 28.20.5.
 
 ## D.8 Connectivity
 
-Android 17's connectivity surface is dominated by one cross-cutting theme: **generic ranging**. A new system service unifies UWB, Bluetooth Channel Sounding, Wi-Fi RTT and BLE RSSI behind a single `RangingManager` API, and the controller-level stacks in Bluetooth, Wi-Fi and UWB all grew the primitives that feed it. Alongside ranging, Wi-Fi gained a new Unsynchronized Service Discovery (USD) service, NFC added a gesture-exchange API for tap-to-X, and telephony continued building out satellite / NTN support.
+Android 17's connectivity surface is dominated by one cross-cutting theme: **generic ranging**. A new system service unifies UWB, Bluetooth Channel Sounding, Wi-Fi RTT and BLE RSSI behind a single `RangingManager` API. The controller-level stacks in Bluetooth, Wi-Fi and UWB all grew the primitives that feed it. Alongside ranging, Wi-Fi gained a new Unsynchronized Service Discovery (USD) service. NFC added a gesture-exchange API for tap-to-X. Telephony continued to build out satellite / NTN support.
 
 ### New projects
 
 **`hardware/nxp/uwb` -- NXP UWB vendor HAL.** A new repository providing a concrete vendor implementation of the `android.hardware.uwb` AIDL HAL for NXP's SR1XX UWB chipset family. Previously the tree shipped only the HAL interface and a stub; this repo carries a shippable implementation OEMs using NXP silicon can build directly.
 
-The AIDL service implements `IUwb`/`IUwbChip` (`hardware/nxp/uwb/aidl/uwb.h:33`, `uwb_chip.h:35`) and registers as `android.hardware.uwb-service.nxp` (init service `vendor.uwb_hal`, declaring `IUwb` v1). The thin AIDL layer bridges into the legacy NXP HAL core -- `open()`/`coreInit()`/`sendUciMessage()` forward to `phNxpUciHal_open`/`_coreInitialization`/`_write` (`hardware/nxp/uwb/aidl/uwb_chip.cpp:69,90,101`) -- with the bulk of the logic (HBCI firmware download, TML transport, calibration, session/time-sync) under `halimpl/` and board profiles like `example_config/SR1XX`. This is what makes UWB hardware ranging work on NXP-based devices feeding the ranging stack below.
+The AIDL service implements `IUwb`/`IUwbChip` (`hardware/nxp/uwb/aidl/uwb.h:33`, `uwb_chip.h:35`) and registers as `android.hardware.uwb-service.nxp` (init service `vendor.uwb_hal`, declaring `IUwb` v1). The thin AIDL layer bridges into the legacy NXP HAL core. `open()`/`coreInit()`/`sendUciMessage()` forward to `phNxpUciHal_open`/`_coreInitialization`/`_write` (`hardware/nxp/uwb/aidl/uwb_chip.cpp:69,90,101`). The bulk of the logic (HBCI firmware download, TML transport, calibration, session/time-sync) sits under `halimpl/` and board profiles like `example_config/SR1XX`. This is what makes UWB hardware ranging work on NXP-based devices feeding the ranging stack below.
 
 ### New modules
 
-**Generic Ranging stack (`packages/modules/Uwb/ranging`).** A new multi-technology ranging subsystem ships inside the UWB module, exposing the public `android.ranging` framework (50 classes under `packages/modules/Uwb/ranging/framework/java/android/ranging`), fronted by `RangingManager` registered as the `Context.RANGING_SERVICE` system service (`RangingManager.java:55`). The backing `RangingService extends SystemService` and `publishBinderService(Context.RANGING_SERVICE, ...)` (`service/.../RangingService.java:25,38`); SystemServer loads it from the UWB apex JAR via `startServiceFromJar(RANGING_SERVICE_CLASS, RANGING_APEX_SERVICE_JAR_PATH)` (`frameworks/base/services/java/com/android/server/SystemServer.java:3310-3312`).
+**Generic Ranging stack (`packages/modules/Uwb/ranging`).** A new multi-technology ranging subsystem ships inside the UWB module. It exposes the public `android.ranging` framework (50 classes under `packages/modules/Uwb/ranging/framework/java/android/ranging`), fronted by `RangingManager` registered as the `Context.RANGING_SERVICE` system service (`RangingManager.java:55`). The backing `RangingService extends SystemService` and `publishBinderService(Context.RANGING_SERVICE, ...)` (`service/.../RangingService.java:25,38`); SystemServer loads it from the UWB apex JAR via `startServiceFromJar(RANGING_SERVICE_CLASS, RANGING_APEX_SERVICE_JAR_PATH)` (`frameworks/base/services/java/com/android/server/SystemServer.java:3310-3312`).
 
-The service abstracts six underlying technologies behind a common `RangingAdapter` (`service/.../RangingTechnology.java:39-46`): `UWB`, `CS` (Bluetooth Channel Sounding, formerly HADM), `RTT` and `RTT_STATION` (Wi-Fi 802.11mc), `RSSI` (BLE) and `WIFI_PD` (Wi-Fi Proximity Detection). Per-technology API params live in subpackages (`ble/cs/BleCsRangingParams`, `wifi/rtt/RttRangingParams`, `wifi/pd/WifiPdRangingParams`, `uwb/UwbRangingParams`). Apps express a `RangingPreference`/`SessionConfig` and the service picks, fuses and switches technologies at runtime through a `fusion` engine (`FilteringFusionEngine`, `DataFusers`) and session `engine` classes including make-before-break / break-before-make handoff. Out-of-band negotiation (`oob/`) lets two devices agree on a technology over BLE.
+The service abstracts six underlying technologies behind a common `RangingAdapter` (`service/.../RangingTechnology.java:39-46`). The technologies are `UWB`, `CS` (Bluetooth Channel Sounding, formerly HADM), `RTT` and `RTT_STATION` (Wi-Fi 802.11mc), `RSSI` (BLE) and `WIFI_PD` (Wi-Fi Proximity Detection). Per-technology API params live in subpackages (`ble/cs/BleCsRangingParams`, `wifi/rtt/RttRangingParams`, `wifi/pd/WifiPdRangingParams`, `uwb/UwbRangingParams`). Apps express a `RangingPreference`/`SessionConfig`. The service picks, fuses and switches technologies at runtime through a `fusion` engine (`FilteringFusionEngine`, `DataFusers`) and session `engine` classes, including make-before-break / break-before-make handoff. Out-of-band negotiation (`oob/`) lets two devices agree on a technology over BLE.
 
 **Wi-Fi USD service (`packages/modules/Wifi/.../usd`).** Unsynchronized Service Discovery gets a dedicated `@SystemApi UsdManager` (`framework/java/android/net/wifi/usd/UsdManager.java:65-67`, gated on `Flags.FLAG_USD`) registered as `Context.WIFI_USD_SERVICE` (`WifiFrameworkInitializer.java:124-132`), with `PublishSession`/`SubscribeSession` and a new `IUsdManager` AIDL. USD also threads into Wi-Fi Aware and Wi-Fi P2P (`WifiP2pUsdBasedServiceDiscoveryConfig`, plus `WifiP2pUsdBasedServiceResponse` in the `nsd/` subpackage).
 
-**USB device authorization (`frameworks/native/services/usbauthservice`).** A new Rust daemon implementing the `IUsbAuthManager` binder service (`service.rs:15`) behind the framework-internal `android.hardware.usb.auth` AIDL interface (`Android.bp:23`, depends on `android.hardware.usb.auth-rust`; defined in `frameworks/base/core/java/Android.bp`, not a vendor HAL). It authorizes attached USB devices against an allow / interactive-PIN policy engine (`rules.rs`, `authorization.rs`) -- desktop / large-screen security hardening.
+**USB device authorization (`frameworks/native/services/usbauthservice`).** A new Rust daemon implements the `IUsbAuthManager` binder service (`service.rs:15`). The service sits behind the framework-internal `android.hardware.usb.auth` AIDL interface (`Android.bp:23`, depends on `android.hardware.usb.auth-rust`; defined in `frameworks/base/core/java/Android.bp`, not a vendor HAL). It authorizes attached USB devices against an allow / interactive-PIN policy engine (`rules.rs`, `authorization.rs`) -- desktop / large-screen security hardening.
 
-**AOSP IMS stack (`packages/modules/ImsStack`).** A full in-tree IMS stack shipped as the `com.android.imsstack` privileged app (`java/.../ImsStackApp.java`, `java/Android.bp:111`): a Java service over JNI driving a native `libimsstack` C++ SIP engine (`native/libimsstack/Android.bp`, `cc_library_shared "libimsstack"`).
+**AOSP IMS stack (`packages/modules/ImsStack`).** A full in-tree IMS stack shipped as the `com.android.imsstack` privileged app (`java/.../ImsStackApp.java`, `java/Android.bp:111`). It is a Java service over JNI that drives a native `libimsstack` C++ SIP engine (`native/libimsstack/Android.bp`, `cc_library_shared "libimsstack"`).
 
-**LE Audio Peripheral (server) role (`packages/modules/Bluetooth`).** The stack gained an in-stack LE Audio server/acceptor role -- the "BAP Peripheral" `LeAudioServer` (`system/bta/le_audio/server/server.cc:63,66`) -- backed by new Rust ISO and periodic-sync managers (`system/rust/src/le_audio/iso_manager/manager.rs`, `periodic_advertising_sync/manager.rs`), complementing the LE Audio HAL / broadcast-sink noted in D.3.
+**LE Audio Peripheral (server) role (`packages/modules/Bluetooth`).** The stack gained an in-stack LE Audio server/acceptor role, the "BAP Peripheral" `LeAudioServer` (`system/bta/le_audio/server/server.cc:63,66`). New Rust ISO and periodic-sync managers (`system/rust/src/le_audio/iso_manager/manager.rs`, `periodic_advertising_sync/manager.rs`) back it. They complement the LE Audio HAL / broadcast-sink noted in D.3.
 
 **Mainline supplicant (`packages/modules/Wifi`) -- architecture change.** wpa_supplicant is moving into the Wi-Fi mainline module via the unstable `IMainlineSupplicant` AIDL (`aidl/mainline_supplicant/.../IMainlineSupplicant.aidl:26`), reached through `MainlineSupplicantAidlManager` binding the `wifi_mainline_supplicant` service (`service/.../MainlineSupplicantAidlManager.java:44,46`).
 
 ### Architecture changes
 
-**Bluetooth Channel Sounding feeds the ranging stack.** The Bluetooth stack gained a Channel Sounding pipeline: the GD HCI `channel_sounding/` metrics layer, a `distance_measurement_manager_impl` driving `METHOD_CS` sessions with security levels and producing distance/velocity results (`system/gd/hci/distance_measurement_manager_impl.cc:45,361`), and the RAS (Ranging Service GATT profile) types under `system/bta/ras/`. A new `enforce_security_for_ranging` flag hardens CS ranging sessions, and the results surface to apps via the `CS` adapter in the generic ranging service. Bluetooth (`packages/modules/Bluetooth`, the release's largest module delta) also continued its LE Audio buildout in parallel.
+**Bluetooth Channel Sounding feeds the ranging stack.** The Bluetooth stack gained a Channel Sounding pipeline. It has the GD HCI `channel_sounding/` metrics layer and the RAS (Ranging Service GATT profile) types under `system/bta/ras/`. A `distance_measurement_manager_impl` drives `METHOD_CS` sessions with security levels and produces distance/velocity results (`system/gd/hci/distance_measurement_manager_impl.cc:45,361`). A new `enforce_security_for_ranging` flag hardens CS ranging sessions, and the results surface to apps via the `CS` adapter in the generic ranging service. Bluetooth (`packages/modules/Bluetooth`, the release's largest module delta) also continued its LE Audio buildout in parallel.
 
 How the generic ranging service multiplexes the radios:
 
@@ -3043,50 +3116,64 @@ graph TD
 
 ### Notable integrations
 
-**Telephony satellite / NTN.** The satellite stack under `frameworks/opt/telephony/.../satellite` keeps expanding: carrier-roaming NTN APIs (`isInCarrierRoamingNtnMode`, `getCarrierRoamingNtnAvailableServices`), NR-NTN signal-strength keys (SSRSRP/SSRSRQ/SSSINR), satellite enable/suspend APIs, emergency-messaging routing carrier configs, and new RIL constants for the 26Q2 Satellite HAL. `NtnCapabilityResolver`, `SatellitePlmnNetworkInfo` and `SatelliteController` carry the bulk; the framework now lists satellite PLMNs and ICCID to the modem via `updateSystemSelectionChannels`. On the app side, `packages/services/Telephony` tracked these with satellite messaging/SOS UI and carrier-config plumbing.
+**Telephony satellite / NTN.** The satellite stack under `frameworks/opt/telephony/.../satellite` keeps expanding. The additions include carrier-roaming NTN APIs (`isInCarrierRoamingNtnMode`, `getCarrierRoamingNtnAvailableServices`) and NR-NTN signal-strength keys (SSRSRP/SSRSRQ/SSSINR). They also include satellite enable/suspend APIs, emergency-messaging routing carrier configs, and new RIL constants for the 26Q2 Satellite HAL. `NtnCapabilityResolver`, `SatellitePlmnNetworkInfo` and `SatelliteController` carry the bulk. The framework now lists satellite PLMNs and ICCID to the modem via `updateSystemSelectionChannels`.
+
+On the app side, `packages/services/Telephony` tracked these with satellite messaging/SOS UI and carrier-config plumbing.
 
 **NFC gesture exchange / tap-to-X.** NFC added a `NfcGestureExchangeCallbackListener` and `PERFORM_GESTURE_EXCHANGE`-gated APIs (`packages/modules/Nfc/framework/java/android/nfc/`) plus home-screen tap-to-X routing, building on the existing observe-mode and wallet-role infrastructure. Observe mode's "always on" variant was removed.
 
 
-**Wi-Fi Aware.** Aware reporting and pairing matured: group-key cipher-suite reporting, `AwarePairingConfig` / supplicant-driven pairing verification with NPKSA handling, USD-based discovery, and `UsdPeerId` carried in `RangingResult` -- another path connecting Aware discovery to the unified ranging results.
+**Wi-Fi Aware.** Aware reporting and pairing matured. The changes are group-key cipher-suite reporting, `AwarePairingConfig` / supplicant-driven pairing verification with NPKSA handling, USD-based discovery, and `UsdPeerId` carried in `RangingResult`. This is another path that connects Aware discovery to the unified ranging results.
 
-**Connectivity (Tethering/NetworkStack).** The 877-commit Connectivity delta is mostly incremental hardening of Tethering, NetworkStack and ConnectivityService; the notable new-capability item is the device-to-device path under `nearby/` gated by `enable_d2d_connectivity_service` (`packages/modules/Connectivity/nearby/flags/d2d_connectivity.aconfig`).
+**Connectivity (Tethering/NetworkStack).** The 877-commit Connectivity delta is mostly incremental hardening of Tethering, NetworkStack and ConnectivityService. The notable new-capability item is the device-to-device path under `nearby/`, gated by `enable_d2d_connectivity_service` (`packages/modules/Connectivity/nearby/flags/d2d_connectivity.aconfig`).
 
-**`usesCleartextTraffic` deprecation.** Apps targeting SDK 37 no longer have the `android:usesCleartextTraffic` manifest flag honored; the compat change `DEPRECATE_USES_CLEARTEXT_TRAFFIC` (`frameworks/base/packages/NetworkSecurityConfig/platform/src/android/security/net/config/ManifestConfigSource.java`) routes cleartext policy entirely through Network Security Config XML so per-domain rules apply instead of a single global toggle.
+**`usesCleartextTraffic` deprecation.** Apps that target SDK 37 no longer have the `android:usesCleartextTraffic` manifest flag honored. The compat change `DEPRECATE_USES_CLEARTEXT_TRAFFIC` (`frameworks/base/packages/NetworkSecurityConfig/platform/src/android/security/net/config/ManifestConfigSource.java`) routes cleartext policy entirely through Network Security Config XML. As a result, per-domain rules apply instead of a single global toggle.
 
-**Wi-Fi RTT 802.11az secure ranging.** Wi-Fi RTT gains 802.11az secure ranging behind the `secure_ranging` flag: `SecureRangingConfig` and `PasnConfig` (`packages/modules/Wifi/framework/java/android/net/wifi/rtt/`) negotiate PASN (Pre-Association Security Negotiation) to authenticate and protect FTM frames, with open/opportunistic/authenticated modes and `RangingResult.isRangingAuthenticated()`/`isRangingFrameProtected()` status.
+**Wi-Fi RTT 802.11az secure ranging.** Wi-Fi RTT gains 802.11az secure ranging behind the `secure_ranging` flag. `SecureRangingConfig` and `PasnConfig` (`packages/modules/Wifi/framework/java/android/net/wifi/rtt/`) negotiate PASN (Pre-Association Security Negotiation) to authenticate and protect FTM frames. The API also has open/opportunistic/authenticated modes and `RangingResult.isRangingAuthenticated()`/`isRangingFrameProtected()` status.
 
-**UWB OOB ranging spec v2/v3.** The UWB module extends its out-of-band ranging packet format (`packages/modules/Uwb/ranging/service/oob/oob_packets.pdl`) so two devices can exchange ranging parameters over a side channel (NFC/BLE) before opening the UWB session, feeding the generic ranging stack in D.8.
+**UWB OOB ranging spec v2/v3.** The UWB module extends its out-of-band ranging packet format (`packages/modules/Uwb/ranging/service/oob/oob_packets.pdl`). As a result, two devices can exchange ranging parameters over a side channel (NFC/BLE) before they open the UWB session. This feeds the generic ranging stack in D.8.
 
-**Integrated VoIP call logs.** Self-managed VoIP apps can write into the shared system call log (`CallLog.Calls`, new `UUID` column) gated by `telecom_integrated_call_log` flags; `CallAttributes.setLogExcluded()`/`setContactUri()` (`frameworks/base/telecomm/framework/java/android/telecom/CallAttributes.java`) control per-call inclusion, and dialers query VoIP calls via `INCLUDE_VOIP_CALLS_PARAM_KEY`.
+**Integrated VoIP call logs.** Self-managed VoIP apps can write into the shared system call log (`CallLog.Calls`, new `UUID` column), gated by `telecom_integrated_call_log` flags. `CallAttributes.setLogExcluded()`/`setContactUri()` (`frameworks/base/telecomm/framework/java/android/telecom/CallAttributes.java`) control per-call inclusion. Dialers query VoIP calls via `INCLUDE_VOIP_CALLS_PARAM_KEY`.
 
-**OTT call auto-routing to a premium slice.** When a transactional self-managed VoIP call starts, the system requests a premium 5G slice on the app's behalf via `NET_CAPABILITY_PRIORITIZE_UNIFIED_COMMUNICATIONS` (value 38, `packages/modules/Connectivity/framework/src/android/net/NetworkCapabilities.java`); `ConnectivityService` maps the request onto modem URSP rules, and an app opts out through `PhoneAccount.CAPABILITY_OPT_OUT_OF_PREMIUM_NETWORK`.
+**OTT call auto-routing to a premium slice.** When a transactional self-managed VoIP call starts, the system requests a premium 5G slice on the app's behalf via `NET_CAPABILITY_PRIORITIZE_UNIFIED_COMMUNICATIONS` (value 38, `packages/modules/Connectivity/framework/src/android/net/NetworkCapabilities.java`). `ConnectivityService` maps the request onto modem URSP rules. An app opts out through `PhoneAccount.CAPABILITY_OPT_OUT_OF_PREMIUM_NETWORK`.
 
-**SIM Toolkit app (`Stk`).** The bundled SIM Toolkit UI (`packages/apps/Stk`, package `com.android.stk`) runs inside the phone process and renders proactive SIM commands: `CatService` broadcasts `CAT_CMD_ACTION` (guarded by `RECEIVE_STK_COMMANDS`) to `StkAppService`, which switches on the `CommandType` and launches the matching activity (`StkDialogActivity`, `StkMenuActivity`, `StkInputActivity`, tone player).
+**SIM Toolkit app (`Stk`).** The bundled SIM Toolkit UI (`packages/apps/Stk`, package `com.android.stk`) runs inside the phone process and renders proactive SIM commands. `CatService` broadcasts `CAT_CMD_ACTION` (guarded by `RECEIVE_STK_COMMANDS`) to `StkAppService`. The service switches on the `CommandType` and launches the matching activity (`StkDialogActivity`, `StkMenuActivity`, `StkInputActivity`, tone player).
 
 ## D.9 Security
 
-Android 17 reshapes the hardware-backed security stack around two themes: moving the secure services (KeyMint, SecureClock, SharedSecret, RKP, Gatekeeper) into protected VMs, and introducing a general in-process sandboxing primitive (LFI) so untrusted native code can run inside trusted processes. Several new repos appear: a dedicated Weaver implementation, the SEE AuthMgr, and an out-of-tree key-attestation verification library.
+Android 17 reshapes the hardware-backed security stack around two themes. The first moves the secure services (KeyMint, SecureClock, SharedSecret, RKP, Gatekeeper) into protected VMs. The second introduces a general in-process sandboxing primitive (LFI) so untrusted native code can run inside trusted processes. Several new repos appear: a dedicated Weaver implementation, the SEE AuthMgr, and an out-of-tree key-attestation verification library.
 
 ### New projects
 
-**`system/lfi` — Lightweight Fault Isolation runtime support.** A new repo holding the shared glue to compile and load LFI-sandboxed libraries. Per `system/lfi/README.md` it has three pieces: `boxrt` (runtime stubs linked into the sandboxed library, e.g. `abort`/`brk`/`pause` as raw `svc` syscalls in `boxrt/boxrt_minimal.c`), `allocator` (a thread-safe spinlock minimal allocator, `allocator/alloc.c`), and `relocator` (a minimal `-static-pie` loader doing relocations for `lfi-bind`, `relocator/relocate.c` + `start.S`). LFI is the software-fault-isolation scheme from Stanford/LLVM that confines a library's memory accesses and control flow to a sandbox region via verified machine code rather than a separate address space. `system/lfi/Android.bp` defines `cc_defaults` `system_lfi_defaults` (`lfi_supported: true`, `nocrt`, `stl: "none"`, statically linking `libc_lfi`/`libm_lfi`, arm64-only, `apex_available: ["com.android.media.swcodec"]`) — the first production consumer is the swcodec APEX.
+**`system/lfi` — Lightweight Fault Isolation runtime support.** A new repo holding the shared glue to compile and load LFI-sandboxed libraries. Per `system/lfi/README.md` it has three pieces. `boxrt` provides runtime stubs linked into the sandboxed library, e.g. `abort`/`brk`/`pause` as raw `svc` syscalls in `boxrt/boxrt_minimal.c`. `allocator` is a thread-safe spinlock minimal allocator (`allocator/alloc.c`). `relocator` is a minimal `-static-pie` loader that does relocations for `lfi-bind` (`relocator/relocate.c` + `start.S`).
 
-**`system/weaver` — Weaver anti-rollback secret storage TA.** A new Rust workspace (`Cargo.toml` members `ta`, `wire`) implementing the `IWeaver` HAL backed by a secure-environment trusted application. Weaver stores per-slot key/value secrets for credential throttling: each `Slot` (`ta/src/lib.rs`) holds a `slot_key`, `slot_value`, `last_checked_timestamp`, and `failure_counter`, and the TA returns `Error::IncorrectKey(ms)` / `Error::Throttle(ms)` to enforce hardware-backed retry back-off that survives reboots. The HAL service (`hal/src/lib.rs`) is a thin `IWeaver` binder shim serializing requests as CBOR over a `SerializedChannel` to the TA, reusing the shared `system/security/hals/*` channel + wire crates.
+LFI is the software-fault-isolation scheme from Stanford/LLVM. It confines a library's memory accesses and control flow to a sandbox region via verified machine code rather than a separate address space. `system/lfi/Android.bp` defines `cc_defaults` `system_lfi_defaults` (`lfi_supported: true`, `nocrt`, `stl: "none"`, static linking of `libc_lfi`/`libm_lfi`, arm64-only, `apex_available: ["com.android.media.swcodec"]`). The first production consumer is the swcodec APEX.
 
-**`system/see/authmgr` — Secure Execution Environment authentication manager.** Rust crates split into a frontend (`authmgr-fe`), backend (`authmgr-be`, `authmgr-be-impl`, `authmgr-be-storage-impl`), and `authmgr-common`, plus a `secure-storage-aidl-wrapper`. AuthMgr implements `hardware/interfaces/security/see/authmgr/IAuthMgrAuthorization.aidl` (cited in `authmgr-fe/src/authorization.rs`), authenticating protected VMs (pVMs) to secure-side trusted apps using DICE certificate chains and policies: `AuthMgrFe::authenticate` presents an `ExplicitKeyDiceCertChain` + `SignedConnectionRequest`, and the backend deduplicates instances by instance-id and DICE mode and enforces rollback protection. The 42 commits add two DICE-chain modes per instance id, override points for DICE policy, and secure-storage staging/commit plus `read_file`/`write_file` APIs.
+**`system/weaver` — Weaver anti-rollback secret storage TA.** A new Rust workspace (`Cargo.toml` members `ta`, `wire`) implementing the `IWeaver` HAL backed by a secure-environment trusted application. Weaver stores per-slot key/value secrets for credential throttling. Each `Slot` (`ta/src/lib.rs`) holds a `slot_key`, `slot_value`, `last_checked_timestamp`, and `failure_counter`. The TA returns `Error::IncorrectKey(ms)` / `Error::Throttle(ms)` to enforce hardware-backed retry back-off that survives reboots.
+
+The HAL service (`hal/src/lib.rs`) is a thin `IWeaver` binder shim. It serializes requests as CBOR over a `SerializedChannel` to the TA. It reuses the shared `system/security/hals/*` channel + wire crates.
+
+**`system/see/authmgr` — Secure Execution Environment authentication manager.** Rust crates split into a frontend (`authmgr-fe`), backend (`authmgr-be`, `authmgr-be-impl`, `authmgr-be-storage-impl`), and `authmgr-common`, plus a `secure-storage-aidl-wrapper`. AuthMgr implements `hardware/interfaces/security/see/authmgr/IAuthMgrAuthorization.aidl` (cited in `authmgr-fe/src/authorization.rs`). It authenticates protected VMs (pVMs) to secure-side trusted apps using DICE certificate chains and policies. `AuthMgrFe::authenticate` presents an `ExplicitKeyDiceCertChain` + `SignedConnectionRequest`. The backend deduplicates instances by instance-id and DICE mode, and it enforces rollback protection.
+
+The 42 commits add two DICE-chain modes per instance id, override points for DICE policy, and secure-storage staging/commit plus `read_file`/`write_file` APIs.
 
 ### New modules
 
-**`external/lfi/*` — LFI toolchain (external, integration only).** Upstream components vendored to back the in-process sandbox: `lfi-verifier` (validates an ELF emits only sandbox-safe instructions), `lfi-runtime` (`liblfi`: reserves/maps the sandbox address space, transfers control in/out, emulates host calls), `lfi-bind` (Go trampoline generator), `rlbox`/`rlbox-lfi` (RLBox API with an LFI backend), and `disarm`/`fadec` (AArch64/x86 decoders for the verifier). Integrated, not modified: the build links `liblfi` and the sandboxed `libopus_lfi` into `frameworks/av/media/module/libapexcodecs`, and codec2 takes the in-process path when `android.media.codec.in_process_sw_codec_lfi` is set (`frameworks/av/media/codec2/hal/client/client.cpp:1909,2034`) — running an untrusted software decoder inside the codec process with memory safety enforced by verified code rather than a separate process.
+**`external/lfi/*` — LFI toolchain (external, integration only).** Upstream components are vendored to back the in-process sandbox. These include `lfi-verifier` (validates an ELF emits only sandbox-safe instructions). They also include `lfi-runtime` (`liblfi`: reserves/maps the sandbox address space, transfers control in/out, emulates host calls). The rest are `lfi-bind` (Go trampoline generator), `rlbox`/`rlbox-lfi` (RLBox API with an LFI backend), and `disarm`/`fadec` (AArch64/x86 decoders for the verifier).
 
-**`external/keyattestation` — Android Key Attestation verifier (external, integration only).** A Kotlin library (`Android.bp` builds `java_library "keyattestation"`, visible to `//frameworks/base/core/java` and vendor) verifying key-attestation certificate chains produced by KeyMint/RKP. Its `Verifier` takes trust-anchor, revoked-serial, and time sources and returns a `VerificationResult` exposing the attested public key, security level, verified-boot state, and device info, with pluggable `ChallengeChecker`s. It ships its own root set (`roots.json`, `keyattestation_roots` filegroup), mirrored from `github.com/android/keyattestation`.
+Integrated, not modified. The build links `liblfi` and the sandboxed `libopus_lfi` into `frameworks/av/media/module/libapexcodecs`. Codec2 takes the in-process path when `android.media.codec.in_process_sw_codec_lfi` is set (`frameworks/av/media/codec2/hal/client/client.cpp:1909,2034`). This runs an untrusted software decoder inside the codec process with memory safety enforced by verified code rather than a separate process.
+
+**`external/keyattestation` — Android Key Attestation verifier (external, integration only).** A Kotlin library (`Android.bp` builds `java_library "keyattestation"`, visible to `//frameworks/base/core/java` and vendor) verifying key-attestation certificate chains produced by KeyMint/RKP. Its `Verifier` takes trust-anchor, revoked-serial, and time sources. It returns a `VerificationResult` that exposes the attested public key, security level, verified-boot state, and device info. It supports pluggable `ChallengeChecker`s. It ships its own root set (`roots.json`, `keyattestation_roots` filegroup), mirrored from `github.com/android/keyattestation`.
 
 ### Architecture changes
 
-**KeyMint and friends move into a protected VM (keymint-in-vm).** The largest sepolicy theme this cycle (`system/sepolicy`, 452 commits) is exposing the hardware security HALs from inside a VM. New `accessor` service support is defined, and accessor permissions are added for `IRemotelyProvisionedComponent`, `ISecureClock`, `ISharedSecret`, `IProvisioning`, and (separately) `gatekeeper-in-vm` for `IGatekeeper`. `ISharedSecret/security_vm` and a KeyMint provisioning service context are added to `service_contexts`. The effect: KeyMint, RKP, SecureClock, SharedSecret, and Gatekeeper can run in a `security_vm` (Microdroid/pVM), reached by the platform through accessor services rather than a vendor HIDL/AIDL HAL on the host. This is what AuthMgr's pVM authentication underpins.
+**KeyMint and friends move into a protected VM (keymint-in-vm).** The largest sepolicy theme this cycle (`system/sepolicy`, 452 commits) is exposing the hardware security HALs from inside a VM. New `accessor` service support is defined. Accessor permissions are added for `IRemotelyProvisionedComponent`, `ISecureClock`, `ISharedSecret`, `IProvisioning`, and (separately) `gatekeeper-in-vm` for `IGatekeeper`. `ISharedSecret/security_vm` and a KeyMint provisioning service context are added to `service_contexts`.
 
-**KeyMint reference TA gains ML-DSA (post-quantum) keys.** `system/keymint` (63 commits) adds ML-DSA signature support to the Rust reference TA, including ML-DSA-87 and PKCS#8 seed import. Keystore2 follows: `system/security/keystore2/src/key_parameter.rs` and `security_level.rs` handle ML-DSA, metrics record ML-DSA variants, and `Algorithm.aidl` adds the enum. KeyMint also reworks attestation: attestation IDs are parsed out of the `KeyParam` list, `Cow` strings hold the application attestation id and encoded Root-of-Trust, and destroying attestation IDs is removed in HAL v5 / AIDL >= 500. The timestamp interface is consolidated into the KeyMint HAL (`hal_timestamp_service` removed from `hal_keymint`).
+The effect is that KeyMint, RKP, SecureClock, SharedSecret, and Gatekeeper can run in a `security_vm` (Microdroid/pVM). The platform reaches them through accessor services rather than a vendor HIDL/AIDL HAL on the host. This is what AuthMgr's pVM authentication underpins.
+
+**KeyMint reference TA gains ML-DSA (post-quantum) keys.** `system/keymint` (63 commits) adds ML-DSA signature support to the Rust reference TA, including ML-DSA-87 and PKCS#8 seed import. Keystore2 follows: `system/security/keystore2/src/key_parameter.rs` and `security_level.rs` handle ML-DSA, metrics record ML-DSA variants, and `Algorithm.aidl` adds the enum.
+
+KeyMint also reworks attestation. Attestation IDs are parsed out of the `KeyParam` list. `Cow` strings hold the application attestation id and encoded Root-of-Trust. Destroying attestation IDs is removed in HAL v5 / AIDL >= 500. The timestamp interface is consolidated into the KeyMint HAL (`hal_timestamp_service` removed from `hal_keymint`).
 
 The diagram below shows how an untrusted software codec runs inside the trusted swcodec process under LFI.
 
@@ -3110,30 +3197,30 @@ flowchart TD
 
 ### Notable integrations
 
-- **RKP module** (`packages/modules/RemoteKeyProvisioning`, the `com.android.rkpd` APEX, 55 commits): hardening rather than new architecture — fallback to a default provisioning URL when the server omits/returns a bad one, reset-to-default config on repeated failures/boot, Widevine provisioning moved to the request POST body and gated on model + OEMCrypto/crypto version, device-reset reporting via `UnverifiedDeviceInfo`, and support for the updated `requestSignedCertificates` server API and Sigma.
-- **Weaver warmup/timeout** flags (`android.security.enable_weaver_warmup`, `enable_weaver_get_timeout`, `frameworks/base/core/java/android/security/flags.aconfig`) are consumed by `LockSettingsService` and the keyguard/bouncer UI to pre-warm the Weaver TA before the credential prompt, reducing unlock latency for the new throttling path. The framework flag pairs with a new HAL-level `IWeaver.warmUp()` hint in Weaver v3 (`hardware/interfaces/weaver/aidl/android/hardware/weaver/IWeaver.aidl`) that lets the secure element transition to a ready state ahead of an imminent read/write.
-- **HPKE JCA SPI** (`HpkeSpi`). A public Service-Provider Interface for Hybrid Public Key Encryption lands at `libcore/luni/src/main/java/android/crypto/hpke/HpkeSpi.java`; Conscrypt registers `ConscryptHpke.<suite>` entries that bridge to it (`external/conscrypt/.../AndroidHpkeSpi.java`) and route to BoringSSL, exposing HPKE through the standard JCA provider mechanism.
-- **Hardware-wrapped storage keys via kernel ioctls.** Metadata encryption gains a new wrapped-key format: `system/vold/MetadataCrypt.cpp` parses `wrappedkey` alongside the original `wrappedkey_v0` fstab flag, and a `KeyType` enum (`kRaw`/`kHwWrappedV0`/`kHwWrapped`, `system/extras/libfscrypt/include/fscrypt/fscrypt.h`) drives `prepareKeyForUse()` so hardware-wrapped key material reaches the `dm-default-key` inline encryption engine without ever appearing in plaintext.
+- **RKP module** (`packages/modules/RemoteKeyProvisioning`, the `com.android.rkpd` APEX, 55 commits): hardening rather than new architecture. The changes include a fallback to a default provisioning URL when the server omits/returns a bad one. They also include reset-to-default config on repeated failures/boot. Widevine provisioning moved to the request POST body and is gated on model + OEMCrypto/crypto version. The module also reports device resets via `UnverifiedDeviceInfo` and supports the updated `requestSignedCertificates` server API and Sigma.
+- **Weaver warmup/timeout** flags (`android.security.enable_weaver_warmup`, `enable_weaver_get_timeout`, `frameworks/base/core/java/android/security/flags.aconfig`) are consumed by `LockSettingsService` and the keyguard/bouncer UI to pre-warm the Weaver TA before the credential prompt. This reduces unlock latency for the new throttling path. The framework flag pairs with a new HAL-level `IWeaver.warmUp()` hint in Weaver v3 (`hardware/interfaces/weaver/aidl/android/hardware/weaver/IWeaver.aidl`). The hint lets the secure element transition to a ready state ahead of an imminent read/write.
+- **HPKE JCA SPI** (`HpkeSpi`). A public Service-Provider Interface for Hybrid Public Key Encryption lands at `libcore/luni/src/main/java/android/crypto/hpke/HpkeSpi.java`. Conscrypt registers `ConscryptHpke.<suite>` entries that bridge to it (`external/conscrypt/.../AndroidHpkeSpi.java`) and route to BoringSSL. This exposes HPKE through the standard JCA provider mechanism.
+- **Hardware-wrapped storage keys via kernel ioctls.** Metadata encryption gains a new wrapped-key format. `system/vold/MetadataCrypt.cpp` parses `wrappedkey` alongside the original `wrappedkey_v0` fstab flag. A `KeyType` enum (`kRaw`/`kHwWrappedV0`/`kHwWrapped`, `system/extras/libfscrypt/include/fscrypt/fscrypt.h`) drives `prepareKeyForUse()`. As a result, hardware-wrapped key material reaches the `dm-default-key` inline encryption engine without ever appearing in plaintext.
 - **Lock-screen lockout UX.** `LockPatternUtils.getLockoutEndTime(int)` (`frameworks/base/core/java/com/android/internal/widget/LockPatternUtils.java`, backed by `ILockSettings.aidl`) returns when a throttled user may retry, and a new `config_lockscreenLockoutShortlink` string surfaces an account-recovery link in the lockout UI.
-- **SEPolicy `memfd_class` / `memfd_file`.** When the kernel enables the `memfd_class` policy capability, `memfd_create()` descriptors are labeled with the new `memfd_file` SELinux class (`system/sepolicy/private/security_classes`) rather than generic `file`; Android 17 policy names `memfd_file` in its allow rules (`domain.te`, `app.te`), so devices must enable the capability to match shipped policy.
+- **SEPolicy `memfd_class` / `memfd_file`.** When the kernel enables the `memfd_class` policy capability, `memfd_create()` descriptors are labeled with the new `memfd_file` SELinux class (`system/sepolicy/private/security_classes`) rather than generic `file`. Android 17 policy names `memfd_file` in its allow rules (`domain.te`, `app.te`). Therefore, devices must enable the capability to match shipped policy.
 - **PCC / Private Compute Core** is granted keystore access in sepolicy ("Allow keystore operations from within PCC").
-- **Per-app Keystore key limit at API 37.** `keystore2` caps the number of keys a single UID may hold: a `DEFAULT_PER_UID_KEY_LIMIT = 200_000` fallback for all apps and a tighter `API_37_PER_UID_KEY_LIMIT = 50_000` for apps targeting Android 17 (`system/security/keystore2/src/security_level.rs:79`/82). Enforcement is gated by the `limit_keys_per_uid` aconfig flag (`security_level.rs:563`, checked at line 584); per-UID counts are surfaced for diagnostics via `KEYS_PER_UID_MAX_UIDS`/`KEYS_PER_UID_MIN_KEY_COUNT` (`maintenance.rs:436`). See Chapter 40, Section 40.10.10.
+- **Per-app Keystore key limit at API 37.** `keystore2` caps the number of keys a single UID may hold. A `DEFAULT_PER_UID_KEY_LIMIT = 200_000` fallback applies to all apps. A tighter `API_37_PER_UID_KEY_LIMIT = 50_000` applies to apps that target Android 17 (`system/security/keystore2/src/security_level.rs:79`/82). Enforcement is gated by the `limit_keys_per_uid` aconfig flag (`security_level.rs:563`, checked at line 584); per-UID counts are surfaced for diagnostics via `KEYS_PER_UID_MAX_UIDS`/`KEYS_PER_UID_MIN_KEY_COUNT` (`maintenance.rs:436`). See Chapter 40, Section 40.10.10.
 
 ## D.10 UI Framework
 
-Between Android 16 and the Android 17 release branch the UI-framework repos saw their largest churn in the desktop-windowing path (Launcher3, 1978 commits), in the graphics stack (ANGLE promoted toward the default GLES driver, 1335 commits), and in the shared SystemUI/theming libraries.
+Between Android 16 and the Android 17 release branch the UI-framework repos saw their largest churn in three areas. The first is the desktop-windowing path (Launcher3, 1978 commits). The second is the graphics stack (ANGLE promoted toward the default GLES driver, 1335 commits). The third is the shared SystemUI/theming libraries.
 
 ### New modules
 
-`frameworks/libs/systemui` gained a standalone `dynamiccolors` Android library (`frameworks/libs/systemui/dynamiccolors/Android.bp`) carrying light and dark Material color resources (`res/values/colors.xml`, `res/values-night/colors.xml`) so the dynamic-color palette can be consumed without pulling in the whole Monet stack.
+`frameworks/libs/systemui` gained a standalone `dynamiccolors` Android library (`frameworks/libs/systemui/dynamiccolors/Android.bp`). The library carries light and dark Material color resources (`res/values/colors.xml`, `res/values-night/colors.xml`). As a result, the dynamic-color palette can be consumed without the whole Monet stack.
 
-Launcher3's recents/overview is now built as a *windowed* surface rather than a full activity. The new `com.android.quickstep.window` package (`quickstep/src/com/android/quickstep/window/RecentsWindowManager.kt`, `RecentsWindowContext.kt`, `RecentsWindowRootView.kt`, `RecentsWindowSwipeHandler.java`, `RecentsWindowTracker.kt`) hosts Overview inside a `WindowlessWindowManager` / `SurfaceControlViewHost`, gated by `RecentsWindowFlags`, so Overview can coexist with freeform desktop windows on one display.
+Launcher3's recents/overview is now built as a *windowed* surface rather than a full activity. The new `com.android.quickstep.window` package (`quickstep/src/com/android/quickstep/window/RecentsWindowManager.kt`, `RecentsWindowContext.kt`, `RecentsWindowRootView.kt`, `RecentsWindowSwipeHandler.java`, `RecentsWindowTracker.kt`) hosts Overview inside a `WindowlessWindowManager` / `SurfaceControlViewHost`, gated by `RecentsWindowFlags`. As a result, Overview can coexist with freeform desktop windows on one display.
 
 ### Architecture changes
 
 **Per-display taskbar.** Taskbar state is no longer a single global; it is keyed per display through `DisplayModel<PerDisplayTaskbarResource>` (`quickstep/src/com/android/quickstep/DisplayModel.kt`, backed by a `SparseArray` and `PerDisplayRepository`). `TaskbarManagerImpl` (`quickstep/src/com/android/launcher3/taskbar/TaskbarManagerImpl.java`) holds an `mPrimaryDisplayId` plus an `mResources` `DisplayModel`, and creates/recreates a `TaskbarActivityContext` per display (`getTaskbarForDisplay`, `recreateTaskbarForDisplay`). Each `PerDisplayTaskbarResource` owns its own window context, config-change callback, and broadcast receivers, enabling an independent taskbar on external / connected displays in desktop mode.
 
-**Desktop windowing in Launcher.** `TaskbarDesktopModeController` (`quickstep/src/com/android/launcher3/taskbar/TaskbarDesktopModeController.kt`) listens to `DesktopVisibilityController` and exposes display-scoped queries (`isInDesktopMode(displayId)`). `TaskbarRecentAppsController.kt` switches the taskbar's app row by mode: fullscreen shows most-recent tasks, desktop mode shows currently *running* tasks as `GroupTask`s. Desktop app launches route through dedicated remote transitions in the new `com.android.launcher3.desktop` package (`DesktopAppLaunchTransitionManager.kt` and siblings), and desktop mode resolves through `DesktopStateProvider.kt`, now gated by the platform `android.window.DesktopExperienceFlags` mechanism rather than ad-hoc Launcher flags.
+**Desktop windowing in Launcher.** `TaskbarDesktopModeController` (`quickstep/src/com/android/launcher3/taskbar/TaskbarDesktopModeController.kt`) listens to `DesktopVisibilityController` and exposes display-scoped queries (`isInDesktopMode(displayId)`). `TaskbarRecentAppsController.kt` switches the taskbar's app row by mode: fullscreen shows most-recent tasks, desktop mode shows currently *running* tasks as `GroupTask`s. Desktop app launches route through dedicated remote transitions in the new `com.android.launcher3.desktop` package (`DesktopAppLaunchTransitionManager.kt` and siblings). Desktop mode resolves through `DesktopStateProvider.kt`, now gated by the platform `android.window.DesktopExperienceFlags` mechanism rather than ad-hoc Launcher flags.
 
 #### Launcher3 desktop-windowing surface ownership
 
@@ -3155,23 +3242,29 @@ flowchart TD
     TDC --> DT
 ```
 
-**Multi-seed Material color scheme.** `ColorScheme` (`frameworks/libs/systemui/monet/src/com/android/systemui/monet/ColorScheme.java`) now accepts a list of seed colors -- a `private final List<Integer> mSeeds` field, a `ColorScheme(List<Integer> seeds, boolean isDark, ...)` constructor and a `getSeeds()` accessor -- so a wallpaper can drive several palettes instead of one dominant seed.
+**Multi-seed Material color scheme.** `ColorScheme` (`frameworks/libs/systemui/monet/src/com/android/systemui/monet/ColorScheme.java`) now accepts a list of seed colors. The change adds a `private final List<Integer> mSeeds` field, a `ColorScheme(List<Integer> seeds, boolean isDark, ...)` constructor and a `getSeeds()` accessor. As a result, a wallpaper can drive several palettes instead of one dominant seed.
 
 ### Notable integrations
 
-**ANGLE as the default GLES driver.** Android 17 ships the ANGLE (GLES-over-Vulkan) drivers in every base system image: `base_system.mk` unconditionally adds `libEGL_angle`, `libGLESv1_CM_angle`, and `libGLESv2_angle` to `PRODUCT_PACKAGES` (`build/make/target/product/base_system.mk:493`). A product can make ANGLE the *default* GLES implementation by inheriting `angle_default.mk`, which sets `persist.graphics.egl=angle` via `PRODUCT_SYSTEM_EXT_PROPERTIES`. With that property set, the platform EGL loader resolves `libEGL`/`libGLESv2` to ANGLE instead of the vendor GL driver, so every GLES app runs through ANGLE's translator onto Vulkan -- one conformance-tested, driver-independent front end. (The 1335 ANGLE commits are an upstream refresh; only the build-time integration above is platform-visible.)
+**ANGLE as the default GLES driver.** Android 17 ships the ANGLE (GLES-over-Vulkan) drivers in every base system image: `base_system.mk` unconditionally adds `libEGL_angle`, `libGLESv1_CM_angle`, and `libGLESv2_angle` to `PRODUCT_PACKAGES` (`build/make/target/product/base_system.mk:493`).
 
-**SurfaceFlinger RenderEngine moving to Vulkan/Graphite.** The compositor side of the same Vulkan convergence. `RenderEngine` advances off GL through a flag ladder in `frameworks/native/services/surfaceflinger/surfaceflinger_flags*.aconfig`: `vulkan_renderengine` ("Use Vulkan backend in RenderEngine prior to switching to Graphite") selects `GaneshVkRenderEngine`, and `graphite_renderengine` / `force_compile_graphite_renderengine` plus the staged `graphite_renderengine_preview_rollout`, `graphite_renderengine_preview2_rollout` (new in 17), and `graphite_renderengine_desktop_rollout` flags -- each gated on a device-specific `debug.renderengine.graphite*_optin` sysprop -- enable Skia's **Vulkan-only** `GraphiteVkRenderEngine`. New-in-17 supporting machinery includes pipeline precompilation/warmup observability (`skia/compat/PipelineCallbackHandler.{h,cpp}`, `Base64.{h,cpp}`) and a per-context `CacheManagementPolicy` enum (`SkiaRenderEngine.h`) that stops purging GPU resources prematurely across the now-frequent protected/unprotected context switches. Ganesh (GL/Vulkan) remains the default; Graphite rolls out per device. See Chapter 13 (sections 13.9.2 and 13.43) for the full walkthrough.
+A product can make ANGLE the *default* GLES implementation by inheriting `angle_default.mk`, which sets `persist.graphics.egl=angle` via `PRODUCT_SYSTEM_EXT_PROPERTIES`. With that property set, the platform EGL loader resolves `libEGL`/`libGLESv2` to ANGLE instead of the vendor GL driver. As a result, every GLES app runs through ANGLE's translator onto Vulkan. This is one conformance-tested, driver-independent front end. (The 1335 ANGLE commits are an upstream refresh; only the build-time integration above is platform-visible.)
 
-**Theme Service in the wallpaper/theming UI.** WallpaperPicker2 now routes color-overlay application through the platform Theme Service, gated by the framework flag `android.server.Flags.enableThemeService` (`packages/apps/WallpaperPicker2/src/com/android/wallpaper/config/BaseFlags.kt`, `isThemeServiceEnabled()`), alongside desktop-form-factor work in the wallpaper carousel and named custom icon themes for the home screen.
+**SurfaceFlinger RenderEngine moving to Vulkan/Graphite.** The compositor side of the same Vulkan convergence.
+
+`RenderEngine` advances off GL through a flag ladder in `frameworks/native/services/surfaceflinger/surfaceflinger_flags*.aconfig`. `vulkan_renderengine` ("Use Vulkan backend in RenderEngine prior to switching to Graphite") selects `GaneshVkRenderEngine`. `graphite_renderengine` / `force_compile_graphite_renderengine` plus the staged `graphite_renderengine_preview_rollout`, `graphite_renderengine_preview2_rollout` (new in 17), and `graphite_renderengine_desktop_rollout` flags enable Skia's **Vulkan-only** `GraphiteVkRenderEngine`. Each of the Graphite flags is gated on a device-specific `debug.renderengine.graphite*_optin` sysprop.
+
+New-in-17 supporting machinery includes pipeline precompilation/warmup observability (`skia/compat/PipelineCallbackHandler.{h,cpp}`, `Base64.{h,cpp}`). It also includes a per-context `CacheManagementPolicy` enum (`SkiaRenderEngine.h`) that stops purging GPU resources prematurely across the now-frequent protected/unprotected context switches. Ganesh (GL/Vulkan) remains the default; Graphite rolls out per device. See Chapter 13 (sections 13.9.2 and 13.43) for the full walkthrough.
+
+**Theme Service in the wallpaper/theming UI.** WallpaperPicker2 now routes color-overlay application through the platform Theme Service, gated by the framework flag `android.server.Flags.enableThemeService` (`packages/apps/WallpaperPicker2/src/com/android/wallpaper/config/BaseFlags.kt`, `isThemeServiceEnabled()`). It also includes desktop-form-factor work in the wallpaper carousel and named custom icon themes for the home screen.
 
 ## D.11 System Apps
 
-The front doors to Android 17's platform features land in two apps: **Settings** (2145 commits, the 2nd-largest app delta) and **DocumentsUI** (667 commits). Settings gains new feature dashboards (Supervision, desktop experience) and continues a large preference-framework migration; DocumentsUI gets a redesigned file-info experience, a search rebuild, and desktop/large-screen polish.
+The front doors to Android 17's platform features land in two apps: **Settings** (2145 commits, the 2nd-largest app delta) and **DocumentsUI** (667 commits). Settings gains new feature dashboards (Supervision, desktop experience) and continues a large preference-framework migration. DocumentsUI gets a redesigned file-info experience, a search rebuild, and desktop/large-screen polish.
 
 ### New modules
 
-**Settings: Supervision dashboard.** The most significant new Settings surface in 17 is the parental-supervision area, a new package under `src/com/android/settings/supervision/` (first commit 2025-01-21), built on the platform `android.app.supervision.SupervisionManager` and the new `ROLE_SUPERVISION` role. The landing page `SupervisionDashboardScreen.kt` exposes a primary on/off switch, a dynamically-built feature list, and a PIN-management entry point. Sub-areas:
+**Settings: Supervision dashboard.** The most significant new Settings surface in 17 is the parental-supervision area, a new package under `src/com/android/settings/supervision/` (first commit 2025-01-21). It is built on the platform `android.app.supervision.SupervisionManager` and the new `ROLE_SUPERVISION` role. The landing page `SupervisionDashboardScreen.kt` exposes a primary on/off switch, a dynamically-built feature list, and a PIN-management entry point. Sub-areas:
 
 - `webcontentfilters/` — Safe Search / Safe Sites toggles plus per-app browser/search filter screens.
 - `appstorefilters/` — app-store content filtering (`SupervisionAppStoreFiltersScreen.kt`).
@@ -3180,43 +3273,43 @@ The front doors to Android 17's platform features land in two apps: **Settings**
 
 Setup/teardown uses dedicated activities (`SetupSupervisionActivity.kt`, `EnableSupervisionActivity.kt`, `DisableSupervisionActivity.kt`), gated behind `android.app.supervision.flags.Flags` (e.g. `enableSupervisionSettingsUiUpdates`).
 
-**Settings: desktop experience developer toggles.** A new developer-options package `src/com/android/settings/development/desktopexperience/` (first commit 2025-02-13) surfaces the desktop-windowing work: `DesktopExperiencePreferenceController.java` (master `override_desktop_experience_features` toggle backed by `Settings.Global.DEVELOPMENT_OVERRIDE_DESKTOP_EXPERIENCE_FEATURES` and `android.window.DesktopModeFlags`), plus `DesktopModePreferenceController`, `DesktopModeSecondaryDisplayPreferenceController`, `FreeformWindowsPreferenceController` — the front door for Connected Displays / desktop mode.
+**Settings: desktop experience developer toggles.** A new developer-options package `src/com/android/settings/development/desktopexperience/` (first commit 2025-02-13) surfaces the desktop-windowing work. It contains `DesktopExperiencePreferenceController.java` (master `override_desktop_experience_features` toggle backed by `Settings.Global.DEVELOPMENT_OVERRIDE_DESKTOP_EXPERIENCE_FEATURES` and `android.window.DesktopModeFlags`), plus `DesktopModePreferenceController`, `DesktopModeSecondaryDisplayPreferenceController`, `FreeformWindowsPreferenceController`. This package is the front door for Connected Displays / desktop mode.
 
 ### Architecture changes
 
-**Settings: continued Catalyst preference-screen migration.** Screens are increasingly Kotlin classes annotated `@ProvidePreferenceScreen` implementing `settingslib.metadata` interfaces (`PreferenceScreenMixin`, `PreferenceAvailabilityProvider`, `PreferenceLifecycleProvider`) instead of XML + `PreferenceController` pairs. ~217 new `*Screen.kt` files were added since the 16 branch; ~233 files now reference `@ProvidePreferenceScreen`. The framework also feeds App Functions metadata, so each migrated screen doubles as a machine-readable surface for on-device agents.
+**Settings: continued Catalyst preference-screen migration.** Screens are increasingly Kotlin classes annotated `@ProvidePreferenceScreen` that implement `settingslib.metadata` interfaces (`PreferenceScreenMixin`, `PreferenceAvailabilityProvider`, `PreferenceLifecycleProvider`) instead of XML + `PreferenceController` pairs. About 217 new `*Screen.kt` files were added since the 16 branch. About 233 files now reference `@ProvidePreferenceScreen`. The framework also feeds App Functions metadata, so each migrated screen doubles as a machine-readable surface for on-device agents.
 
-**DocumentsUI: feature gating consolidated in `FlagUtils`.** Nearly every behavioral change is gated through a single `src/com/android/documentsui/util/FlagUtils.kt` (added this cycle), centralizing ~24 aconfig flags with dev overrides — the cleanest map of what changed: `isUseMaterial3FlagEnabled`, `isSearchV2Enabled`, `isGetInfoDialogEnabled`, `isUsePeekPreviewFlagEnabled`, `isDesktopFileHandlingFlagEnabled`, `isDesktopUxPhase2FlagEnabled`, `isSingleClickToSelectEnabled`, `isTrashFlowEnabled`, `isUseApprovedDocumentHandlerEnabled`, `isMovingContentIntoPrivateSpaceEnabled`, `isUseLocalSearchProviderEnabled`, and more. Several gates AND with `isUseMaterial3FlagEnabled()`, so the Material 3 redesign is the umbrella the rest hang off.
+**DocumentsUI: feature gating consolidated in `FlagUtils`.** Nearly every behavioral change is gated through a single `src/com/android/documentsui/util/FlagUtils.kt` (added this cycle). The file centralizes ~24 aconfig flags with dev overrides. It is the cleanest map of what changed: `isUseMaterial3FlagEnabled`, `isSearchV2Enabled`, `isGetInfoDialogEnabled`, `isUsePeekPreviewFlagEnabled`, `isDesktopFileHandlingFlagEnabled`, `isDesktopUxPhase2FlagEnabled`, `isSingleClickToSelectEnabled`, `isTrashFlowEnabled`, `isUseApprovedDocumentHandlerEnabled`, `isMovingContentIntoPrivateSpaceEnabled`, `isUseLocalSearchProviderEnabled`, and more. Several gates AND with `isUseMaterial3FlagEnabled()`, so the Material 3 redesign is the umbrella the rest hang off.
 
 ### Notable integrations
 
-**DocumentsUI: "Get Info" / metadata redesign.** A new `src/com/android/documentsui/files/getinfo/` package (`GetInfoDialogFragment.kt`, `GetInfoViewModel.kt`, `MetadataUtils.kt`) and a `peek/` package (`PeekFragment.kt`, `PeekViewManager.kt`, `Metadata*SheetController.kt`) add a rich file-details dialog and peek preview, flag-gated by `isGetInfoDialogEnabled` / `isUsePeekPreviewFlagEnabled`. A reactive summary column is driven by `dirlist/SummaryProviderManager.kt` and `SummaryConsentFragment.kt`.
+**DocumentsUI: "Get Info" / metadata redesign.** A new `src/com/android/documentsui/files/getinfo/` package (`GetInfoDialogFragment.kt`, `GetInfoViewModel.kt`, `MetadataUtils.kt`) and a `peek/` package (`PeekFragment.kt`, `PeekViewManager.kt`, `Metadata*SheetController.kt`) add a rich file-details dialog and peek preview. They are flag-gated by `isGetInfoDialogEnabled` / `isUsePeekPreviewFlagEnabled`. A reactive summary column is driven by `dirlist/SummaryProviderManager.kt` and `SummaryConsentFragment.kt`.
 
-**DocumentsUI: Search V2.** A rebuilt search stack under `queries/` (`SearchOptionsController.kt`, `SearchOptionsState.kt`, `FileTypeOption.kt`, `LastModifiedOption.kt`, `SearchLocationOption.kt`) plus new loaders (`loaders/SearchLoader.kt`, `loaders/QueryOptions.kt`) provide filterable search by type/date/location and an optional local search provider (`isUseLocalSearchProviderEnabled`).
+**DocumentsUI: Search V2.** A rebuilt search stack under `queries/` (`SearchOptionsController.kt`, `SearchOptionsState.kt`, `FileTypeOption.kt`, `LastModifiedOption.kt`, `SearchLocationOption.kt`) plus new loaders (`loaders/SearchLoader.kt`, `loaders/QueryOptions.kt`) provide filterable search by type/date/location. They also provide an optional local search provider (`isUseLocalSearchProviderEnabled`).
 
-**DocumentsUI: desktop / large-screen polish.** A Kotlin rewrite of the sidebar into a RecyclerView nav rail (`sidebar/RecyclerRootsAdapter.kt`, `RootsRecyclerViewHandler.kt`) and a Kotlin breadcrumb stack (`breadcrumbs/Breadcrumb{Controller,Model,View}.kt`) support desktop UX phase 2, alongside single-click-to-select and drags from other apps.
+**DocumentsUI: desktop / large-screen polish.** A Kotlin rewrite of the sidebar into a RecyclerView nav rail (`sidebar/RecyclerRootsAdapter.kt`, `RootsRecyclerViewHandler.kt`) and a Kotlin breadcrumb stack (`breadcrumbs/Breadcrumb{Controller,Model,View}.kt`) support desktop UX phase 2. Single-click-to-select and drags from other apps come alongside them.
 
 **DocumentsUI: approved document handlers & private space.** A new `approveddochandlers/` package (`ApprovedDocHandlers.kt`, `ApprovedDocMenuController.kt`, gated by `isUseApprovedDocumentHandlerEnabled`) governs which apps may open documents via signature-based trust. The picker also gains "move content into Private Space" (`isMovingContentIntoPrivateSpaceEnabled`) and a new `picker/TrampolineActivity.kt` / `PickFilesFragment.kt`.
 
-**Contact Picker privacy API.** A new app-agnostic contacts picker (`ACTION_PICK_CONTACTS`, app `packages/apps/ContactsPicker`, provider `packages/providers/ContactsProvider/.../picker/ContactsPickerSessionProvider.java`) returns a short-lived session URI granting temporary read access only to the rows the user selected, so an app can ask for individual contacts without holding `READ_CONTACTS`.
+**Contact Picker privacy API.** A new app-agnostic contacts picker (`ACTION_PICK_CONTACTS`, app `packages/apps/ContactsPicker`, provider `packages/providers/ContactsProvider/.../picker/ContactsPickerSessionProvider.java`) returns a short-lived session URI. The URI grants temporary read access only to the rows the user selected. As a result, an app can ask for individual contacts even if it does not hold `READ_CONTACTS`.
 
-**SettingsIntelligence app.** Settings search moves into a separate `packages/apps/SettingsIntelligence` APK (`com.android.settings.intelligence`) that owns the FTS search index (`search_index.db`) and suggestion ranking, indexing every `SearchIndexablesProvider` rather than only the Settings app.
+**SettingsIntelligence app.** Settings search moves into a separate `packages/apps/SettingsIntelligence` APK (`com.android.settings.intelligence`) that owns the FTS search index (`search_index.db`) and suggestion ranking. It indexes every `SearchIndexablesProvider` rather than only the Settings app.
 
-**Location privacy indicators.** SystemUI reworks the location indicator into a distinct privacy chip behind `android.location.flags.location_indicators_enabled` (`frameworks/base/location/java/android/location/flags/location.aconfig`, consumed by `frameworks/base/packages/SystemUI/.../privacy/`), with a longer hold time and optional outline styling separate from the camera/microphone chips.
+**Location privacy indicators.** SystemUI reworks the location indicator into a distinct privacy chip behind `android.location.flags.location_indicators_enabled` (`frameworks/base/location/java/android/location/flags/location.aconfig`, consumed by `frameworks/base/packages/SystemUI/.../privacy/`). The chip has a longer hold time and optional outline styling separate from the camera/microphone chips.
 
-**EyeDropper app.** A new `packages/apps/EyeDropper` (`com.android.eyedropper`, gated by `enable_eye_dropper_api`) answers an `OPEN_EYE_DROPPER` intent with the ARGB value of a pixel the user taps, providing a system color picker any app can invoke.
+**EyeDropper app.** A new `packages/apps/EyeDropper` (`com.android.eyedropper`, gated by `enable_eye_dropper_api`) answers an `OPEN_EYE_DROPPER` intent with the ARGB value of a pixel the user taps. This provides a system color picker that any app can invoke.
 
 ## D.12 AI & Devices
 
-Android 17 pushes on-device AI deeper into the platform: a new NPU Manager mainline module arbitrating access to neural accelerators, a new PersonalContext system app building an on-device personal-context surface, and the first vendoring of the Khronos OpenXR SDK headers alongside a flag-gated Android XR API surface (covering both headsets and MicroXR glasses). CHRE grows a high-throughput data-flow subsystem for always-on sensing.
+Android 17 pushes on-device AI deeper into the platform. A new NPU Manager mainline module arbitrates access to neural accelerators. A new PersonalContext system app builds an on-device personal-context surface. The first vendoring of the Khronos OpenXR SDK headers comes alongside a flag-gated Android XR API surface (covering both headsets and MicroXR glasses). CHRE grows a high-throughput data-flow subsystem for always-on sensing.
 
 ### New projects
 
-`packages/modules/NpuManager` is a new launched APEX (`com.android.npumanager`, `min_sdk_version: 36`) shipping its own module SDK in 17 (`apex/Android.bp` defines `npumanager-module-sdk`). It is gated by the `RELEASE_NPUMANAGER_MODULE` release flag and the `npumanager_enabled` aconfig flag (`machine_learning` namespace, `flags/npumanager_flags.aconfig`), and contributes both a bootclasspath fragment (`framework-npumanager`) and a systemserver fragment (`service-npumanager`). Details in "New modules" below.
+`packages/modules/NpuManager` is a new launched APEX (`com.android.npumanager`, `min_sdk_version: 36`) shipping its own module SDK in 17 (`apex/Android.bp` defines `npumanager-module-sdk`). It is gated by the `RELEASE_NPUMANAGER_MODULE` release flag and the `npumanager_enabled` aconfig flag (`machine_learning` namespace, `flags/npumanager_flags.aconfig`). It contributes both a bootclasspath fragment (`framework-npumanager`) and a systemserver fragment (`service-npumanager`). Details in "New modules" below.
 
 `packages/apps/PersonalContext` (`com.android.personalcontext`) is a new privileged, platform-signed, `product_specific` system app (`Android.bp` `PersonalContext_defaults`: `privileged: true`, `certificate: "platform"`) building an on-device personal-context layer that feeds assistant-style surfaces. Its `AndroidManifest.xml` declares `ContextUnderstanderService` implementations (`ChatUnderstanderService`, `NotificationUnderstanderService`, `ContextMenuUnderstanderService` under `src/com/android/personalcontext/understander/`) bound under `android.service.personalcontext.UnderstanderService` and guarded by `BIND_CONTEXT_COMPONENT_SERVICE`.
 
-Its working components are tagged `android:privateComputeCore` and the app holds new `PERSONAL_CONTEXT_*` permissions (`PUBLISH_INSIGHTS`, `READ_SETTINGS`, `RECEIVE_HINTS`) plus `USE_ON_DEVICE_INTELLIGENCE`, so it runs inside the Private Compute Core sandbox and talks to on-device models rather than the network. Source subpackages (`memorygeneration/`, `magicrecall/`, `magicactions/`, `appfunctions/`, `aicore/`, AppSearch-backed `storage/appsearch/`) point to a personal-memory store driving recall and "magic action" suggestions, gated by the `enable_osi` aconfig master flag (`personal_context` namespace).
+Its working components are tagged `android:privateComputeCore` and the app holds new `PERSONAL_CONTEXT_*` permissions (`PUBLISH_INSIGHTS`, `READ_SETTINGS`, `RECEIVE_HINTS`) plus `USE_ON_DEVICE_INTELLIGENCE`. As a result, it runs inside the Private Compute Core sandbox and talks to on-device models rather than the network. Source subpackages (`memorygeneration/`, `magicrecall/`, `magicactions/`, `appfunctions/`, `aicore/`, AppSearch-backed `storage/appsearch/`) point to a personal-memory store that drives recall and "magic action" suggestions. The feature is gated by the `enable_osi` aconfig master flag (`personal_context` namespace).
 
 ### New modules
 
@@ -3225,9 +3318,9 @@ NpuManager multiplexes on-device neural accelerators across competing apps. The 
 - `canLoadModel`, `cancelModelLoad`, `notifyModelLoaded`, `notifyModelUnloaded`, `setPolicy`
 - `createAllocator(INpuAllocatorCallback)` returning an `INpuAllocator`.
 
-The system-server side (`service/java/com/android/server/npumanager/`, `NpuManagerService` / `NpuManagerServiceImpl`) implements pluggable model loading policies behind the abstract `NpuModelLoadingPolicy`: `BudgetModelLoadingPolicy` (memory-budget arbitration keyed on `KEY_MAX_BUDGET` and coarse `NpuModelSize` buckets of <1GB / 1-2GB / >2GB), `TurnTakingModelLoadingPolicy`, `StatusQuoModelLoadingPolicy`, all backed by a `PriorityManager`. Native buffer management is Rust-based (`service/jni/lib.rs`, `ndk/*.rs`) and exposes a C NDK surface (`ndk/include/android/npumanager/buffer.h`) with an `ANpuBuffer` priority range of 0-1000.
+The system-server side (`service/java/com/android/server/npumanager/`, `NpuManagerService` / `NpuManagerServiceImpl`) implements pluggable model loading policies behind the abstract `NpuModelLoadingPolicy`. These are `BudgetModelLoadingPolicy` (memory-budget arbitration keyed on `KEY_MAX_BUDGET` and coarse `NpuModelSize` buckets of <1GB / 1-2GB / >2GB), `TurnTakingModelLoadingPolicy`, and `StatusQuoModelLoadingPolicy`. A `PriorityManager` backs all of them. Native buffer management is Rust-based (`service/jni/lib.rs`, `ndk/*.rs`) and exposes a C NDK surface (`ndk/include/android/npumanager/buffer.h`) with an `ANpuBuffer` priority range of 0-1000.
 
-The module is paired with a new vendor HAL, `android.hardware.npu` (`hardware/interfaces/npu/`, AIDL v1), through which NpuManager informs the NPU of per-app priorities and receives work callbacks (`IScheduling`, `ISchedulingCallback`, `WorkInfo`, `StartReason`, `EndReason`, `SchedulingConfig`).
+The module is paired with a new vendor HAL, `android.hardware.npu` (`hardware/interfaces/npu/`, AIDL v1). NpuManager informs the NPU of per-app priorities and receives work callbacks through this HAL (`IScheduling`, `ISchedulingCallback`, `WorkInfo`, `StartReason`, `EndReason`, `SchedulingConfig`).
 
 #### NpuManager admission-control flow
 
@@ -3244,25 +3337,35 @@ flowchart LR
 
 ### Architecture changes
 
-CHRE (`system/chre`, 536 commits) gains a new **data-flow** subsystem for high-throughput streaming between a single source and multiple sinks (nanoapps and other endpoints), using shared memory regions to minimise copies. The public API is `chre_api/include/chre_api/chre/data_flow.h` (events `CHRE_EVENT_DATA_FLOW_CREATED`, `_SINK_CREATED`, `_ALERT`, `_SINK_CONFIGURE_DONE`; calls like `chreDataFlowSinkEnable()`). Flows are keyed by source message-hub ID + data-flow ID, aligning with the endpoint/message-hub model; the reference implementation lives in `system/chre/data_flow/` (shared-region core + host-side managers), and a new `WakeupStatsManager` centralises host wakeup attribution. Together these target low-power, always-on sensing and ML offload without waking the application processor.
+CHRE (`system/chre`, 536 commits) gains a new **data-flow** subsystem for high-throughput streaming between a single source and multiple sinks (nanoapps and other endpoints). It uses shared memory regions to minimize copies. The public API is `chre_api/include/chre_api/chre/data_flow.h` (events `CHRE_EVENT_DATA_FLOW_CREATED`, `_SINK_CREATED`, `_ALERT`, `_SINK_CONFIGURE_DONE`; calls like `chreDataFlowSinkEnable()`).
 
-`packages/modules/OnDevicePersonalization` was repackaged/moved in 17 and retains its Private Compute model: the framework + system service (`framework/`, `systemservice/`), a `pluginlib/` sandbox, and a `federatedcompute/` subtree for federated learning/analytics keeping personalization signals on-device.
+Flows are keyed by source message-hub ID + data-flow ID. This aligns with the endpoint/message-hub model. The reference implementation lives in `system/chre/data_flow/` (shared-region core + host-side managers). A new `WakeupStatsManager` centralizes host wakeup attribution. Together these target low-power, always-on sensing and ML offload without waking the application processor.
+
+`packages/modules/OnDevicePersonalization` was repackaged/moved in 17 and retains its Private Compute model. The model has the framework + system service (`framework/`, `systemservice/`), a `pluginlib/` sandbox, and a `federatedcompute/` subtree for federated learning/analytics that keep personalization signals on-device.
 
 ### Notable integrations
 
-**Android XR: API scaffolding only.** `external/openxr-sdk` (Khronos OpenXR SDK, `release-1.1.50`) is newly vendored read-only: its `Android.bp` builds a single `cc_library_headers { name: "openxr_headers" }` over `include/` — the OpenXR headers, with no loader and no in-tree consumer. The matching framework surface in `frameworks/base/core/api/current.txt` is equally inert: `FEATURE_XR_API_OPENXR` ("android.software.xr.api.openxr") and `FEATURE_XR_API_SPATIAL`; the `FEATURE_XR_INPUT_*` strings (controller, eye-tracking, hand-tracking); `XrWindowProperties` and its full-space vs home-space activity start modes; `DisplayManager.DISPLAY_CATEGORY_XR_PROJECTED`; and the dangerous body/environment-tracking permissions plus AppOps (`EYE_TRACKING_COARSE/FINE`, `FACE_TRACKING`, `HAND_TRACKING`, `HEAD_TRACKING`, `SCENE_UNDERSTANDING_COARSE/FINE`) are all `@FlaggedApi`-gated by the `android.xr.xr_manifest_entries` aconfig flag (`core/java/android/content/pm/xr.aconfig`), which is disabled by default. The framing is explicit: the runtime, compositor, OpenXR loader, and scene/spatial SDK are not in AOSP — vendor runtimes plus the off-tree Jetpack XR SDK supply them. The only behavioral XR code upstream is a headset-side recorder statsd atom (`frameworks/proto_logging/stats/atoms/xr/recorder/`, `XrRecorderSessionStatusReported`).
+**Android XR: API scaffolding only.** `external/openxr-sdk` (Khronos OpenXR SDK, `release-1.1.50`) is newly vendored read-only. Its `Android.bp` builds a single `cc_library_headers { name: "openxr_headers" }` over `include/`. These are the OpenXR headers, with no loader and no in-tree consumer. The matching framework surface in `frameworks/base/core/api/current.txt` is equally inert.
 
-**MicroXR: the XR-glasses peripheral class.** Distinct from the headset surface, lightweight body-worn XR glasses ride a separate flag: `com.android.microxr`'s `xr_glasses_feature` (`frameworks/base/core/java/android/content/pm/glasses.aconfig`, also default-off). It gates `FEATURE_XR_PERIPHERAL` (`android.hardware.type.xr_peripheral`), a device-class marker (peer of `FEATURE_PC` / `FEATURE_WATCH`) whose `PackageManager` javadoc defines an XR peripheral as a body-worn full-stack Android device with no user-installable apps that likely needs a companion device for interaction. Unlike the inert headset features, this marker is actually read in-tree: WiFi (`WifiGlobals`), Bluetooth audio (`Util.isXrDevice()`), and MediaProvider all branch on `hasSystemFeature(FEATURE_XR_PERIPHERAL)` to treat glasses as a constrained device class. Its glasses telemetry lives in `frameworks/proto_logging/stats/atoms/microxr/` (`MicroXrDonDoffStateChanged` for donned/doffed wear state, `MicroXrPhotoCaptured` / `MicroXrVideoCaptured` for button- vs voice-triggered capture, `MicroXrMcuCrashOccurred` for a separate MCU). No MicroXR module, service, HAL, or device target ships in AOSP.
+It includes `FEATURE_XR_API_OPENXR` ("android.software.xr.api.openxr") and `FEATURE_XR_API_SPATIAL`, and the `FEATURE_XR_INPUT_*` strings (controller, eye-tracking, hand-tracking). It also includes `XrWindowProperties` and its full-space vs home-space activity start modes, and `DisplayManager.DISPLAY_CATEGORY_XR_PROJECTED`. It further includes the dangerous body/environment-tracking permissions plus AppOps (`EYE_TRACKING_COARSE/FINE`, `FACE_TRACKING`, `HAND_TRACKING`, `HEAD_TRACKING`, `SCENE_UNDERSTANDING_COARSE/FINE`). All of these are `@FlaggedApi`-gated by the `android.xr.xr_manifest_entries` aconfig flag (`core/java/android/content/pm/xr.aconfig`). That flag is disabled by default.
 
-Health Connect (`packages/modules/HealthFitness`, 689 commits) is mostly incremental API/UX work: new bulk `grantHealthPermissions` / `revokeHealthPermissions` APIs, derivation of distance and calories from step data, reduced conversion layers in the Changelogs API, and continued build-out of cross-device "matchmaking" / device-data-provider flows (`service/.../onboarding/matchmaking/`, `apk/src/.../controller/matchmaking/`, `.../newDevices/DeviceDataProvider*`).
+The framing is explicit. The runtime, compositor, OpenXR loader, and scene/spatial SDK are not in AOSP. Vendor runtimes plus the off-tree Jetpack XR SDK supply them. The only behavioral XR code upstream is a headset-side recorder statsd atom (`frameworks/proto_logging/stats/atoms/xr/recorder/`, `XrRecorderSessionStatusReported`).
 
-**CompanionDeviceManager: device-trust and power-exemption processors.** The CDM service grows two new processor packages in 17, both under `frameworks/base/services/companion/java/com/android/server/companion/`: `devicetrust/` (`TrustedDeviceProcessor`, `TrustedDeviceStore`) for trusted-device key exchange, and `powerexemption/` (`CompanionExemptionProcessor`, `CompanionExemptionStore`) for power and auto-revoke exemptions. The existing `actionrequest/` processor (present since 16) gained additional result constants. The `DEVICE_PROFILE_FITNESS_TRACKER` / `DEVICE_PROFILE_MEDICAL` association profiles in `AssociationRequest` (`frameworks/base/core/java/android/companion/AssociationRequest.java`, flags `FLAG_BAND_DEVICE_PROFILE` / `FLAG_ENABLE_MEDICAL_PROFILE`) already shipped in Android 16, so they are not a 16-to-17 addition.
+**MicroXR: the XR-glasses peripheral class.** Distinct from the headset surface, lightweight body-worn XR glasses ride a separate flag: `com.android.microxr`'s `xr_glasses_feature` (`frameworks/base/core/java/android/content/pm/glasses.aconfig`, also default-off). It gates `FEATURE_XR_PERIPHERAL` (`android.hardware.type.xr_peripheral`), a device-class marker (peer of `FEATURE_PC` / `FEATURE_WATCH`). The `PackageManager` javadoc defines an XR peripheral as a body-worn full-stack Android device with no user-installable apps that likely needs a companion device for interaction.
 
-**Handoff (Task Continuity): cross-device activity continuity.** Android 17 adds the user-facing Handoff feature on top of the CDM transport. An activity opts in with `Activity.setHandoffEnabled()` and supplies resumable state through `onHandoffActivityDataRequested()` (`frameworks/base/core/java/android/app/Activity.java:7789`/10240), returning a `HandoffActivityData` -- a `ComponentName` plus a `PersistableBundle` of extras plus an optional web `fallbackUri` (`HandoffActivityData.java:48`). A new `TaskContinuityManager` system service (`@SystemService(Context.TASK_CONTINUITY_SERVICE)`) and its `RemoteTask` descriptors let a launcher surface tasks from paired devices; payloads travel as `MESSAGE_ONEWAY_TASK_CONTINUITY` (`CompanionDeviceManager.java:361`) over the secure CDM channel between two real, user-owned devices. Gated by the `task_continuity` aconfig flag (`frameworks/base/core/java/android/companion/flags.aconfig:69`, namespace `companion`) / `CompanionDeviceManager.FLAG_TASK_CONTINUITY`. See Chapter 52, Sections 52.3.9-52.3.11.
+Unlike the inert headset features, this marker is actually read in-tree. WiFi (`WifiGlobals`), Bluetooth audio (`Util.isXrDevice()`), and MediaProvider all branch on `hasSystemFeature(FEATURE_XR_PERIPHERAL)` to treat glasses as a constrained device class. Its glasses telemetry lives in `frameworks/proto_logging/stats/atoms/microxr/` (`MicroXrDonDoffStateChanged` for donned/doffed wear state, `MicroXrPhotoCaptured` / `MicroXrVideoCaptured` for button- vs voice-triggered capture, `MicroXrMcuCrashOccurred` for a separate MCU). No MicroXR module, service, HAL, or device target ships in AOSP.
+
+Health Connect (`packages/modules/HealthFitness`, 689 commits) is mostly incremental API/UX work. The changes are new bulk `grantHealthPermissions` / `revokeHealthPermissions` APIs, derivation of distance and calories from step data, and reduced conversion layers in the Changelogs API. They also include continued build-out of cross-device "matchmaking" / device-data-provider flows (`service/.../onboarding/matchmaking/`, `apk/src/.../controller/matchmaking/`, `.../newDevices/DeviceDataProvider*`).
+
+**CompanionDeviceManager: device-trust and power-exemption processors.** The CDM service grows two new processor packages in 17, both under `frameworks/base/services/companion/java/com/android/server/companion/`. `devicetrust/` (`TrustedDeviceProcessor`, `TrustedDeviceStore`) is for trusted-device key exchange. `powerexemption/` (`CompanionExemptionProcessor`, `CompanionExemptionStore`) is for power and auto-revoke exemptions. The existing `actionrequest/` processor (present since 16) gained additional result constants. The `DEVICE_PROFILE_FITNESS_TRACKER` / `DEVICE_PROFILE_MEDICAL` association profiles in `AssociationRequest` (`frameworks/base/core/java/android/companion/AssociationRequest.java`, flags `FLAG_BAND_DEVICE_PROFILE` / `FLAG_ENABLE_MEDICAL_PROFILE`) already shipped in Android 16, so they are not a 16-to-17 addition.
+
+**Handoff (Task Continuity): cross-device activity continuity.** Android 17 adds the user-facing Handoff feature on top of the CDM transport. An activity opts in with `Activity.setHandoffEnabled()` and supplies resumable state through `onHandoffActivityDataRequested()` (`frameworks/base/core/java/android/app/Activity.java:7789`/10240). The method returns a `HandoffActivityData`. This is a `ComponentName` plus a `PersistableBundle` of extras plus an optional web `fallbackUri` (`HandoffActivityData.java:48`).
+
+A new `TaskContinuityManager` system service (`@SystemService(Context.TASK_CONTINUITY_SERVICE)`) and its `RemoteTask` descriptors let a launcher surface tasks from paired devices. Payloads travel as `MESSAGE_ONEWAY_TASK_CONTINUITY` (`CompanionDeviceManager.java:361`) over the secure CDM channel between two real, user-owned devices. Gated by the `task_continuity` aconfig flag (`frameworks/base/core/java/android/companion/flags.aconfig:69`, namespace `companion`) / `CompanionDeviceManager.FLAG_TASK_CONTINUITY`. See Chapter 52, Sections 52.3.9-52.3.11.
 
 ## D.13 Infrastructure
 
-Android 17's build and virtualization plumbing moved on two fronts. The Soong build system grew a first-class machine-readable "API/compliance" database and continued migrating off Kati-era Make logic, while AVF (the Android Virtualization Framework) turned protected VMs into a multi-tenant, Trusty-capable platform. A new top-level `tools/mainline` repository carries the open-source mainline-train build tooling.
+Android 17's build and virtualization plumbing moved on two fronts. The Soong build system grew a first-class machine-readable "API/compliance" database and continued to migrate off Kati-era Make logic. AVF (the Android Virtualization Framework) turned protected VMs into a multi-tenant, Trusty-capable platform. A new top-level `tools/mainline` repository carries the open-source mainline-train build tooling.
 
 ### New projects
 
@@ -3271,21 +3374,21 @@ Android 17's build and virtualization plumbing moved on two fronts. The Soong bu
 - `trim_action.py` strips a bundled APEX down to the architectures a target needs, mapping module ABIs onto DCLA arch sets (`DCLA_ARCH_BY_MODULE_ARCH`).
 - `dcla_build_action.py` builds the shared "DCLA" library APEX (`com.google.mainline.primary.libs` / `...go.primary.libs`) that dedupes common native libs across modules (`BIG_ANDROID_DCLA`/`GO_DCLA`).
 - `versioning_action.py` bumps module version codes; `pack_action.py` packs the result.
-- `generic_train_build_action.py` and `primary_train_build_action.py` are the orchestrators, modelling each train as a `TrainBuildSpec` and dispatching by `TrainType` (TELEMETRY, ADSERVICES, NPU, NONUPDATABLE, TIMEZONE, PRELOAD, Go variants).
+- `generic_train_build_action.py` and `primary_train_build_action.py` are the orchestrators. They model each train as a `TrainBuildSpec` and dispatch by `TrainType` (TELEMETRY, ADSERVICES, NPU, NONUPDATABLE, TIMEZONE, PRELOAD, Go variants).
 
-Most legacy mock data and proprietary scripts moved out to `vendor/google/train_build`; what remains in AOSP is the reusable trim/DCLA/versioning/pack machinery plus host unit tests.
+Most legacy mock data and proprietary scripts moved out to `vendor/google/train_build`. What remains in AOSP is the reusable trim/DCLA/versioning/pack machinery plus host unit tests.
 
 ### New modules
 
-**`cipd_package` (`build/soong/android/cipd/cipd_package.go`).** A new Soong module type fetching a prebuilt from CIPD (Chrome Infrastructure Package Deployment) at build time, publishing a `CipdPackageInfoProvider` carrying the full package name and pinned version. A bounded `cipdPool` (depth 8) limits concurrent fetches. Many `prebuilt_*` module types now record their CIPD source so it flows into compliance metadata.
+**`cipd_package` (`build/soong/android/cipd/cipd_package.go`).** A new Soong module type fetches a prebuilt from CIPD (Chrome Infrastructure Package Deployment) at build time. It publishes a `CipdPackageInfoProvider` that carries the full package name and pinned version. A bounded `cipdPool` (depth 8) limits concurrent fetches. Many `prebuilt_*` module types now record their CIPD source so it flows into compliance metadata.
 
-**`android_filesystem_prebuilt` (`build/soong/filesystem/prebuilt.go`).** A generic prebuilt-image module wrapping an existing system image file (`Src`) in the normal `filesystem` machinery, so a vendor-supplied partition image participates in packaging/AVB like a Soong-built one.
+**`android_filesystem_prebuilt` (`build/soong/filesystem/prebuilt.go`).** A generic prebuilt-image module wraps an existing system image file (`Src`) in the normal `filesystem` machinery. As a result, a vendor-supplied partition image participates in packaging/AVB like a Soong-built one.
 
 **`trusty_vm_signing_tool` (`packages/modules/Virtualization/guest/trusty/tools/Android.bp`).** A new Rust host tool that signs Trusty pVM payloads for pvmfw.
 
 ### Architecture changes
 
-**Soong API / compliance database (`soong_api`).** The biggest build-system change is a new singleton `soong_api_db` (`build/soong/soong_api/soong_api.go`) that walks every module proxy and emits a per-module `SoongApiModuleRecord` (identity/type, install/built files, license metadata, `trendy_team_id`, Java/CC/Rust dependency edges, CIPD source), exporting `soong_api.json`/`.zip` and a SQLite `soong_api.db` under `out/soong/soong_api/<product>/`. It succeeds the older `metadata.db`/`metadata_db_loader` family and underpins SBOM/provenance generation, replacing the removed native-gRPC query path.
+**Soong API / compliance database (`soong_api`).** The biggest build-system change is a new singleton `soong_api_db` (`build/soong/soong_api/soong_api.go`). It walks every module proxy and emits a per-module `SoongApiModuleRecord` (identity/type, install/built files, license metadata, `trendy_team_id`, Java/CC/Rust dependency edges, CIPD source). The singleton exports `soong_api.json`/`.zip` and a SQLite `soong_api.db` under `out/soong/soong_api/<product>/`. It succeeds the older `metadata.db`/`metadata_db_loader` family and underpins SBOM/provenance generation, replacing the removed native-gRPC query path.
 
 The pipeline below shows how module providers feed the database that downstream SBOM/compliance tooling consumes.
 
@@ -3302,23 +3405,27 @@ flowchart TD
     DB --> SBOM["SBOM / compliance<br/>+ provenance"]
 ```
 
-**Partial analysis and on-demand variants.** Soong gained an opt-in `SOONG_PARTIAL_ANALYSIS` env var (`build/soong/ui/build/config.go`) restricting the analysis graph to a named target set and its transitive closure. Blueprint added a `PrePartial()` mutator group running before partial analysis (`build/blueprint/context.go`) and a "passive" `moduleGroup` flag for module groups not yet in the build graph. The variant system shifted toward "variants on demand" (VoD): rather than eagerly splitting every os/arch/image variant, Blueprint creates and mutates dependency variants lazily via `createVariantOnDemand`/`searchOnDemandVariant`. Several eager-split paths (test module types, `PRODUCT_HOST_PACKAGES`, `vndk_prebuilt_library`) were retained for correctness during the transition.
+**Partial analysis and on-demand variants.** Soong gained an opt-in `SOONG_PARTIAL_ANALYSIS` env var (`build/soong/ui/build/config.go`) restricting the analysis graph to a named target set and its transitive closure. Blueprint added a `PrePartial()` mutator group running before partial analysis (`build/blueprint/context.go`) and a "passive" `moduleGroup` flag for module groups not yet in the build graph.
+
+The variant system shifted toward "variants on demand" (VoD). Blueprint does not eagerly split every os/arch/image variant. Instead, it creates and mutates dependency variants lazily via `createVariantOnDemand`/`searchOnDemandVariant`. Several eager-split paths (test module types, `PRODUCT_HOST_PACKAGES`, `vndk_prebuilt_library`) were retained for correctness during the transition.
 
 **Release-config maturity.** The Make-era release-config logic now lives entirely under Soong (`build/soong/cmd/release_config/`), and naming is enforced: maps must be named `release_config_map.textproto` (`.../release_config_lib/release_configs.go`). build/make's 871 new vs 154 dropped commits are largely build-ID bumps plus removal of legacy product entries, winding down the Kati path.
 
-**Android Canary release channel.** Alongside the build changes, the release *process* gains a continuous Canary channel: rolling builds cut from the trunk-stable tree are published to testers continuously, replacing the periodic Developer Preview drops. The `CANARY` codename maps to API level 10000 (`build/soong/android/api_levels.go`); source builds still use the `trunk_staging` release config.
+**Android Canary release channel.** Alongside the build changes, the release *process* gains a continuous Canary channel. Rolling builds cut from the trunk-stable tree are published to testers continuously. This replaces the periodic Developer Preview drops. The `CANARY` codename maps to API level 10000 (`build/soong/android/api_levels.go`); source builds still use the `trunk_staging` release config.
 
 ### Notable integrations
 
-**AVF multitenancy.** From Android 26Q2, a single protected VM can host multiple mutually isolated tenants (`packages/modules/Virtualization/docs/multitenancy.md`). The VM owner ships a signed `TenancyConfig` (a JSON payload config inside the APK, set via `VirtualMachineConfig#setPayloadConfigPath`) declaring each tenant's `package`, a unique `uid` in `[10000, 65534]`, a `min_version`, and an `expected_authority` map of per-build-flavor signing hashes. virtmgr validates each tenant's authority against the OS signing status and reflects it in the pVM's DICE certificates; per-tenant cgroup and SELinux domains isolate tenants, and unmatched payloads are discarded.
+**AVF multitenancy.** From Android 26Q2, a single protected VM can host multiple mutually isolated tenants (`packages/modules/Virtualization/docs/multitenancy.md`). The VM owner ships a signed `TenancyConfig` (a JSON payload config inside the APK, set via `VirtualMachineConfig#setPayloadConfigPath`). It declares each tenant's `package`, a unique `uid` in `[10000, 65534]`, a `min_version`, and an `expected_authority` map of per-build-flavor signing hashes.
 
-**Trusty as a pVM.** Trusty OS now runs as an AVF-managed protected VM (`packages/modules/Virtualization/guest/trusty/docs/trusty_vm.md`). The Trusty kernel gained virtio-vsock over PCI for host/VM IPC, virtio-vsock over virtio-msg over FF-A for host-opaque channels into a secure-world TEE, device-tree parsing of the crosvm-generated DT (including the pvmfw DICE region), PSCI CPU on/off, and ARM TRNG entropy. The payload is built, signed (via the new `trusty_vm_signing_tool`), and packaged for pvmfw through Soong genrules, producing the `security_vm`/`test_vm` images under `.../guest/trusty/`.
+virtmgr validates each tenant's authority against the OS signing status and reflects it in the pVM's DICE certificates. Per-tenant cgroup and SELinux domains isolate tenants. Unmatched payloads are discarded.
 
-**Linux/Terminal VM in-guest agent and pVM TEE services.** AVF adds `linux_vm_manager`, an in-guest Rust agent for the Linux/Terminal VM (`packages/modules/Virtualization/guest/linux_vm_manager/`) that connects back to the host over vsock (`src/main.rs`) and registers an `IGuestAgent` binder whose handlers (e.g. `shutdownAsync`) live in `src/guest_agent.rs`. The libavf LLNDK also exposes `AVirtualMachineRawConfig_addTeeService` (`libs/libavf/include/android/virtualization.h`, `introduced=37`), letting a protected VM declare TrustZone/TEE services it may reach.
+**Trusty as a pVM.** Trusty OS now runs as an AVF-managed protected VM (`packages/modules/Virtualization/guest/trusty/docs/trusty_vm.md`). The Trusty kernel gained virtio-vsock over PCI for host/VM IPC. It also gained virtio-vsock over virtio-msg over FF-A for host-opaque channels into a secure-world TEE. It also gained device-tree parsing of the crosvm-generated DT (including the pvmfw DICE region), PSCI CPU on/off, and ARM TRNG entropy. The payload is built, signed (via the new `trusty_vm_signing_tool`), and packaged for pvmfw through Soong genrules, producing the `security_vm`/`test_vm` images under `.../guest/trusty/`.
+
+**Linux/Terminal VM in-guest agent and pVM TEE services.** AVF adds `linux_vm_manager`, an in-guest Rust agent for the Linux/Terminal VM (`packages/modules/Virtualization/guest/linux_vm_manager/`). The agent connects back to the host over vsock (`src/main.rs`). It registers an `IGuestAgent` binder whose handlers (e.g. `shutdownAsync`) live in `src/guest_agent.rs`. The libavf LLNDK also exposes `AVirtualMachineRawConfig_addTeeService` (`libs/libavf/include/android/virtualization.h`, `introduced=37`), which lets a protected VM declare TrustZone/TEE services it may reach.
 
 ## D.14 Device Support
 
-Android 17's marquee device-support change is the **Software Defined Vehicle (SDV)** platform. Rather than a single repo, SDV arrives as a new top-level tree (`system/software_defined_vehicle/`) plus a reference device (`device/google/sdv`), a new HAL interface package (`hardware/sdv/interfaces`), and an automotive display-safety service (`packages/services/display_safety`). The model is a *headless* vehicle Android OS: SDV "Core" runs vehicle services in their own VM with no UI, communicating with one or more AAOS In-Vehicle Infotainment (IVI) VMs and non-Android automotive ECUs over SOME/IP.
+Android 17's marquee device-support change is the **Software Defined Vehicle (SDV)** platform. Rather than a single repo, SDV arrives as a new top-level tree (`system/software_defined_vehicle/`). It also adds a reference device (`device/google/sdv`), a new HAL interface package (`hardware/sdv/interfaces`), and an automotive display-safety service (`packages/services/display_safety`). The model is a *headless* vehicle Android OS. SDV "Core" runs vehicle services in their own VM with no UI. It communicates with one or more AAOS In-Vehicle Infotainment (IVI) VMs and non-Android automotive ECUs over SOME/IP.
 
 ### New projects
 
@@ -3334,7 +3441,7 @@ Android 17's marquee device-support change is the **Software Defined Vehicle (SD
 
 ### New modules
 
-From `device/google/sdv/sdv_core_base/sdv_packages_core_services.mk`, an SDV Core VM installs these agents and APEXes (the per-device makefile `device/google/sdv/sdv_core_arm64/sdv_core_arm64.mk` supplies the SOME/IP stack, diagnostics, and power-state modules through the `SDV_SOMEIP_AGENT_MODULES` / `SDV_DIAGNOSTICS_AGENT_MODULE` / `SDV_VEHICLE_POWER_STATE_MANAGER_MODULE` variables that `sdv_packages_core_services.mk` consumes):
+The per-device makefile `device/google/sdv/sdv_core_arm64/sdv_core_arm64.mk` supplies the SOME/IP stack, diagnostics, and power-state modules through the `SDV_SOMEIP_AGENT_MODULES` / `SDV_DIAGNOSTICS_AGENT_MODULE` / `SDV_VEHICLE_POWER_STATE_MANAGER_MODULE` variables that `sdv_packages_core_services.mk` consumes. From `device/google/sdv/sdv_core_base/sdv_packages_core_services.mk`, an SDV Core VM installs these agents and APEXes:
 
 - **Communication stack** (`middleware/`): `sdv_sd_agent` (Service Discovery), `dt_agent` (Data Tunnel pub/sub, `com.android.sdv.dt`), `rpcagent` (`middleware/rpc_agent`); shared client library `libsdv_comms` (`middleware/sdv_comms`) over `wire_format` and `transport` (Rust).
 - **Lifecycle & orchestration**: `sdv_lifecycle_agent`, `lifecycle_service_bundle_runner`, `sdv_orchestration_agent` (`com.android.sdv.orchestrator`), `sdv_service_bundles_registry_agent` — the orchestrator drives bundle lifecycle from `orch_config.textproto`.
@@ -3342,19 +3449,21 @@ From `device/google/sdv/sdv_core_base/sdv_packages_core_services.mk`, an SDV Cor
 - **SOME/IP**: `sdv_someip_stack_agent` + `vsomeip_config.json` (from the per-device makefile), `sdv_someip_broker_agent_comms`.
 - **Platform/ops**: `sdv_health_monitor`, `sdv_update_manager_agent`, `sdv_diagnostics_agent` and `vepsm` (vehicle power-state manager; both from the per-device makefile).
 
-`hardware/sdv/interfaces` defines the stable AIDL surface: `ISdvGateway`/`ISdvGatewaySession` (`sdv_gateway/google/sdv/gateway/`), `IRpcAgent` (`middleware/rpc/`), `IRegistry` (`service_bundles_registry/`, API v3 under `aidl_api/`), lifecycle `IService`/`IServiceManager`, the vehicle-power-manager AIDL, and privileged Service-Discovery / identity agents.
+`hardware/sdv/interfaces` defines the stable AIDL surface. The surface has `ISdvGateway`/`ISdvGatewaySession` (`sdv_gateway/google/sdv/gateway/`), `IRpcAgent` (`middleware/rpc/`), `IRegistry` (`service_bundles_registry/`, API v3 under `aidl_api/`), and lifecycle `IService`/`IServiceManager`. It also has the vehicle-power-manager AIDL and privileged Service-Discovery / identity agents.
 
-`packages/services/display_safety` is a Rust workspace (root `Cargo.toml`) implementing the **HARry** Driver-UI runtime: `framework/` (Impeller graphics, audio, layout, monitoring), `reference/` (`harry-app`, `safety-monitor`, ADAS visualization), and `service/har-sdv-service` whose `libhar_sdv_service_bundle` publishes vehicle data and serves the Driver UI over gRPC through the middleware.
+`packages/services/display_safety` is a Rust workspace (root `Cargo.toml`) that implements the **HARry** Driver-UI runtime. It has `framework/` (Impeller graphics, audio, layout, monitoring), `reference/` (`harry-app`, `safety-monitor`, ADAS visualization), and `service/har-sdv-service`. The `libhar_sdv_service_bundle` of that service publishes vehicle data and serves the Driver UI over gRPC through the middleware.
 
 ### Architecture changes
 
-The SDV stack layers a vehicle-service fabric beneath (and beside) AAOS. The new tree provides the communication middleware and agents; `device/google/sdv` composes them into lunch targets; `hardware/sdv/interfaces` defines the contracts; CarService and the IVI VM consume them through the gateway.
+The SDV stack layers a vehicle-service fabric beneath (and beside) AAOS. The new tree provides the communication middleware and agents. `device/google/sdv` composes them into lunch targets. `hardware/sdv/interfaces` defines the contracts. CarService and the IVI VM consume them through the gateway.
 
-**Lunch-target composition** (`device/google/sdv/AndroidProducts.mk`, `README.md`): OEM products inherit from one SDV "base" plus a vendor target. The bases are `sdv_base` (comm stack only), `sdv_core_base` (full SDV Core services), `sdv_media_base` (Core + media APIs), and `sdv_ivi_base` (an AAOS IVI talking to SDV services on other VMs). Sample targets `sdv_core_cf`, `sdv_media_cf`, `sdv_ivi_cf` (Cuttlefish) and their `*_arm64` peers boot multiple VM instances (`cvd_config_sdv_core_instance{1,2,3}.json`).
+**Lunch-target composition** (`device/google/sdv/AndroidProducts.mk`, `README.md`): OEM products inherit from one SDV "base" plus a vendor target. The bases are `sdv_base` (comm stack only) and `sdv_core_base` (full SDV Core services). The other bases are `sdv_media_base` (Core + media APIs) and `sdv_ivi_base` (an AAOS IVI that talks to SDV services on other VMs). Sample targets `sdv_core_cf`, `sdv_media_cf`, `sdv_ivi_cf` (Cuttlefish) and their `*_arm64` peers boot multiple VM instances (`cvd_config_sdv_core_instance{1,2,3}.json`).
 
-**VSIDL → generated Rust.** Services are described in `.vsidl` service-bundle definitions plus `.proto` message schemas in a catalog. `vsidlc` (`vsidl/vsidlc`) walks the catalog and emits Rust middleware bindings into `generated_rs/`; `someip_translation_generator` emits SOME/IP↔proto translation code for messages tagged `INTERPRET_AS_BYTES` (static) or `DYNAMIC_LIBRARY` (dynamic). This is the SDV equivalent of AIDL stub generation.
+**VSIDL → generated Rust.** Services are described in `.vsidl` service-bundle definitions plus `.proto` message schemas in a catalog. `vsidlc` (`vsidl/vsidlc`) walks the catalog and emits Rust middleware bindings into `generated_rs/`. `someip_translation_generator` emits SOME/IP↔proto translation code for messages tagged `INTERPRET_AS_BYTES` (static) or `DYNAMIC_LIBRARY` (dynamic). This is the SDV equivalent of AIDL stub generation.
 
-**Vehicle-service interface layers.** Inside a VM, the comm stack splits into Service Discovery, Data Tunnel (named pub/sub topics), and RPC (`IRpcAgent`). Cross-VM and cross-ECU traffic goes over **SOME/IP** via the SOME/IP stack agent and broker-agent-comms layer, with vsomeip as transport. Non-SDV-aware native/Java apps reach the fabric through the **SDV Gateway** (`sdv_gateway/`): the gateway's `vhal_proxy` (`libvhal_proxy`) lets a VHAL service call `initComms` and publish vehicle properties, gated by `sdv_gateway_config.json` (`/vendor/etc/sdv_gateway_config.json`) which allowlists SDV package names per process UID. SDV-RPC traffic rides a dedicated VLAN (`androidboot.sdv.rpc.interface`, default `sdv_rpc`).
+**Vehicle-service interface layers.** Inside a VM, the comm stack splits into Service Discovery, Data Tunnel (named pub/sub topics), and RPC (`IRpcAgent`). Cross-VM and cross-ECU traffic goes over **SOME/IP** via the SOME/IP stack agent and broker-agent-comms layer, with vsomeip as transport.
+
+Non-SDV-aware native/Java apps reach the fabric through the **SDV Gateway** (`sdv_gateway/`). The gateway's `vhal_proxy` (`libvhal_proxy`) lets a VHAL service call `initComms` and publish vehicle properties. It is gated by `sdv_gateway_config.json` (`/vendor/etc/sdv_gateway_config.json`), which allowlists SDV package names per process UID. SDV-RPC traffic rides a dedicated VLAN (`androidboot.sdv.rpc.interface`, default `sdv_rpc`).
 
 **Display safety.** On the IVI side, `packages/services/display_safety` runs the HARry Driver-UI as an SDV service bundle (`har-sdv-service`) with a `safety-monitor` enforcing distraction/safety constraints. The window migrated the ADAS framework crates and DriverUI SEPolicy into this repo, and ships `com.google.display_safety.har.apex` only for SDV builds.
 
@@ -3413,41 +3522,41 @@ graph TB
 
 ### Notable integrations
 
-- **CarService ↔ SDV.** `packages/services/Car` (moved repo, 561 commits) gained the Driver-UI plumbing the IVI side needs: `com.android.car.driverui` privapp permissions and `ACCESS_LOCAL_NETWORK` default-grant, plus SDV linters. The IVI lunch target wires a Vehicle HAL specifically for SDV: `LOCAL_VHAL_PRODUCT_PACKAGE := android.hardware.automotive.vehicle@V1-sdv-emulator-service` (`device/google/sdv/sdv_ivi_cf/sdv_ivi_cf.mk`), so CarService talks to vehicle properties ultimately served by SDV Core through the gateway.
-- **AIDL relocation into `hardware/sdv/interfaces`.** Several interface sets moved out of `system/` into the new HAL package: the SDV Gateway interfaces, the Service Bundles Registry AIDL, vpm stable AIDL, and (after a revert) the Telemetry AIDL. This makes the SDV hardware contract a versioned, VINTF-stable surface independent of the agent implementations.
-- **VHAL proxy bridge & OEM/PDK.** `sdv_gateway/vhal_proxy` (`libvhal_proxy`, `config_loader`) lets an unmodified VHAL join the SDV fabric under an allowlisted SDV package name. The reference device supports a custom `/oem_ab` partition (`sdv_core_base/oem_ab/`) for OEM service bundles, and Core targets are PDK-buildable (SDV KeyMint is force-added because the PDK is tested without `system/software_defined_vehicle/` sources).
-- **Security model.** VM-level permissions are an APEX with id `com.oem.sdv.authz` (reference `com.oem.sdv.authz.allow_all.{core,ivi}`); the gateway config additionally restricts native clients by UID, and the middleware ships `crypto_rpc` and `service_authz` for authenticated RPC.
-- **Large-screen app-compat RRO knobs.** New runtime-overlayable config booleans tune large-screen/foldable behavior: `config_isCameraCompatSimulateRequestedOrientationTreatmentEnabled` (and the landscape variant) drive camera-compat letterboxing through `AppCompatCameraSimReqOrientationPolicy` (`frameworks/base/services/core/java/com/android/server/wm/AppCompatConfiguration.java`), and `config_enableSelfKillRecoveryBetweenInternalDisplays` (`frameworks/base/core/res/res/values/config.xml`) lets an app that self-finishes during a fold transition be relaunched to preserve its session.
+- **CarService ↔ SDV.** `packages/services/Car` (moved repo, 561 commits) gained the Driver-UI plumbing the IVI side needs: `com.android.car.driverui` privapp permissions and `ACCESS_LOCAL_NETWORK` default-grant, plus SDV linters. The IVI lunch target wires a Vehicle HAL specifically for SDV: `LOCAL_VHAL_PRODUCT_PACKAGE := android.hardware.automotive.vehicle@V1-sdv-emulator-service` (`device/google/sdv/sdv_ivi_cf/sdv_ivi_cf.mk`). As a result, CarService talks to vehicle properties ultimately served by SDV Core through the gateway.
+- **AIDL relocation into `hardware/sdv/interfaces`.** Several interface sets moved out of `system/` into the new HAL package. They are the SDV Gateway interfaces, the Service Bundles Registry AIDL, vpm stable AIDL, and (after a revert) the Telemetry AIDL. This makes the SDV hardware contract a versioned, VINTF-stable surface independent of the agent implementations.
+- **VHAL proxy bridge & OEM/PDK.** `sdv_gateway/vhal_proxy` (`libvhal_proxy`, `config_loader`) lets an unmodified VHAL join the SDV fabric under an allowlisted SDV package name. The reference device supports a custom `/oem_ab` partition (`sdv_core_base/oem_ab/`) for OEM service bundles. Core targets are PDK-buildable (SDV KeyMint is force-added because the PDK is tested without `system/software_defined_vehicle/` sources).
+- **Security model.** VM-level permissions are an APEX with id `com.oem.sdv.authz` (reference `com.oem.sdv.authz.allow_all.{core,ivi}`). The gateway config additionally restricts native clients by UID. The middleware ships `crypto_rpc` and `service_authz` for authenticated RPC.
+- **Large-screen app-compat RRO knobs.** New runtime-overlayable config booleans tune large-screen/foldable behavior. `config_isCameraCompatSimulateRequestedOrientationTreatmentEnabled` (and the landscape variant) drive camera-compat letterboxing through `AppCompatCameraSimReqOrientationPolicy` (`frameworks/base/services/core/java/com/android/server/wm/AppCompatConfiguration.java`). `config_enableSelfKillRecoveryBetweenInternalDisplays` (`frameworks/base/core/res/res/values/config.xml`) lets an app that self-finishes during a fold transition be relaunched to preserve its session.
 
 ## D.15 Practical
 
-Practical dev/test tooling moved modestly: Cuttlefish (290 commits) gained a new desktop product, a unified VKMS controller, an NPU HAL, and AiSeal wiring, while Traceur added two Perfetto trace categories.
+Practical dev/test tooling moved modestly. Cuttlefish (290 commits) gained a new desktop product, a unified VKMS controller, an NPU HAL, and AiSeal wiring. Traceur added two Perfetto trace categories.
 
 ### New projects
 
-`vsoc_x86_64_only/desktop/` is a new Cuttlefish product, `aosp_cf_x86_64_desktop` (registered in `AndroidProducts.mk:40`), targeting the Android Desktop form factor. It is HSUM-only (`PRODUCT_USE_HSUM := true`), 64-bit only, uses dynamic partitions with lz4 virtual-AB compression, and ships a `desktop_init_dev_config` service picking APEX/device config at first boot (`shared/desktop/common.mk`). The product turns on verity+encryption by default and enables Trusty gatekeeper/keymint plus `pvmfw-cf` (`vsoc_x86_64_only/desktop/desktop.mk`).
+`vsoc_x86_64_only/desktop/` is a new Cuttlefish product, `aosp_cf_x86_64_desktop` (registered in `AndroidProducts.mk:40`), targeting the Android Desktop form factor. It is HSUM-only (`PRODUCT_USE_HSUM := true`), 64-bit only, uses dynamic partitions with lz4 virtual-AB compression. It also ships a `desktop_init_dev_config` service that picks APEX/device config at first boot (`shared/desktop/common.mk`). The product turns on verity+encryption by default and enables Trusty gatekeeper/keymint plus `pvmfw-cf` (`vsoc_x86_64_only/desktop/desktop.mk`).
 
 ### New modules
 
-- `guest/commands/vkms_controller/` is a new guest-side binary for Virtual Kernel Mode Setting (`main.cpp`). It consolidates fragmented VKMS logic so the host CLI is a stateless `adb shell vkms_controller ...` proxy, test frameworks share one setup path, and the guest correlates virtual hardware (ConfigFS indices) to SurfaceFlinger display IDs. Ships as a `vendor` `cc_binary` (`guest/commands/vkms_controller/Android.bp`).
+- `guest/commands/vkms_controller/` is a new guest-side binary for Virtual Kernel Mode Setting (`main.cpp`). It consolidates fragmented VKMS logic. As a result, the host CLI is a stateless `adb shell vkms_controller ...` proxy, and test frameworks share one setup path. The guest correlates virtual hardware (ConfigFS indices) to SurfaceFlinger display IDs. Ships as a `vendor` `cc_binary` (`guest/commands/vkms_controller/Android.bp`).
 - NPU support: `shared/device.mk:489` installs the `com.android.hardware.npu.cf` HAL APEX and copies `android.hardware.npu.xml` as a vendor feature permission, advertising the new NPU HAL surface on virtual devices.
 
 ### Architecture changes
 
 - AiSeal (on-device AI sealing) is now wired for Cuttlefish via `shared/aiseal/device_vendor.mk`, gated on `RELEASE_AISEAL_FRAMEWORK` and optionally AppSearch. Because Cuttlefish has no protected-VM support, it forces `service.aiseal.protected_vm=0` and runs AiSeal in a nonprotected VM; `aosp_cf_x86_64_only_phone` opts into the feature.
-- Host tooling cleanup: the acloud translator was deleted from the Cuttlefish host package, and `cvd-host-package` is now built sandboxed (Sbox) with incremental-walk dependency tracking, tightening reproducibility of the developer host tarball.
-- Variant breadth is unchanged in count but reaffirmed across all four `minidroid` targets (`vsoc_{arm64,arm,riscv64,x86_64}_minidroid`) plus the page-size-agnostic `vsoc_x86_64_pgagnostic` / `vsoc_arm64_pgagnostic` products used to validate 16 KB-page builds.
+- Host tooling cleanup: the acloud translator was deleted from the Cuttlefish host package. `cvd-host-package` is now built sandboxed (Sbox) with incremental-walk dependency tracking. This tightens reproducibility of the developer host tarball.
+- Variant breadth is unchanged in count but reaffirmed across all four `minidroid` targets (`vsoc_{arm64,arm,riscv64,x86_64}_minidroid`). It is also reaffirmed across the page-size-agnostic `vsoc_x86_64_pgagnostic` / `vsoc_arm64_pgagnostic` products, which are used to validate 16 KB-page builds.
 
 ### Notable integrations
 
 Traceur adds two Perfetto trace categories developers can toggle in the system tracing UI (`src_common/com/android/traceur/TraceUtils.java:127`):
 
-- `wattson` ("Wattson power estimation"): when enabled, Traceur emits a minimum Perfetto config with `linux.sys_stats` (cpufreq/cpuidle polling) and a `linux.ftrace` block capturing CPU-hotplug, devfreq, cpu_frequency/idle, suspend_resume, and sched_switch events (`src_common/com/android/traceur/PerfettoUtils.java:821`).
+- `wattson` ("Wattson power estimation"): when enabled, Traceur emits a minimum Perfetto config. The config has `linux.sys_stats` (cpufreq/cpuidle polling) and a `linux.ftrace` block that captures CPU-hotplug, devfreq, cpu_frequency/idle, suspend_resume, and sched_switch events (`src_common/com/android/traceur/PerfettoUtils.java:821`).
 - `mq` ("messagequeue tracing"): enables the `mq` `track_event` category for Looper/MessageQueue dispatch tracing (`src_common/com/android/traceur/PerfettoUtils.java:851`).
 
 Traceur also bumped `targetSdk` to 36, enabled R8 bytecode optimization, and removed the dead `bitmaps_in_traceur` flag and the WinscopeUtils/view-capture path.
 
-**DeviceDiagnostics** (`packages/apps/DeviceDiagnostics`, package `com.android.devicediagnostics`) is the hardware-health and trade-in app behind Settings > Reset options > Device Diagnostics: component checks (screen, touch, battery, storage, sensors, hinge) collect a `DeviceReport` protobuf carrying a key-attestation chain, and the separate `tradeinmode/` component gates `adbd` on `persist.adb.tradeinmode` so a partner can read the attested report over adb without unlocking.
+**DeviceDiagnostics** (`packages/apps/DeviceDiagnostics`, package `com.android.devicediagnostics`) is the hardware-health and trade-in app behind Settings > Reset options > Device Diagnostics. Component checks (screen, touch, battery, storage, sensors, hinge) collect a `DeviceReport` protobuf that carries a key-attestation chain. The separate `tradeinmode/` component gates `adbd` on `persist.adb.tradeinmode`. As a result, a partner can read the attested report over adb without unlocking the device.
 
 ## D.16 Key Source Files Reference
 

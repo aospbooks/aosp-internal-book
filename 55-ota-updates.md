@@ -1,22 +1,26 @@
 # Chapter 55: OTA Updates
 
 Over-the-Air (OTA) updates are the mechanism by which Android devices receive
-new system images, security patches, and feature updates without requiring
-physical access or manual flashing. What began as a simple "download a zip, boot
-into recovery, apply it" model has evolved into one of AOSP's most sophisticated
-subsystems -- spanning a dedicated native daemon (`update_engine`), kernel-level
-copy-on-write snapshots, bootloader integration protocols, and a streaming
-pipeline that can apply gigabyte-scale payloads without ever writing the full
-image to userdata.
+new system images, security patches, and feature updates. They need no physical
+access and no manual flashing. OTA began as a simple "download a zip, boot into
+recovery, apply it" model. It has evolved into one of AOSP's most sophisticated
+subsystems. The subsystem includes a dedicated native daemon (`update_engine`),
+kernel-level copy-on-write snapshots, and bootloader integration protocols. It
+also includes a streaming pipeline that can apply gigabyte-scale payloads
+without ever writing the full image to userdata.
 
 This chapter traces an OTA update from the moment a server announces its
-availability to the moment the device has rebooted into the new software and
-marked the slot as successful. We examine every layer: the payload binary
-format, the action pipeline inside `update_engine`, the A/B and Virtual A/B
-slot-switching mechanisms, the `snapuserd` daemon that makes compressed
-copy-on-write possible in userspace, the Python tooling that generates payloads,
-recovery mode as the legacy fallback, and the framework APIs that tie everything
-together.
+availability. It ends when the device has rebooted into the new software and
+marked the slot as successful. We examine every layer:
+
+- the payload binary format
+- the action pipeline inside `update_engine`
+- the A/B and Virtual A/B slot-switching mechanisms
+- the `snapuserd` daemon that makes compressed copy-on-write possible in
+  userspace
+- the Python tooling that generates payloads
+- recovery mode as the legacy fallback
+- the framework APIs that tie everything together
 
 ---
 
@@ -35,15 +39,15 @@ Source path: system/update_engine/         -- A/B and Virtual A/B engine
 
 In Android 17 the snapshot code moved out of `system/core`: `libsnapshot`,
 `snapuserd`, and the COW format implementation now live under
-`system/fs/fs_mgr/libsnapshot/` (the `system/core/fs_mgr/libsnapshot/` path used
-by earlier releases no longer exists). All snapshot citations in this chapter
+`system/fs/fs_mgr/libsnapshot/`. Earlier releases used the
+`system/core/fs_mgr/libsnapshot/` path, which no longer exists. All snapshot citations in this chapter
 use the new location.
 
 **Non-A/B (Legacy)**. The original scheme, used from Android 1.0 through
 approximately Android 9 (though it remains supported). The device has a single
 set of partitions (system, boot, vendor, etc.) plus a dedicated `recovery`
-partition. To update, the device reboots into recovery, which mounts the OTA
-package (a signed zip file containing an updater binary and image data), and
+partition. To update, the device reboots into recovery. Recovery mounts the OTA
+package (a signed zip file with an updater binary and image data) and
 applies block-level patches in-place. If the update fails partway through, the
 device may be left in an unbootable state -- the dreaded "brick."
 
@@ -51,7 +55,9 @@ device may be left in an unbootable state -- the dreaded "brick."
 every updatable partition: slot A and slot B. While the user runs from one slot,
 `update_engine` writes the new image to the other slot in the background. When
 complete, the bootloader is instructed to switch active slots. If the new slot
-fails to boot, the bootloader rolls back. The device never enters recovery for
+fails to boot, the bootloader rolls back.
+
+The device never enters recovery for
 OTA purposes, and the user experiences zero downtime during the write phase.
 The cost is roughly doubled partition storage.
 
@@ -88,10 +94,14 @@ timeline
 ```
 
 Android 17 does not introduce a new scheme; it refines Virtual A/B. The big
-changes are the **UBLK** userspace-block-driver backend for serving snapshots
-(an alternative to the `dm-user` path), **zstd compression for `REPLACE`
-operations**, and the removal of squashfs build/OTA support. These are covered
-in detail in section 55.26.
+changes are:
+
+- the **UBLK** userspace-block-driver backend for serving snapshots (an
+  alternative to the `dm-user` path)
+- **zstd compression for `REPLACE` operations**
+- the removal of squashfs build/OTA support
+
+These are covered in detail in section 55.26.
 
 ### 55.1.2 High-Level Data Flow
 
@@ -153,10 +163,10 @@ ro.virtual_ab.compression.xor.enabled=true
 ro.virtual_ab.ublk.enabled=true   # Device configured for UBLK snapshots
 ```
 
-The `ro.virtual_ab.ublk.enabled` property is one of three conditions checked by
-`IsUblkEnabled()` before snapshots are served over UBLK rather than `dm-user`;
-the other two are an aconfig flag and a kernel version of 6.6 or newer (see
-section 55.26).
+The `ro.virtual_ab.ublk.enabled` property is one of three conditions that
+`IsUblkEnabled()` checks. The check happens before snapshots are served over
+UBLK rather than `dm-user`. The other two conditions are an aconfig flag and a
+kernel version of 6.6 or newer (see section 55.26).
 
 ```
 Source: system/fs/fs_mgr/libsnapshot/capabilities.cpp
@@ -501,9 +511,9 @@ Source: system/update_engine/payload_consumer/payload_constants.cc
         system/update_engine/payload_consumer/payload_metadata.cc
 ```
 
-The payload begins with a fixed 24-byte header, followed by a serialized
-protobuf manifest, an optional metadata signature, the binary data blobs, and
-finally a payload signature.
+The payload begins with a fixed 24-byte header. After the header come a
+serialized protobuf manifest, an optional metadata signature, the binary data
+blobs, and finally a payload signature.
 
 ```mermaid
 block-beta
@@ -578,7 +588,7 @@ Source: system/update_engine/payload_consumer/payload_constants.h
 
 Android 17 added minor version 10 (`kZstdMinorPayloadVersion`), and
 `kMaxSupportedMinorPayloadVersion` is now `kZstdMinorPayloadVersion`. The minor
-version of a payload is the highest version whose features it uses; a device
+version of a payload is the highest version whose features it uses. A device
 refuses any payload whose minor version exceeds the maximum it supports
 (`kUnsupportedMinorPayloadVersion`, error 45).
 
@@ -683,7 +693,7 @@ but can update any device regardless of its current state.
 source image and the target. They use `SOURCE_COPY`, `SOURCE_BSDIFF`,
 `PUFFDIFF`, `ZUCCHINI`, and similar operations that reference source blocks.
 Delta payloads are dramatically smaller (often 50-200 MB vs. 2-4 GB for a full
-payload) but require the device to be running the exact source build.
+payload). But they require the device to run the exact source build.
 
 ```mermaid
 flowchart TD
@@ -836,8 +846,8 @@ bool DeltaPerformer::ProcessOperation(const InstallOperation* op,
 The decompression for a `REPLACE_*` operation is applied by stacking the right
 `ExtentWriter` on top of the partition writer. `InstallOperationExecutor::ExecuteReplaceOperation`
 wraps the base writer in a `BzipExtentWriter`, `XzExtentWriter`, or -- new in
-Android 17 -- a `ZstdExtentWriter` depending on the operation type, then writes
-the decompressed bytes to the target extents:
+Android 17 -- a `ZstdExtentWriter`, depending on the operation type. Then it
+writes the decompressed bytes to the target extents:
 
 ```
 Source: system/update_engine/payload_consumer/install_operation_executor.cc
@@ -931,7 +941,7 @@ On resume, `CanResumeUpdate()` checks the stored payload hash against the new
 payload's hash to determine whether the checkpoint is still valid.
 
 When the device reboots mid-update (power loss, crash), the next `ApplyPayload`
-call detects the stored checkpoint and resumes from where it left off, skipping
+call detects the stored checkpoint. It resumes from where it left off and skips
 already-applied operations.
 
 ---
@@ -1125,11 +1135,11 @@ Source: system/fs/fs_mgr/libsnapshot/
         system/update_engine/aosp/dynamic_partition_control_android.h
 ```
 
-The key insight: rather than maintaining a full copy of each partition, Virtual
-A/B stores only the *differences* between the running (source) and updated
-(target) versions. These differences are stored in COW format, and a daemon
-(`snapuserd`) presents a merged view of the base partition + COW data to the
-rest of the system.
+The key insight: Virtual A/B does not keep a full copy of each partition. It
+stores only the *differences* between the running (source) and updated (target)
+versions. These differences are stored in COW format. A daemon (`snapuserd`)
+presents a merged view of the base partition + COW data to the rest of the
+system.
 
 ```mermaid
 flowchart TD
@@ -1165,8 +1175,8 @@ super partition is a physical partition that contains a GPT-like metadata table
 within it.
 
 For Virtual A/B, the logical partitions have A and B entries in the metadata,
-but the actual data can overlap because the inactive slot may not physically
-exist until a COW is created.
+but the actual data can overlap. This is because the inactive slot may not
+physically exist until a COW is created.
 
 ### 55.6.3 Snapshot Manager
 
@@ -1208,9 +1218,10 @@ Source: system/fs/fs_mgr/libsnapshot/libsnapshot_cow/writer_v3.cpp
         system/fs/fs_mgr/libsnapshot/libsnapshot_cow/cow_format.cpp
 ```
 
-The v3 format carries per-operation compression metadata, so a single COW image
-can mix uncompressed, lz4, and zstd blocks, and it supports the larger
-compression factors selected by `--compression_factor` (4k through 256k).
+The v3 format carries per-operation compression metadata. A single COW image
+can therefore mix uncompressed, lz4, and zstd blocks. The format also supports
+the larger compression factors selected by `--compression_factor` (4k through
+256k).
 
 COW operations:
 
@@ -1242,13 +1253,14 @@ flowchart LR
 ### 55.6.5 snapuserd
 
 `snapuserd` is the userspace daemon that serves snapshot block devices. It runs
-very early in the boot process (first-stage init) and presents merged views of
+very early in the boot process (first-stage init). It presents merged views of
 base-partition + COW data to the kernel through a userspace block device. That
-block device is abstracted behind an `IBlockServer` interface: historically the
-only backend was `dm-user`, but Android 17 added a `ublk` backend that the
-daemon can select at startup (covered in section 55.26). The interface lives in
-`snapuserd/include/snapuserd/block_server.h`; the two implementations are
-`dm_user_block_server.cpp` and `ublk_block_server.cpp`.
+block device is abstracted behind an `IBlockServer` interface. Historically the
+only backend was `dm-user`. Android 17 added a `ublk` backend that the daemon
+can select at startup (covered in section 55.26).
+
+The interface lives in `snapuserd/include/snapuserd/block_server.h`. The two
+implementations are `dm_user_block_server.cpp` and `ublk_block_server.cpp`.
 
 ```
 Source: system/fs/fs_mgr/libsnapshot/snapuserd/
@@ -1399,9 +1411,9 @@ Supported compression algorithms:
 | None | `none` | No compression |
 
 XOR compression (`ro.virtual_ab.compression.xor.enabled=true`) further reduces
-COW size by storing XOR deltas instead of full replacement blocks. When a block
-changes only slightly (e.g., a timestamp in a header), the XOR of old and new
-blocks compresses much better than the full new block.
+COW size by storing XOR deltas instead of full replacement blocks. A block can
+change only slightly (e.g., a timestamp in a header). In this case, the XOR of
+the old and new blocks compresses much better than the full new block.
 
 ```mermaid
 flowchart LR
@@ -1487,8 +1499,8 @@ OPTIONS.enable_replace_zstd = False      # Android 17: zstd for REPLACE ops
 ```
 
 The `--enable_replace_zstd` flag (added in Android 17) makes `delta_generator`
-emit `REPLACE_ZSTD` operations instead of plain `REPLACE`, shrinking full
-payloads and the full portions of incremental payloads. It is passed through to
+emit `REPLACE_ZSTD` operations instead of plain `REPLACE`. This makes full
+payloads, and the full portions of incremental payloads, smaller. It is passed through to
 the native generator as `--enable_replace_zstd=true` and is mutually disabled by
 `--disable_replace_compression`.
 
@@ -2032,9 +2044,10 @@ public static final class UpdateStatusConstants {
 
 The Java `UpdateStatusConstants` class stops at `DISABLED = 9`. The native
 `UpdateStatus` enum (`system/update_engine/client_library/include/update_engine/update_status.h`)
-carries two additional states that are not mirrored in the Java constants:
-`NEED_PERMISSION_TO_UPDATE = 10` and `CLEANUP_PREVIOUS_UPDATE = 11` (the
-post-reboot snapshot-merge phase of a Virtual A/B update).
+carries two additional states that are not mirrored in the Java constants.
+These states are `NEED_PERMISSION_TO_UPDATE = 10` and
+`CLEANUP_PREVIOUS_UPDATE = 11` (the post-reboot snapshot-merge phase of a
+Virtual A/B update).
 
 ### 55.10.4 UpdateEngineStable
 
@@ -2290,7 +2303,7 @@ Reported fields include:
   backend rather than `dm-user`.
 
 In Android 17 the older `ISnapshotMergeStats` / `snapshot_stats.h` accumulator
-that update_engine used to instantiate was removed; stats are now read back from
+that update_engine used to instantiate was removed. Stats are now read back from
 the persisted merge report instead.
 
 ### 55.13.3 Log Locations
@@ -2709,12 +2722,12 @@ Source: system/update_engine/common/cpu_limiter.h
         system/update_engine/common/cpu_limiter.cc
 ```
 
-The `CPULimiter` class does not monitor system load; it simply lowers the
-process's cgroup `cpu.shares` to a low value for a bounded window, then
+The `CPULimiter` class does not monitor system load. It simply lowers the
+process's cgroup `cpu.shares` to a low value for a bounded window. Then it
 restores the normal value when a timeout fires. On Android it is not actually
-wired up -- no production code instantiates it -- and the update process's CPU
-and I/O footprint is instead managed by the `OtaProfiles` task profile applied
-in `system/update_engine/update_engine.rc`. Keeping the update cheap matters
+wired up, because no production code instantiates it. Instead, the CPU and I/O footprint
+of the update process is managed by the `OtaProfiles` task profile applied in
+`system/update_engine/update_engine.rc`. Keeping the update cheap matters
 most during the compute-intensive diff operations (bsdiff, puffdiff,
 zucchini).
 
@@ -2869,13 +2882,13 @@ static const unsigned kProgressOperationsWeight;   // Apply contribution
 
 ### 55.20.3 The MultiRangeHttpFetcher
 
-The `MultiRangeHttpFetcher` is a simple wrapper around a base `HttpFetcher`:
-the client hands it a list of byte ranges, and it fetches each range in turn
+The `MultiRangeHttpFetcher` is a simple wrapper around a base `HttpFetcher`.
+The client hands it a list of byte ranges. It fetches each range in turn
 through the same underlying fetcher. `update_engine` uses it mainly to fetch
-the payload starting at an offset (for example when resuming). Sequencing
-payloads and forwarding the received bytes to the `DeltaPerformer` is the job
-of `DownloadAction`, which constructs the fetcher and feeds the performer from
-its `ReceivedBytes` callback.
+the payload starting at an offset (for example when resuming). `DownloadAction`
+sequences the payloads and forwards the received bytes to the `DeltaPerformer`.
+It constructs the fetcher and feeds the performer from its `ReceivedBytes`
+callback.
 
 ---
 
@@ -2929,8 +2942,8 @@ message PartitionUpdate {
 information flattened into scalar offset/size fields.)
 
 When `write_verity` is true in the `InstallPlan`, the performer computes
-hash trees and FEC codes on-device after writing partition data, rather than
-including them in the payload. This saves payload size significantly.
+hash trees and FEC codes on-device after it writes partition data. The payload
+does not include them. This saves payload size significantly.
 
 ---
 
@@ -3097,8 +3110,8 @@ ExtentMap<const CowMergeOperation*, ExtentLess> xor_map_;
 ```
 
 For blocks in the XOR map, source copy operations produce `COW_XOR` entries
-instead of `COW_COPY`, storing the XOR delta between old and new data for
-better compression.
+instead of `COW_COPY`. The entries store the XOR delta between old and new data
+for better compression.
 
 ---
 
@@ -3193,25 +3206,26 @@ sequenceDiagram
 ## 55.26 Android 17 OTA Changes
 
 Android 17 does not add a fourth update scheme. Instead it refines Virtual A/B
-along three axes: a new userspace-block-device backend (UBLK) for serving
-snapshots, zstd compression for `REPLACE` operations, and a set of removals and
-memory optimizations on both the generation and application sides. This section
+along three axes. The first is a new userspace-block-device backend (UBLK) to
+serve snapshots. The second is zstd compression for `REPLACE` operations. The
+third is a set of removals and memory optimizations on both the generation and
+application sides. This section
 collects those changes and ties them back to the mechanisms described earlier in
 the chapter.
 
 ### 55.26.1 The UBLK Snapshot Backend
 
-Through Android 16, `snapuserd` served snapshot block devices exclusively
-through the kernel `dm-user` device: the kernel forwarded each I/O request up to
-userspace over a `dm-user` character device, and `snapuserd` replied with merged
+Through Android 16, `snapuserd` served snapshot block devices only through the
+kernel `dm-user` device. The kernel forwarded each I/O request up to userspace
+over a `dm-user` character device, and `snapuserd` replied with merged
 base-plus-COW data. Android 17 introduces a second backend built on **UBLK**
-(userspace block driver), where `snapuserd` registers a `/dev/ublkb*` block
-device and services requests through the in-kernel `ublk` driver via the
+(userspace block driver). With it, `snapuserd` registers a `/dev/ublkb*` block
+device. It services requests through the in-kernel `ublk` driver via the
 `libublksrv` host library (`external/ublksrv`).
 
-Both backends sit behind the same `IBlockServer` abstraction, so the merge
-logic, COW reader, and worker threads are unchanged; only the transport between
-kernel and daemon differs.
+Both backends sit behind the same `IBlockServer` abstraction. The merge logic,
+COW reader, and worker threads are therefore unchanged. Only the transport
+between kernel and daemon differs.
 
 ```
 Source: system/fs/fs_mgr/libsnapshot/snapuserd/include/snapuserd/block_server.h
@@ -3256,12 +3270,12 @@ bool IsUblkEnabled() {
 
 `KernelSupportsUblk()` parses `uname()` and returns true only for kernel 6.6 or
 newer. The aconfig flag (`com::android::libsnapshot::vabc_with_ublk_support`) is
-the rollout gate; the build flag `RELEASE_VABC_UBLK_ENABLE_FLAG` drives it and
+the rollout gate. The build flag `RELEASE_VABC_UBLK_ENABLE_FLAG` drives it. It
 was advanced to true in trunk staging during the 17 cycle.
 
 The chosen mode is persisted as a hint file at `/metadata/ota/snapuserd_mode`
-(`kSnapuserdModeHintFile`) so that the daemon makes a consistent choice across
-the boot stages, and first-stage init starts the daemon in the right mode:
+(`kSnapuserdModeHintFile`). This lets the daemon make a consistent choice across
+the boot stages. First-stage init then starts the daemon in the right mode:
 
 ```
 Source: system/core/init/snapuserd_transition.cpp (LaunchFirstStageSnapuserd)
@@ -3303,7 +3317,7 @@ message DynamicPartitionMetadata {
 ```
 
 `ota_from_target_files` exposes a corresponding option to set this from the
-manifest, and it also disables UBLK automatically when the target build does not
+manifest. It also disables UBLK automatically when the target build does not
 declare UBLK support. This gives OEMs an escape hatch if a particular kernel or
 device exhibits a UBLK regression, without rebuilding the device configuration.
 
@@ -3322,7 +3336,7 @@ Source: system/update_engine/payload_consumer/zstd_extent_writer.cc
 ```
 
 On the application side, `REPLACE_ZSTD` dispatches through the same
-`PerformReplaceOperation` path as the other `REPLACE` variants (section 55.4.2);
+`PerformReplaceOperation` path as the other `REPLACE` variants (section 55.4.2).
 `InstallOperationExecutor` simply stacks a `ZstdExtentWriter` on top of the
 target writer. On the generation side, `--enable_replace_zstd` (section 55.7.1)
 tells `delta_generator` to emit `REPLACE_ZSTD` rather than `REPLACE`. Note this
@@ -3346,13 +3360,13 @@ Android 17 trims the OTA stack and reduces its peak memory footprint:
 - **Lower peak RAM during application.** `update_engine` no longer keeps the raw
   manifest bytes resident after parsing and frees per-partition manifest memory
   once a partition is finished. Large diff patches are now written to a
-  temporary file and applied via a file descriptor instead of being buffered
-  entirely in memory, which matters for the multi-gigabyte partitions on modern
-  devices.
+  temporary file. They are applied via a file descriptor instead of being
+  buffered entirely in memory. This matters for the multi-gigabyte partitions on
+  modern devices.
 
 - **Merge-stats interface simplified.** The standalone `ISnapshotMergeStats` /
-  `snapshot_stats.h` accumulator was removed; merge metrics are read back from
-  the persisted `SnapshotMergeReport` (section 55.13.2), which gained the
+  `snapshot_stats.h` accumulator was removed. Merge metrics are read back from
+  the persisted `SnapshotMergeReport` (section 55.13.2). The report gained the
   `ublk_used` field to record which backend served the merge.
 
 ```
@@ -3364,35 +3378,39 @@ Source: build/make/tools/releasetools/ota_from_target_files.py
 These changes are invisible to OTA clients: the `UpdateEngine` Java API, the
 payload format header, and the action pipeline are unchanged. A device that
 takes a 17 OTA may simply find its snapshots served over UBLK and its `REPLACE`
-data carried as zstd, with no change to how an update is requested or monitored.
+data carried as zstd. Nothing changes in how an update is requested or
+monitored.
 
 ---
 
 ## 55.27 Dynamic System Updates (DSU) and gsid
 
-Every mechanism described so far rewrites the *installed* system: an A/B OTA
-flips slots, a Virtual A/B OTA writes COW snapshots over the real partitions.
+Every mechanism described so far rewrites the *installed* system. An A/B OTA
+flips slots. A Virtual A/B OTA writes COW snapshots over the real partitions.
 **Dynamic System Updates (DSU)** is the opposite trade. It boots a downloaded
-Generic System Image (GSI) *without touching the installed system at all*. The
-real `system`/`product` partitions stay exactly as they were; the GSI and a
-fresh empty `userdata` live in image files on `/data`, are exposed as
+Generic System Image (GSI) *without touching the installed system at all*.
+
+The real `system`/`product` partitions stay exactly as they were. The GSI and a
+fresh empty `userdata` live in image files on `/data`. They are exposed as
 device-mapper block devices, and the device boots into them for one or more
-boots. Disable or wipe the DSU and the next reboot returns to the original,
-untouched OS. This makes DSU the tool of choice for trying a new platform build,
-running CTS against a GSI, or letting an app developer validate against a clean
-image, all without flashing and all reversible.
+boots.
+
+Disable or wipe the DSU and the next reboot returns to the original,
+untouched OS. This makes DSU the tool of choice to try a new platform build or
+to run CTS against a GSI. It also lets an app developer validate against a clean
+image. All of this happens without flashing, and all of it is reversible.
 
 DSU reuses the same dynamic-partition and image-mapping machinery this chapter
 already covered for Virtual A/B (`libfiemap`'s `ImageManager`, `liblp` metadata,
 device-mapper). The piece unique to DSU is a small system daemon, **`gsid`**
-(in `system/gsid/`), that stages the image into those
+(in `system/gsid/`). It stages the image into those
 dynamic image files and arms the one-shot boot.
 
 ### 55.27.1 The gsid daemon and IGsiService
 
 `gsid` runs as the `gsiservice` AIDL service. Its `.rc` file declares it
 `oneshot` and `disabled`, so it is started on demand (by binder) rather than at
-every boot, running as root with the `system`/`media_rw` groups:
+every boot. It runs as root with the `system`/`media_rw` groups:
 
 ```
 Source: system/gsid/gsid.rc
@@ -3420,8 +3438,8 @@ Source: system/gsid/aidl/android/gsi/IGsiService.aidl
         system/gsid/gsi_service.cpp (EnableGsi, SetBootMode, RunStartupTasks)
 ```
 
-The framework-facing entry point is `android.os.image.DynamicSystemManager`, and
-the command-line entry point is `gsi_tool` (`system/gsid/gsi_tool.cpp`), whose
+The framework-facing entry point is `android.os.image.DynamicSystemManager`. The
+command-line entry point is `gsi_tool` (`system/gsid/gsi_tool.cpp`). Its
 subcommands (`install`, `enable`, `disable`, `wipe`, `wipe-data`, `status`,
 `cancel`) are thin wrappers over the same binder calls.
 
@@ -3442,8 +3460,8 @@ Behind `createPartition`, `gsid` uses a `PartitionInstaller`
 The image data lives under `/data/gsi/dsu/` (default folder
 `kDefaultDsuImageFolder = "/data/gsi/dsu/"`) while the `liblp` partition metadata
 and DSU bookkeeping live under `/metadata/gsi/dsu/` (`DSU_METADATA_PREFIX`). When
-the DSU later boots, these images are mapped as device-mapper block devices,
-which is exactly the dynamic-partition path Virtual A/B uses, so the kernel sees
+the DSU later boots, these images are mapped as device-mapper block devices.
+This is exactly the dynamic-partition path Virtual A/B uses. So the kernel sees
 ordinary block devices for `system` and `userdata`.
 
 ```
@@ -3471,12 +3489,13 @@ Source: system/gsid/gsi_service.cpp (EnableGsi line 1017, SetBootMode line 558,
 ```
 
 The one-shot semantics live in `libgsi.cpp::CanBootIntoGsi`, called early in
-boot. It allows at most `kMaxBootAttempts` (1) tries; if the one-shot marker is
-present it pre-writes `disabled` into the status file so that *this* boot enters
-the GSI but the *next* reboot falls back to the installed system automatically.
+boot. It allows at most `kMaxBootAttempts` (1) tries. If the one-shot marker is
+present, it pre-writes `disabled` into the status file. It does this so that *this* boot enters
+the GSI, but the *next* reboot falls back to the installed system automatically.
+
 `gsid run-startup-tasks` (the `exec_background` line in `gsid.rc`, running
-`RunStartupTasks`) then marks a successful GSI boot as `ok`, or honors a pending
-`wipe` request by reclaiming the images. The fallback is deliberately
+`RunStartupTasks`) then marks a successful GSI boot as `ok`. It also honors a
+pending `wipe` request by reclaiming the images. The fallback is deliberately
 fail-safe: a GSI that fails to boot once is abandoned, so a bad image can never
 brick the device.
 
@@ -3514,18 +3533,19 @@ DSU is wired into two subsystems covered in other chapters:
   DSU image. This is the GUI front end to the same `IGsiService` calls
   `gsi_tool` makes.
 - **First-stage mount (Chapter 4).** During early boot,
-  `FirstStageMountAndroid` (`system/core/init/first_stage_mount_android.cpp`) is
-  the code that consults `libgsi` (`CanBootIntoGsi`, `GetActiveDsu`, `MarkSystemAsGsi`) and maps the
-  DSU image files as the `system`/`userdata` device-mapper devices, then exports
-  the `ro.gsid.image_running` / DSU-slot properties (`04-boot-and-init.md`). DSU
+  `FirstStageMountAndroid` (`system/core/init/first_stage_mount_android.cpp`)
+  consults `libgsi` (`CanBootIntoGsi`, `GetActiveDsu`, `MarkSystemAsGsi`). It
+  maps the DSU image files as the `system`/`userdata` device-mapper devices. It
+  then exports the `ro.gsid.image_running` / DSU-slot properties
+  (`04-boot-and-init.md`). DSU
   reuses the same first-stage logical-partition mount path that ordinary dynamic
   partitions and Virtual A/B rely on.
 
-In short, `gsid` is a focused staging-and-arming daemon: it borrows OTA's
+In short, `gsid` is a focused staging-and-arming daemon. It borrows OTA's
 dynamic-partition and image-mapping infrastructure to place a downloaded system
-image into `/data`, writes a few small marker files under `/metadata/gsi/dsu`,
-and lets first-stage init boot it for a controlled, reversible trial of a whole
-new system image.
+image into `/data`. It writes a few small marker files under
+`/metadata/gsi/dsu`. Then it lets first-stage init boot the image for a
+controlled, reversible trial of a whole new system image.
 
 ---
 
@@ -3779,8 +3799,8 @@ mindmap
 The OTA subsystem is one of Android's most critical yet least visible pieces of
 infrastructure. A well-functioning OTA pipeline means devices stay secure and
 up-to-date without user intervention. The evolution from non-A/B through A/B to
-Virtual A/B reflects a persistent engineering drive toward reliability (no
-bricks), user experience (no downtime), and storage efficiency (no wasted
+Virtual A/B reflects a persistent engineering drive. The goals are reliability
+(no bricks), user experience (no downtime), and storage efficiency (no wasted
 space).
 
 The key source paths for further exploration:

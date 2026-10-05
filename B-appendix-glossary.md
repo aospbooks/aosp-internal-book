@@ -7,8 +7,8 @@ throughout AOSP and this book.
 
 **ABI** (Application Binary Interface)
 : The low-level interface contract between compiled code and the operating
-  system, specifying calling conventions, data layout, and system call numbers
-  for a given architecture (e.g., arm64, x86_64, riscv64).
+  system. It specifies calling conventions, data layout, and system call
+  numbers for a given architecture (e.g., arm64, x86_64, riscv64).
 
 **ADB** (Android Debug Bridge)
 : Command-line tool and daemon for communicating with Android devices over USB
@@ -27,8 +27,8 @@ throughout AOSP and this book.
 
 **ANR** (Application Not Responding)
 : A system dialog triggered when an application's main thread is blocked for
-  too long (5 seconds for input events, 10 seconds for foreground broadcast
-  receivers, 60 seconds for background ones).
+  too long. The limits are 5 seconds for input events, 10 seconds for
+  foreground broadcast receivers, and 60 seconds for background ones.
   AMS monitors and enforces ANR timeouts.
 
 **AOT** (Ahead-Of-Time compilation)
@@ -73,8 +73,8 @@ throughout AOSP and this book.
   (MTE support), and Android-specific features (system properties).
 
 **BLAST**
-: A SurfaceFlinger codename (the source spells it out only as the "Buffer
-  State Layer" path; there is no official acronym expansion). The modern
+: A SurfaceFlinger codename. The source spells it out only as the "Buffer
+  State Layer" path; there is no official acronym expansion. The modern
   buffer submission path in SurfaceFlinger that replaces the legacy
   BufferQueue model. Bundles buffer submission with SurfaceFlinger
   transactions for atomic, synchronized updates, via `BLASTBufferQueue`.
@@ -87,7 +87,7 @@ throughout AOSP and this book.
 **BufferHub** (legacy/removed)
 : A former system for zero-copy buffer sharing between processes, associated
   with the old VR and low-latency display paths. Effectively removed in
-  modern AOSP (no `libui` headers remain, and VR support is gone); listed
+  modern AOSP: no `libui` headers remain, and VR support is gone. It is listed
   here only because older references still mention it.
 
 **BufferQueue**
@@ -191,11 +191,10 @@ throughout AOSP and this book.
   `InputMethodManagerService`.
 
 **InputFlinger**
-: The native input stack (`libinputflinger`) responsible for reading input
-  events from the kernel (`/dev/input/`), processing them, and dispatching
-  them to the correct window via `InputDispatcher`. Unlike SurfaceFlinger it
-  is not a standalone daemon; it is hosted inside `system_server` by
-  `InputManagerService`.
+: The native input stack (`libinputflinger`). It reads input events from the
+  kernel (`/dev/input/`), processes them, and dispatches them to the correct
+  window via `InputDispatcher`. Unlike SurfaceFlinger it is not a standalone
+  daemon. `InputManagerService` hosts it inside `system_server`.
 
 **Intent**
 : Android's message-passing object for requesting actions from components.
@@ -271,14 +270,14 @@ throughout AOSP and this book.
 **OAT**
 : The file format produced by `dex2oat` containing AOT-compiled native
   code plus metadata (`OatDexFile` headers, class offsets, vmap tables)
-  that references the DEX bytecode, which since Android O lives in the
-  companion VDEX file rather than inside the OAT. An OAT file is an ELF
+  that references the DEX bytecode. Since Android O, the DEX bytecode lives
+  in the companion VDEX file rather than inside the OAT. An OAT file is an ELF
   binary loaded by ART at runtime.
 
 **OTA** (Over-The-Air update)
 : The mechanism for delivering system updates wirelessly. Android
-  supports A/B (seamless) and Virtual A/B update strategies; Virtual A/B
-  builds on dm-snapshot, and Virtual A/B Compression (VABC) is served by
+  supports A/B (seamless) and Virtual A/B update strategies. Virtual A/B
+  builds on dm-snapshot. Virtual A/B Compression (VABC) is served by
   the userspace `snapuserd` daemon over dm-user.
 
 **Parcel**

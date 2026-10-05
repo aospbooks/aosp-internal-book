@@ -1,8 +1,8 @@
 # Appendix A: Key Files Reference
 
-This appendix provides a quick-reference table of the most important source files
-in AOSP, organized by subsystem and cross-referenced to the chapter where each
-file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
+This appendix is a quick-reference table of the most important source files
+in AOSP. The tables group the files by subsystem. Each heading gives the
+chapter where the files are discussed. Paths are relative to the AOSP root (`$AOSP/`).
 
 ---
 
@@ -58,9 +58,9 @@ file is discussed. Paths are relative to the AOSP root (`$AOSP/`).
 ## Kernel (Chapter 5)
 
 Unlike the rest of this appendix, these paths are relative to a separate Android
-Common Kernel checkout (its own `repo init`), where the kernel source tree is
-`common/` and the build tooling is `build/`. The platform checkout's `kernel/`
-directory holds only configs, prebuilts, and tests.
+Common Kernel checkout (its own `repo init`). In that checkout, the kernel
+source tree is `common/` and the build tooling is `build/`. The platform
+checkout's `kernel/` directory holds only configs, prebuilts, and tests.
 
 | File Path | Purpose |
 |-----------|---------|

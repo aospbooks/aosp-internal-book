@@ -1,23 +1,25 @@
 # Chapter 59: Architecture Support
 
 Android runs on a wider range of processor architectures than any other major
-operating system. From low-power ARM Cortex-A7 chips in entry-level phones to
-high-performance Cortex-X4 cores in flagship devices, from Intel x86 in
-Chromebooks and emulators to the emerging RISC-V ecosystem, the AOSP build
-system must produce correct, optimized code for every target. This chapter
-traces exactly how architecture support works -- from the Soong toolchain
-definitions that select compiler flags, through the bionic libc assembly
-routines hand-tuned for individual CPU cores, to the ART runtime entrypoints
-that bridge managed Java code with native hardware.
+operating system. Targets range from low-power ARM Cortex-A7 chips in
+entry-level phones to high-performance Cortex-X4 cores in flagship devices.
+They also include Intel x86 in Chromebooks and emulators, and the emerging
+RISC-V ecosystem. The AOSP build system must produce correct, optimized code
+for every target.
+
+This chapter traces exactly how architecture support works. It starts with the
+Soong toolchain definitions that select compiler flags. It continues through the bionic libc assembly routines hand-tuned for individual
+CPU cores. It ends with the ART runtime entrypoints that bridge managed Java
+code with native hardware.
 
 Understanding this machinery matters for several audiences. Device bring-up
 engineers need to add a new `BoardConfig.mk` that declares the right
 `TARGET_ARCH` and `TARGET_CPU_VARIANT`. Performance engineers need to know where
 architecture-specific hot paths live so they can tune or replace them. Platform
-developers working on the build system need to understand the layered design of
-Soong's `Toolchain` interface, its architecture variants, and the multilib
-mechanism that lets a single `Android.bp` module produce both 32-bit and 64-bit
-binaries.
+developers who work on the build system need to understand three things. These
+are the layered design of Soong's `Toolchain` interface, its architecture
+variants, and the multilib mechanism. The multilib mechanism lets a single
+`Android.bp` module produce both 32-bit and 64-bit binaries.
 
 ---
 
@@ -25,7 +27,7 @@ binaries.
 
 AOSP officially supports five CPU architectures, each mapped to a specific
 Soong `ArchType` and Clang target triple. These five architectures are
-registered via `registerToolchainFactory()` calls in the files under
+registered through `registerToolchainFactory()` calls in the files under
 `build/soong/cc/config/`:
 
 | Architecture | Soong ArchType | Clang Triple | Device Config File | Bits |
@@ -65,9 +67,9 @@ func init() {
 ```
 
 The `registerToolchainFactory` function in `toolchain.go` stores these factories
-in a map indexed by OS type, architecture type, and a boolean that selects
-between the ordinary toolchain and the Lightweight Fault Isolation (LFI)
-toolchain (section 59.9). A parallel `registerLFIToolchainFactory` populates
+in a map. The map is indexed by OS type, architecture type, and a boolean. The
+boolean selects between the ordinary toolchain and the Lightweight Fault
+Isolation (LFI) toolchain (section 59.9). A parallel `registerLFIToolchainFactory` populates
 the `true` slot:
 
 ```go
@@ -86,8 +88,8 @@ func registerLFIToolchainFactory(os android.OsType, arch android.ArchType, facto
 ```
 
 When Soong needs to compile a module for a given OS and architecture, it looks
-up the factory (passing whether the target is an LFI variant) and calls it with
-the target `Arch` struct. The factory returns a `Toolchain` implementation that
+up the factory. It passes whether the target is an LFI variant. Then it calls
+the factory with the target `Arch` struct. The factory returns a `Toolchain` implementation that
 provides all the flags needed:
 
 ```go
@@ -171,14 +173,14 @@ the full Clang target triple used with the `--target=` flag.
 
 **Compilation flags**: `Cflags()`, `Cppflags()`, `ToolchainCflags()`, and
 `Asflags()` provide the flags passed to the compiler at various levels.
-`ToolchainCflags()` carries architecture-variant and CPU-variant specific flags
-that are layered on top of the base `Cflags()`.
+`ToolchainCflags()` carries architecture-variant and CPU-variant specific flags.
+These flags are layered on top of the base `Cflags()`.
 
 **Linking**: `Ldflags()`, `ToolchainLdflags()`, and the CRT (C Runtime)
-methods control how binaries are linked. Both now return a `FlagsWithDeps`
-struct rather than a bare string, and `Ldflags()` takes a
-`ToolchainFlagsContext` so a toolchain can register Ninja phony rules or glob
-paths while computing its link flags. Every bionic-based toolchain uses CRT
+methods control how binaries are linked. Both now return a
+`FlagsWithDeps` struct rather than a bare string. `Ldflags()` takes a
+`ToolchainFlagsContext`. With it, a toolchain can register Ninja phony rules or
+glob paths while it computes its link flags. Every bionic-based toolchain uses CRT
 objects like `crtbegin_dynamic` and `crtend_android`.
 
 **Platform**: `Bionic()`, `Glibc()`, and `Musl()` indicate which C library the
@@ -240,7 +242,7 @@ Each field has a specific role:
 - **`ArchFeatures`**: Optional hardware features like `"branchprot"` or
   `"sse4_2"`.
 
-The `ArchType` itself is defined as a simple struct with name and multilib
+The `ArchType` itself is a simple struct with name and multilib
 classification:
 
 ```go
@@ -379,8 +381,8 @@ arm64Cflags = []string{
 ```
 
 The `-fstack-clash-protection` flag closes a class of stack-overflow attacks
-where a large stack allocation jumps clean over the guard page; the compiler
-probes each page as the frame grows so an overflow always faults. The same two
+where a large stack allocation jumps clean over the guard page. The compiler
+probes each page as the frame grows, so an overflow always faults. The same two
 flags appear verbatim in `riscv64_device.go`.
 
 ### 59.2.1 Architecture Variants
@@ -404,8 +406,8 @@ arm64ArchVariantCflags = map[string][]string{
 }
 ```
 
-Each variant represents a generation of the ARM architecture specification,
-adding features:
+Each variant represents a generation of the ARM architecture specification and
+adds features:
 
 | Variant | ARM Spec | Key Additions |
 |---|---|---|
@@ -420,15 +422,15 @@ adding features:
 | `armv9-3a` | ARMv9.3-A | SME2, extended BFloat16 |
 | `armv9-4a` | ARMv9.4-A | Latest: SVE2.1, GCS |
 
-The `armv8-a-branchprot` variant is notable: it uses the same `-march=armv8-a`
-flag as plain `armv8-a`, but the build system knows to apply the `branchprot`
-architecture feature, which adds compiler flags for hardware-enforced control
-flow integrity.
+The `armv8-a-branchprot` variant is notable. It uses the same `-march=armv8-a`
+flag as plain `armv8-a`. But the build system knows to apply the `branchprot`
+architecture feature. This feature adds compiler flags for hardware-enforced
+control flow integrity.
 
 ### 59.2.2 Branch Protection: PAC and BTI
 
 Pointer Authentication Codes (PAC) and Branch Target Identification (BTI) are
-hardware security features that protect against control-flow hijacking attacks
+hardware security features. They protect against control-flow hijacking attacks
 like ROP (Return-Oriented Programming) and JOP (Jump-Oriented Programming).
 
 When the `branchprot` feature is enabled, AOSP applies these compiler flags:
@@ -451,14 +453,14 @@ The `-mbranch-protection=standard` flag tells Clang to:
 
 The `-fno-stack-protector` flag is deliberately paired with PAC because
 PAC-signed return addresses already protect against stack buffer overflows that
-corrupt the return address -- the primary threat that stack protectors also
-defend against. Disabling the stack protector avoids the redundant canary check,
+corrupt the return address. This is the primary threat that stack protectors
+also defend against. Disabling the stack protector avoids the redundant canary check,
 saving a few instructions per function entry/exit.
 
 The `branchprot` feature also drives a matching linker flag. A separate
 `arm64ArchFeatureLdflags` map asks the linker to fail the link if any input
-object lacks BTI marking, so a single non-BTI translation unit cannot silently
-downgrade the whole binary:
+object lacks BTI marking. With this map, a single non-BTI translation unit
+cannot silently downgrade the whole binary:
 
 ```go
 // build/soong/cc/config/arm64_device.go
@@ -469,10 +471,10 @@ arm64ArchFeatureLdflags = map[string][]string{
 }
 ```
 
-This turns BTI into an all-or-nothing property of the binary: if every object is
-BTI-clean the resulting library is marked `GNU_PROPERTY_AARCH64_FEATURE_1_BTI`
-and the kernel maps its executable pages with `PROT_BTI`, but if any object is
-unmarked the build breaks rather than producing a binary with the protection
+This turns BTI into an all-or-nothing property of the binary. If every object is
+BTI-clean, the resulting library is marked `GNU_PROPERTY_AARCH64_FEATURE_1_BTI`
+and the kernel maps its executable pages with `PROT_BTI`. If any object is
+unmarked, the build breaks. A binary is not produced with the protection
 silently dropped.
 
 ```mermaid
@@ -494,7 +496,7 @@ graph LR
 ```
 
 In the PAC+BTI flow, if an attacker overwrites the saved LR on the stack, the
-`AUTIASP` instruction will fail to authenticate the corrupted pointer, causing a
+`AUTIASP` instruction fails to authenticate the corrupted pointer. This causes a
 fault. The BTI landing pad ensures that indirect branches can only land at
 intended targets.
 
@@ -524,7 +526,7 @@ an ELF note that requests the kernel to enable MTE for heap allocations:
   .p2align 2
 ```
 
-Bionic's ifunc dispatchers also use MTE as a selection criterion, choosing
+Bionic's ifunc dispatchers also use MTE as a selection criterion. They choose
 MTE-aware implementations when the hardware supports it. From
 `bionic/libc/arch-arm64/ifuncs.cpp`:
 
@@ -551,9 +553,9 @@ high-performance "big" cores (e.g., Cortex-A76) with efficient "LITTLE" cores
 (e.g., Cortex-A55). This creates a scheduling optimization challenge: code
 compiled for the big core's pipeline might stall on the LITTLE core.
 
-AOSP takes a pragmatic approach -- it tunes code for the LITTLE core, because
-that code runs correctly (and acceptably fast) on both core types, while code
-tuned for the big core might be pathologically slow on the LITTLE core:
+AOSP takes a pragmatic approach. It tunes code for the LITTLE core. This is because that code
+runs correctly (and acceptably fast) on both core types. Code tuned for the big
+core might be pathologically slow on the LITTLE core:
 
 ```go
 // build/soong/cc/config/arm64_device.go
@@ -569,11 +571,11 @@ tuned for the big core might be pathologically slow on the LITTLE core:
 },
 ```
 
-This is not a mistake in the source code. The comments explain the reasoning:
-the Cortex-A75 (big) and Cortex-A76 (big) variants deliberately use
+This is not a mistake in the source code. The comments explain the reasoning.
+The Cortex-A75 (big) and Cortex-A76 (big) variants deliberately use
 `-mcpu=cortex-a55` (LITTLE) because the instruction scheduling for the little
-core is "sensitive to ordering" -- meaning poor scheduling for the little core
-causes significant performance degradation, whereas the big core's
+core is "sensitive to ordering". This means poor scheduling for the little core
+causes significant performance degradation. In contrast, the big core's
 out-of-order pipeline can compensate for sub-optimal scheduling.
 
 The complete set of supported ARM64 CPU variants:
@@ -640,15 +642,15 @@ arm64CpuVariantLdflags = map[string]string{
 **Erratum 843419** causes incorrect execution when certain sequences of ADRP
 instructions appear near page boundaries. The linker flag
 `--fix-cortex-a53-843419` tells LLD to detect these problematic patterns and
-insert veneer code to avoid them. Note that this fix is also applied to A72,
-A73, Kryo, and Exynos cores, because they may be paired with A53 LITTLE cores
-in big.LITTLE configurations.
+insert veneer code to avoid them. This fix is also applied to A72, A73,
+Kryo, and Exynos cores. This is because these cores may be paired with A53
+LITTLE cores in big.LITTLE configurations.
 
 The other well-known A53 erratum, 835769 (a multiply-accumulate corner case),
-has no Soong-level workaround; ART tracks it separately in its
+has no Soong-level workaround. ART tracks it separately in its
 instruction-set-feature model
-(`art/runtime/arch/arm64/instruction_set_features_arm64.h`) so the compiler can
-avoid emitting the problematic sequences -- section 59.8.8 shows the variant
+(`art/runtime/arch/arm64/instruction_set_features_arm64.h`), so the compiler can
+avoid emitting the problematic sequences. Section 59.8.8 shows the variant
 list ART consults for it.
 
 ### 59.2.6 ARM64 Toolchain Factory
@@ -690,10 +692,10 @@ func arm64ToolchainFlags(arch android.Arch) (string, string) {
 }
 ```
 
-Note that the toolchain Ldflags now fold in both the per-CPU-variant linker
-flags (the Cortex-A53 erratum fix) and the per-feature linker flags (the BTI
-report flag for `branchprot`); they are carried on the toolchain's
-`toolchainLdflags` field and surfaced through `ToolchainLdflags()`, which
+The toolchain Ldflags now fold in two sets of linker flags. One set is per CPU
+variant (the Cortex-A53 erratum fix). The other set is per feature (the BTI
+report flag for `branchprot`). They are carried on the toolchain's
+`toolchainLdflags` field. They are surfaced through `ToolchainLdflags()`, which
 returns a `FlagsWithDeps`.
 
 The flags are layered in this order:
@@ -724,8 +726,8 @@ pctx.VariableFunc("Arm64Ldflags", func(ctx android.PackageVarContext) string {
 
 `MaxPageSizeSupported()` is the alignment that the linker uses for ELF segment
 boundaries, and it is no longer a hardcoded 4096 on ARM64. As of Android 17 the
-build defaults it to 16384 for arm64 and x86_64 devices, so platform binaries
-are aligned to load correctly on a 16KB-page kernel. Section 59.10 traces that
+build defaults it to 16384 for arm64 and x86_64 devices. Platform binaries are
+then aligned to load correctly on a 16KB-page kernel. Section 59.10 traces that
 default and the bionic-side macro changes that go with it.
 
 The base linker flags also include segment separation for security:
@@ -739,20 +741,21 @@ arm64Ldflags = []string{
 }
 ```
 
-These flags ensure that code segments, data segments, and read-only segments are
-placed in separate memory pages, preventing accidental (or malicious) execution
-of data or modification of code. The `separate-code` flag in particular is what
-makes execute-only memory (XOM) possible: keeping code out of any page that also
-holds readable data means an attacker who can read process memory cannot read
-the instruction stream back to build a code-reuse payload.
+These flags make sure that code segments, data segments, and read-only segments
+are placed in separate memory pages. This prevents accidental (or malicious)
+execution of data or modification of code. The `separate-code` flag in
+particular is what makes execute-only memory (XOM) possible. It keeps code out
+of any page that also holds readable data. As a result, an attacker who can
+read process memory cannot read the instruction stream back to build a
+code-reuse payload.
 
 ---
 
 ## 59.3 x86 and x86_64
 
-The x86 architecture family serves two main roles in AOSP: as the target for
-Chromebook and embedded devices, and as the native architecture for the Android
-Emulator. The emulator historically ran ARM images under translation, but native
+The x86 architecture family serves two main roles in AOSP. It is the target for
+Chromebook and embedded devices. It is also the native architecture for the
+Android Emulator. The emulator historically ran ARM images under translation, but native
 x86/x86_64 images provide dramatically better performance during development.
 
 **Source files**:
@@ -794,8 +797,8 @@ x86ArchVariantCflags = map[string][]string{
 }
 ```
 
-The x86_64 toolchain has nearly the same set of microarchitecture variants; it
-drops the `atom` entry and the `x86_64` alias, and its default maps to the
+The x86_64 toolchain has nearly the same set of microarchitecture variants. It
+drops the `atom` entry and the `x86_64` alias. Its default maps to the
 baseline `-march=x86-64`:
 
 ```go
@@ -817,13 +820,13 @@ The default for x86 is `prescott` (Pentium 4 with SSE3), while x86_64 defaults
 to the baseline `x86-64` instruction set.
 
 The `pantherlake` variant is new in Android 17. Panther Lake is Intel's
-mobile-class hybrid design that follows Lunar Lake and Arrow Lake, and adding it
-here lets Soong emit `-march=pantherlake` for boards that declare it as their
-`TARGET_ARCH_VARIANT`. ART recognizes the same variant string in its x86 and
+mobile-class hybrid design that follows Lunar Lake and Arrow Lake. The variant
+entry here lets Soong emit `-march=pantherlake` for boards that declare it as
+their `TARGET_ARCH_VARIANT`. ART recognizes the same variant string in its x86 and
 x86_64 instruction-set-feature tables (`x86_known_variants` in
-`art/runtime/arch/x86/instruction_set_features_x86.cc`), so the JIT and AOT
-compilers can key off `pantherlake` the same way the static toolchain does; see
-Chapter 18 for how ART consumes those feature sets.
+`art/runtime/arch/x86/instruction_set_features_x86.cc`). As a result, the JIT
+and AOT compilers can key off `pantherlake` the same way the static toolchain
+does. See Chapter 18 for how ART consumes those feature sets.
 
 ### 59.3.2 SIMD Instruction Sets: SSE and AVX
 
@@ -855,7 +858,7 @@ x86_64ArchFeatureCflags = map[string][]string{
 Note the commented-out AVX/AVX2/AVX512 entries. The comment explains the
 reasoning: AVX does not always provide a performance gain. In fact, on some
 Intel processors, AVX instructions cause the CPU to reduce its clock frequency
-("AVX frequency throttling"), which can actually hurt performance for code that
+("AVX frequency throttling"). This can actually hurt performance for code that
 mixes AVX and non-AVX instructions. Individual libraries can opt into AVX via
 their `Android.bp` files when they know it helps.
 
@@ -880,7 +883,7 @@ x86Cflags = []string{
 The `-mstackrealign` flag addresses a subtle ABI issue. The i386 System V ABI
 only requires 4-byte stack alignment, but SSE instructions like `movaps` require
 16-byte alignment. When native code is called from JNI (through the Dalvik/ART
-runtime), the stack may not be 16-byte aligned, causing crashes.
+runtime), the stack may not be 16-byte aligned, and this can cause crashes.
 `-mstackrealign` inserts code at function entry to realign the stack.
 
 The x86 toolchain also uses Yasm for assembly:
@@ -959,9 +962,10 @@ struct NativeBridgeCallbacks {
 };
 ```
 
-The Native Bridge works by intercepting library loads: when ART's class loader
+The Native Bridge intercepts library loads. When ART's class loader
 encounters a native library compiled for a foreign architecture, it delegates
-to the native bridge implementation, which translates the foreign code.
+to the native bridge implementation. This implementation translates the foreign
+code.
 
 Three implementations exist:
 
@@ -973,9 +977,9 @@ Three implementations exist:
 - **DigitalisX64** (open source, <https://github.com/DigitalisX64>) --
   community implementation built on Berberis to support ARM64 to x86_64
 
-The Emulator uses a different strategy: it runs the ARM system image under
-QEMU-based full system emulation with hardware-accelerated virtualization, so
-native bridge is not involved in the typical emulator workflow.
+The Emulator uses a different strategy. It runs the ARM system image under
+QEMU-based full system emulation with hardware-accelerated virtualization. For
+this reason, native bridge is not involved in the typical emulator workflow.
 
 ```mermaid
 graph TD
@@ -1021,9 +1025,9 @@ Goldmont-based processors that do not implement these optional extensions:
 
 ARM 32-bit support in AOSP exists primarily as the secondary architecture for
 ARM64 devices, allowing legacy 32-bit apps to run. The ARM toolchain is the
-most complex of all five architectures because it supports the widest range of
-CPU variants (from ancient Cortex-A7 to modern Cortex-A76 in 32-bit mode) and
-two instruction encodings (ARM and Thumb).
+most complex of all five architectures. This is because it supports the widest
+range of CPU variants (from ancient Cortex-A7 to modern Cortex-A76 in 32-bit
+mode). It also supports two instruction encodings (ARM and Thumb).
 
 The ARM toolchain struct reflects its 32-bit nature:
 
@@ -1127,7 +1131,7 @@ armLdflags = []string{
 The `-Wl,-m,armelf` flag tells the linker to use the ARM ELF format. The
 `-enable-shrink-wrap=false` flags disable an LLVM optimization that was causing
 incorrect code generation (tracked as bug b/322359235). The same workaround
-appears in the compiler and linker flags, showing how hardware errata and
+appears in the compiler and linker flags. This shows how hardware errata and
 compiler bugs create a complex web of workarounds across the toolchain.
 
 ---
@@ -1146,8 +1150,8 @@ incomplete toolchain support.
 
 The RISC-V configuration specifies a rich set of extensions. As of Android 17
 the baseline shares the same LP64 hardening flags as ARM64
-(`-Werror=implicit-function-declaration` and `-fstack-clash-protection`) and the
-ISA string has grown a vector bit-manipulation extension:
+(`-Werror=implicit-function-declaration` and `-fstack-clash-protection`). The
+ISA string has also grown a vector bit-manipulation extension:
 
 ```go
 // build/soong/cc/config/riscv64_device.go
@@ -1184,11 +1188,11 @@ The ISA string `-march=rv64gcv_zba_zbb_zbs_zvbb` decodes as follows:
 | `zbs` | Single-bit instructions (bset, bclr, binv, bext) |
 | `zvbb` | Vector basic bit manipulation (vector clz/ctz/popcount/rotate) |
 
-This is a notably modern baseline -- the Vector extension in particular enables
-SIMD-like operations analogous to ARM's NEON or Intel's SSE, but with a
-scalable design that does not hard-code the vector width. The `zvbb` extension
+This is a notably modern baseline. The Vector extension in particular enables
+SIMD-like operations analogous to ARM's NEON or Intel's SSE. Its design is
+scalable and does not hard-code the vector width. The `zvbb` extension
 added in Android 17 brings the same bit-manipulation primitives (count leading
-zeros, population count, rotate) to vector registers, which is useful for
+zeros, population count, rotate) to vector registers. This is useful for
 cryptographic and hashing kernels.
 
 ### 59.4.2 QEMU and Berberis Workarounds
@@ -1203,8 +1207,8 @@ the ecosystem:
 "-mno-implicit-float",
 ```
 
-This comment reveals the practical challenge of RISC-V development: QEMU's
-Vector extension support is incomplete, and the Berberis binary translator
+This comment reveals the practical challenge of RISC-V development. QEMU's
+Vector extension support is incomplete. The Berberis binary translator
 (which could translate RISC-V to x86_64 for development) is still maturing.
 The `-mno-implicit-float` flag prevents the compiler from automatically using
 floating-point or vector instructions for non-floating-point operations
@@ -1235,8 +1239,8 @@ func riscv64ToolchainFactory(arch android.Arch) Toolchain {
 }
 ```
 
-This simplicity reflects the current state of the RISC-V Android ecosystem:
-there is only one target configuration, and the hardware landscape has not yet
+This simplicity reflects the current state of the RISC-V Android ecosystem.
+There is only one target configuration. The hardware landscape has not yet
 diversified to the point where micro-architecture-specific tuning is needed.
 
 ### 59.4.4 RISC-V Linker Configuration
@@ -1253,8 +1257,8 @@ riscv64Ldflags = []string{
 }
 ```
 
-Note the hardcoded 4KB page size, unlike ARM64 and x86_64, which take their
-maximum page size from the configurable `MaxPageSizeSupported()` (16KB by
+Note the hardcoded 4KB page size. ARM64 and x86_64 are different: they take
+their maximum page size from the configurable `MaxPageSizeSupported()` (16KB by
 default in Android 17; see section 59.10). RISC-V Android currently only
 supports 4KB pages.
 
@@ -1312,9 +1316,9 @@ class Riscv64InstructionSetFeatures final : public InstructionSetFeatures {
 ```
 
 ART's feature bitmap tracks six extensions (G, C, V, Zba, Zbb, Zbs). Note that
-even though the Soong toolchain now requests `zvbb` at compile time (section
-59.4.1), ART has no `zvbb` bit yet, so the JIT does not key off it; this is a
-small example of the build toolchain leading ART's runtime feature model.
+the Soong toolchain now requests `zvbb` at compile time (section 59.4.1). But
+ART has no `zvbb` bit yet, so the JIT does not key off it. This is a small
+example of the build toolchain leading ART's runtime feature model.
 
 The feature methods allow ART's JIT compiler to query capabilities:
 
@@ -1802,9 +1806,8 @@ commonGlobalCflags = []string{
 
 Several of these deserve explanation:
 
-**`-O2`**: The default optimization level for all Android code. Not `-O3`,
-because `-O3` enables aggressive optimizations (like loop unrolling and function
-inlining) that can increase code size, which matters on mobile devices where
+**`-O2`**: The default optimization level for all Android code. It is not `-O3`. This is because `-O3` enables aggressive optimizations (like loop unrolling and function
+inlining) that can increase code size. This matters on mobile devices, where
 instruction cache pressure affects battery life.
 
 **`-DANDROID`**: Defines the `ANDROID` preprocessor macro, which is checked by
@@ -1859,12 +1862,12 @@ data via `--gc-sections`. This is critical for reducing binary size on mobile.
 local arrays or take the address of a local variable. The "strong" variant
 protects more functions than `-fstack-protector` but fewer than
 `-fstack-protector-all`, balancing security with performance. The companion
-flag `-fstack-clash-protection` is not in this global list -- the comment says
-it is unsupported in Clang for ILP32 -- so each of the LP64 architectures
-(ARM64, x86_64, RISC-V 64) adds it in its per-architecture base cflags, as
-shown in sections 59.2 and 59.4.1. In practice 32-bit x86 also carries the flag
-in `x86Cflags` (section 59.3.3) despite being ILP32, leaving 32-bit ARM as the
-only architecture built without it.
+flag `-fstack-clash-protection` is not in this global list, because the comment
+says it is unsupported in Clang for ILP32. Each of the LP64 architectures
+(ARM64, x86_64, RISC-V 64) adds it in its per-architecture base cflags (see sections 59.2 and 59.4.1).
+In practice 32-bit x86 also carries the flag
+in `x86Cflags` (section 59.3.3) despite being ILP32. This leaves 32-bit ARM as
+the only architecture built without it.
 
 **`-D_FORTIFY_SOURCE=3`**: The highest level of compile-time and runtime
 buffer overflow detection. Level 3 extends beyond the basic `memcpy` /
@@ -1991,10 +1994,12 @@ ClangDefaultVersion = "clang-r584948"
 ```
 
 AOSP uses C23 (`gnu23`) for C code and C++20 (`gnu++20`) for C++ code.
-The `gnu` prefix means GNU extensions are enabled. The Clang version pinned for
-the trunk branch advanced to `clang-r584948` for Android 17 (the previous
-`ClangDefaultShortVersion` constant is gone; the version is read through getter
-functions that allow per-release overrides). The default still resolves through
+The `gnu` prefix means GNU extensions are enabled.
+
+The Clang version pinned for
+the trunk branch advanced to `clang-r584948` for Android 17. The previous
+`ClangDefaultShortVersion` constant is gone. The version is read through getter
+functions. They allow per-release overrides. The default still resolves through
 `prebuilts/clang/host` and can be overridden with the `LLVM_PREBUILTS_BASE` and
 related environment variables. The C++ standard version is itself now
 release-configurable: `CppDefaultStdVersion` is the fallback, and
@@ -2050,10 +2055,10 @@ func LibFuzzerRuntimeLibrary() string {
 }
 ```
 
-These functions return library names like `libclang_rt.asan`, which are then
-resolved to architecture-specific binaries using the
-`LibclangRuntimeLibraryArch()` method from each toolchain (e.g., `"aarch64"` for
-ARM64, `"i686"` for x86).
+These functions return library names like `libclang_rt.asan`. These names are
+then resolved to architecture-specific binaries using the
+`LibclangRuntimeLibraryArch()` method from each toolchain (e.g., `"aarch64"` for ARM64, `"i686"` for
+x86).
 
 ### 59.6.9 External Code Flags
 
@@ -2096,7 +2101,7 @@ noOverrideExternalGlobalCflags = []string{
 ```
 
 One further flag, `-fcommon`, is particularly notable. It is not a fixed entry
-in this list: the `NoOverrideExternalGlobalCflags` variable function appends it
+in this list. The `NoOverrideExternalGlobalCflags` variable function appends it
 to the external no-override flags only when the release configuration's
 `ReleaseUseFnoCommonFor3pCode()` is false. Modern C compilers default to
 `-fno-common`, which makes tentative definitions of global variables into
@@ -2339,8 +2344,8 @@ alongside Android:
 ```
 
 Trusty runs as a separate OS in ARM TrustZone (or equivalent secure monitor
-mode), and its build system must produce code for the secure world that is
-compatible with the normal world's architecture.
+mode). Its build system must produce code for the secure world. That code must
+be compatible with the architecture of the normal world.
 
 ### 59.7.8 The AOSP Product Build
 
@@ -2361,10 +2366,10 @@ PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true
 ```
 
 The `PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true` flag prevents bionic from
-exposing a fixed `PAGE_SIZE` macro, so code must read the page size at runtime
-instead of assuming 4096 at compile time. This matters because Android 17
-defaults the ARM64 and x86_64 ELF segment alignment to 16KB (section 59.10), and
-a binary that hardcoded `PAGE_SIZE == 4096` would misbehave on a 16KB-page
+exposing a fixed `PAGE_SIZE` macro. As a result, code must read the page size
+at runtime. It must not assume 4096 at compile time. This matters because Android 17
+defaults the ARM64 and x86_64 ELF segment alignment to 16KB (section 59.10).
+A binary that hardcoded `PAGE_SIZE == 4096` would misbehave on a 16KB-page
 kernel. Larger pages reduce TLB pressure and page-fault overhead at the cost of
 some memory fragmentation.
 
@@ -2496,10 +2501,10 @@ DEFINE_IFUNC_FOR(strchr) {
 
 ARM 32-bit bionic also uses runtime ifunc dispatch, but with a different
 selection mechanism. Every CPU-variant implementation is compiled
-unconditionally into libc -- they are all listed together under the single
-`arm:` `srcs:` block in `bionic/libc/Android.bp` -- and the resolvers in
-`bionic/libc/arch-arm/ifuncs.cpp` pick one at load time by reading the CPU name
-from `/dev/cpu_variant:arm`, rather than by consulting `HWCAP` bits as on
+unconditionally into libc. They are all listed together under the single
+`arm:` `srcs:` block in `bionic/libc/Android.bp`. The resolvers in
+`bionic/libc/arch-arm/ifuncs.cpp` pick one at load time. They read the CPU name
+from `/dev/cpu_variant:arm`, and do not consult `HWCAP` bits as on
 ARM64. The source tree contains separate directories for each CPU variant:
 
 ```
@@ -2530,8 +2535,8 @@ bionic/libc/arch-riscv64/string/
 ```
 
 The copyright headers in these files attribute them to both "The Android Open
-Source Project" and "SiFive, Inc." -- SiFive is a leading RISC-V chip designer
-that contributed these optimized implementations.
+Source Project" and "SiFive, Inc." The company SiFive is a leading RISC-V chip
+designer. It contributed these optimized implementations.
 
 ### 59.8.5 Bionic: Low-Level Architecture Functions
 
@@ -2687,7 +2692,7 @@ static const char* arm64_variants_with_dotprod[] = {
 
 These feature lists are used by the ART JIT compiler to decide which
 instructions to emit. For example, if `has_lse` is true, the JIT can emit LSE
-(Large System Extensions) atomic instructions instead of the slower LL/SC
+(Large System Extensions) atomic instructions. These replace the slower LL/SC
 (Load-Linked/Store-Conditional) loop sequences.
 
 ART also validates the compile-time feature assumptions against runtime
@@ -2749,8 +2754,8 @@ walking, and exception handling.
 ### 59.8.10 ART: Multiple Feature Detection Strategies
 
 ART implements eight different entry points for detecting CPU features (seven
-construction methods plus `IntersectWithHwcap()`), reflecting the reality that
-no single detection method is reliable across all devices:
+construction methods plus `IntersectWithHwcap()`). No single detection method is
+reliable across all devices:
 
 ```cpp
 // art/runtime/arch/arm64/instruction_set_features_arm64.h (line 35-55)
@@ -2837,8 +2842,8 @@ The three-level optimization strategy:
 
 2. **CPU variant selection** (build time): For ARM 32-bit, separate hand-tuned
    implementations exist for each major CPU variant. The build system compiles
-   all of them into the same binary, with the appropriate one selected by the
-   ifunc mechanism or by the linker based on device configuration.
+   all of them into the same binary. The ifunc mechanism or the linker selects
+   the appropriate one, based on device configuration.
 
 3. **Runtime hardware detection** (load time): ARM64's ifunc resolvers check
    `hwcap` bits at library load time to select the best implementation for the
@@ -2882,15 +2887,15 @@ func (t *toolchainArm) InstructionSetFlags(isa string) (string, error) {
 32-bit secondary architecture that exists primarily for compatibility.
 
 **ARM mode** uses 32-bit instruction encoding. Modules can opt into ARM mode via
-the `instruction_set: "arm"` property in their `Android.bp` when they need the
-full 32-bit instruction set (e.g., for hand-tuned assembly that uses
-instructions not available in Thumb).
+the `instruction_set: "arm"` property in their `Android.bp`. They do this when
+they need the full 32-bit instruction set (e.g., for hand-tuned assembly that
+uses instructions not available in Thumb).
 
 ### 59.8.13 The ARM 32-bit Soft Float and NEON
 
-ARM 32-bit Android uses soft-float ABI (`-mfloat-abi=softfp`), meaning
-floating-point values are passed in integer registers at function call
-boundaries, even though the hardware FPU is used for computation:
+ARM 32-bit Android uses soft-float ABI (`-mfloat-abi=softfp`). Floating-point
+values are passed in integer registers at function call boundaries, even though
+the hardware FPU is used for computation:
 
 ```go
 // build/soong/cc/config/arm_device.go
@@ -2969,7 +2974,7 @@ arch: {
 
 ARM 32-bit is the only architecture that needs `keep_symbols_and_debug_frame`.
 This is because ARM 32-bit uses a different unwinding mechanism (EXIDX tables in
-the `.ARM.exidx` section) that is incomplete in some cases, so the
+the `.ARM.exidx` section). That mechanism is incomplete in some cases. So the
 `.debug_frame` section must be preserved as a fallback. All other architectures
 use DWARF-based unwinding and only need the symbol table kept.
 
@@ -3049,27 +3054,31 @@ load/store) relies on this macro to detect hardware support.
 
 Android 17 adds a sixth toolchain that does not correspond to a new CPU
 architecture at all. It is an ARM64 variant built for Lightweight Fault
-Isolation (LFI), an in-process sandbox that confines untrusted native code to a
-restricted region of the address space without a separate process or hardware
-domain crossing. The toolchain lives in its own file alongside the per-arch
-device configs:
+Isolation (LFI). LFI is an in-process sandbox. It confines untrusted native
+code to a restricted region of the address space. It needs no separate process
+and no hardware domain crossing. The toolchain lives in its own file next to
+the per-arch device configs:
 
 **Source file**: `build/soong/cc/config/arm64_lfi_device.go`
 
 ### 59.9.1 Why a Separate Toolchain
 
-Section 59.1.1 showed that `toolchainFactories` is keyed not just by OS and
-architecture but by a boolean LFI flag, and that `registerLFIToolchainFactory`
-fills the `true` slot. The reason is that LFI is a code-generation property:
-sandboxed code must be compiled with a different target and a constrained
-instruction selection so that the LFI rewriter/verifier can prove it stays
-inside its sandbox. That decision has to be made when the toolchain is resolved,
-which happens early and is driven purely by the target's arch, so LFI is modeled
-as a parallel toolchain rather than a flag bolted onto the normal one.
+Section 59.1.1 showed that `toolchainFactories` is keyed by OS, by
+architecture, and also by a boolean LFI flag. `registerLFIToolchainFactory` fills
+the `true` slot.
 
-On the `android.Target` side this shows up as a dedicated `LFI bool` field, an
-`AndroidLFITarget` that is prepended to a module's target list when the module
-opts in, and a distinct `lfi_` variation name produced by the arch mutator:
+The reason is that LFI is a code-generation property. Sandboxed
+code must be compiled with a different target and a constrained
+instruction selection. This lets the LFI rewriter/verifier prove that the code
+stays inside its sandbox. That decision must be made when the toolchain is
+resolved. This happens early and depends only on the arch of the
+target. So LFI is modeled as a parallel toolchain, not as a flag added to the
+normal one.
+
+The `android.Target` side has three matching parts. It has a dedicated
+`LFI bool` field. It has an `AndroidLFITarget`, which goes at the start of the
+target list of a module when the module opts in. It also has a distinct `lfi_`
+variation name that the arch mutator produces:
 
 ```go
 // build/soong/android/arch.go
@@ -3095,10 +3104,11 @@ func (target Target) ArchVariation() string {
 
 ### 59.9.2 The LFI ARM64 Toolchain
 
-The LFI toolchain reuses ARM64's flag-assembly helper but pins the architecture
-to a fixed configuration. The factory ignores whatever variant the board
-declares and forces `armv8-a` with the Cortex-A53 tuning and the `branchprot`
-feature, because that is the only configuration the LFI compiler supports today:
+The LFI toolchain reuses the flag-assembly helper of ARM64 but pins the
+architecture to a fixed configuration. The factory ignores the variant that the
+board declares. It forces `armv8-a` with the Cortex-A53 tuning and the
+`branchprot` feature. This is the only configuration that the LFI compiler
+supports today:
 
 ```go
 // build/soong/cc/config/arm64_lfi_device.go
@@ -3123,16 +3133,15 @@ func init() {
 }
 ```
 
-Calling `arm64ToolchainFlags` (the helper extracted from the ordinary ARM64
-factory in section 59.2.6) means the LFI toolchain inherits the exact same
-PAC/BTI flags and Cortex-A53 erratum fixes as the normal build, which is why
-that helper was split out.
+The factory calls `arm64ToolchainFlags`. This is the helper extracted
+from the ordinary ARM64 factory in section 59.2.6. So the LFI
+toolchain inherits the exact same PAC/BTI flags and Cortex-A53 erratum fixes as
+the normal build. This is why the helper was split out.
 
 The toolchain type itself differs from the ordinary ARM64 toolchain in two
-telling ways. First, its Clang triple is a custom one that the LFI back end
-recognizes; second, it embeds `toolchainLFI` (from
-`build/soong/cc/config/lfi.go`) rather than `toolchainBionic`, so it links with
-no CRT objects and reports `Lfi()` as true:
+ways. First, its Clang triple is a custom one that the LFI back end recognizes.
+Second, it embeds `toolchainLFI` (from `build/soong/cc/config/lfi.go`) and not
+`toolchainBionic`. So it links with no CRT objects and reports `Lfi()` as true:
 
 ```go
 // build/soong/cc/config/arm64_lfi_device.go
@@ -3156,12 +3165,12 @@ func (toolchainLFI) Lfi() bool { return true }
 ```
 
 The `aarch64_lfi-` triple steers the compiler into the sandbox-friendly code
-model, and `-mno-outline-atomics` keeps atomic operations inline (the
-out-of-line atomic helpers would call into runtime support outside the sandbox).
+model. The `-mno-outline-atomics` flag keeps atomic operations inline. This is because the
+out-of-line atomic helpers would call into runtime support outside the sandbox.
 This is the concrete payoff of the `Lfi()` method added to the `Toolchain`
-interface in section 59.1.2: ordinary bionic toolchains return `false`, and only
-this toolchain returns `true`, so the rest of the build can branch on whether it
-is producing sandboxed code.
+interface in section 59.1.2. Ordinary bionic toolchains return `false`, and only
+this toolchain returns `true`. So the rest of the build can branch on whether
+it produces sandboxed code.
 
 ```mermaid
 graph TD
@@ -3176,15 +3185,15 @@ graph TD
 ## 59.10 16KB Page Size by Default
 
 The most consequential 17 change for architecture support is invisible in any
-single `-march=` flag: the platform now aligns 64-bit binaries for a 16KB page
-size by default. ARM64 has long allowed 4KB, 16KB, and 64KB pages, but until
-recently AOSP shipped binaries aligned for 4KB pages, which a 16KB-page kernel
-cannot load. Android 17 flips the default the other way.
+single `-march=` flag. The platform now aligns 64-bit binaries for a 16KB page
+size by default. ARM64 has long allowed 4KB, 16KB, and 64KB pages. Until
+recently, AOSP shipped binaries aligned for 4KB pages, which a 16KB-page kernel
+cannot load. Android 17 changes the default the other way.
 
 ### 59.10.1 The Build-Side Default
 
-`TARGET_MAX_PAGE_SIZE_SUPPORTED` controls the alignment of ELF segments, and its
-default is computed in `build/make/core/config.mk`:
+`TARGET_MAX_PAGE_SIZE_SUPPORTED` controls the alignment of ELF segments.
+Its default is computed in `build/make/core/config.mk`:
 
 ```makefile
 # build/make/core/config.mk
@@ -3205,12 +3214,14 @@ else
 endif
 ```
 
-The default is 16384 (16KB) unless something opts out: a low-memory device, a
-vendor still on an older VSR API level, or a 32-bit / RISC-V target (only arm64
-and x86_64 support pages larger than 4KB here). This value flows straight into
-the per-architecture linker flags as `MaxPageSizeSupported()`, which section
-59.2.7 showed feeding the ARM64 `-Wl,-z,max-page-size=` flag; the x86_64
-toolchain consumes it the same way. RISC-V keeps a hardcoded 4096
+The default is 16384 (16KB) unless something opts out. These are a low-memory
+device, a vendor still on an older VSR API level, or a 32-bit / RISC-V target.
+Only arm64 and x86_64 support pages larger than 4KB here.
+
+This value flows
+straight into the per-architecture linker flags as `MaxPageSizeSupported()`.
+Section 59.2.7 showed this value feeding the ARM64 `-Wl,-z,max-page-size=` flag.
+The x86_64 toolchain consumes it the same way. RISC-V keeps a hardcoded 4096
 (section 59.4.4).
 
 ### 59.10.2 The Bionic-Side Macro
@@ -3218,9 +3229,9 @@ toolchain consumes it the same way. RISC-V keeps a hardcoded 4096
 Aligning segments for 16KB pages is only half the story. Code that hardcoded
 `PAGE_SIZE` as a compile-time constant of 4096 would compute wrong buffer sizes
 and `mmap` alignments on a 16KB kernel. Bionic addresses this with the
-page-size macro controls described in section 59.8.15:
-`-D__BIONIC_NO_PAGE_SIZE_MACRO` removes the `PAGE_SIZE` constant entirely so code
-must call `getpagesize()` or `sysconf(_SC_PAGE_SIZE)` at runtime, while
+page-size macro controls described in section 59.8.15. The flag
+`-D__BIONIC_NO_PAGE_SIZE_MACRO` removes the `PAGE_SIZE` constant entirely, so
+code must call `getpagesize()` or `sysconf(_SC_PAGE_SIZE)` at runtime. The flag
 `-D__BIONIC_DEPRECATED_PAGE_SIZE_MACRO` keeps the macro but flags its use. The
 generic AOSP arm64 product turns on the strict form:
 
@@ -3229,12 +3240,13 @@ generic AOSP arm64 product turns on the strict form:
 PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO := true
 ```
 
-`PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO` is read by Soong as `NoBionicPageSizeMacro()`
-and selects which of the two macros each LP64 architecture base-cflags function
-appends (the `Arm64Cflags` and `X86_64Cflags` `VariableFunc`s in sections 59.2
-and 59.8.15). The net effect for Android 17: platform binaries are 16KB-aligned,
-and the C library refuses to let new platform code assume a fixed page size, so
-the same image runs correctly on both 4KB and 16KB kernels.
+Soong reads `PRODUCT_NO_BIONIC_PAGE_SIZE_MACRO` as `NoBionicPageSizeMacro()`.
+It selects which of the two macros the base-cflags function of each LP64
+architecture appends. These are the `Arm64Cflags` and `X86_64Cflags`
+`VariableFunc`s in sections 59.2 and 59.8.15. The net effect for Android 17 is
+that platform binaries are 16KB-aligned. Also, the C library refuses to let new
+platform code assume a fixed page size. So the same image runs correctly on both
+4KB and 16KB kernels.
 
 ```mermaid
 graph TD
@@ -3500,9 +3512,8 @@ design principles:
 
 1. **Toolchain abstraction**: The `Toolchain` interface in `toolchain.go`
    hides architecture details behind a uniform API. Each of the five supported
-   architectures (ARM, ARM64, x86, x86_64, RISC-V 64) provides a factory that
-   produces a `Toolchain` implementation configured with the right compiler
-   flags.
+   architectures (ARM, ARM64, x86, x86_64, RISC-V 64) provides a factory. The
+   factory produces a `Toolchain` implementation with the right compiler flags.
 
 2. **Three-tier flag layering**: Global flags (security, optimization, warnings)
    apply to all code. Architecture flags (`-march=`, `-mcpu=`) tune for the
@@ -3513,9 +3524,9 @@ design principles:
    64-bit code, essential for the ARM64 transition.
 
 4. **Architecture-specific hot paths**: Performance-critical code in bionic and
-   ART is hand-written in assembly for each architecture, with up to three
-   levels of optimization selection (architecture, CPU variant, runtime hardware
-   detection via ifunc).
+   ART is hand-written in assembly for each architecture. There are up to three
+   levels of optimization selection: architecture, CPU variant, and runtime
+   hardware detection via ifunc.
 
 5. **Pragmatic big.LITTLE tuning**: Rather than optimizing for the fastest
    core, AOSP tunes for the efficiency core to avoid pathological slowdowns
@@ -3526,14 +3537,15 @@ design principles:
    Houdini) for running foreign-architecture native code.
 
 7. **A parallel LFI toolchain**: Android 17 models Lightweight Fault Isolation
-   as a separate ARM64 toolchain (`Lfi()` returns true), resolved through an
-   `lfi bool` key in the toolchain factory map, reusing the ordinary ARM64 flag
-   logic while pinning a sandbox-friendly target triple.
+   as a separate ARM64 toolchain (`Lfi()` returns true). It is resolved
+   through an `lfi bool` key in the toolchain factory map. It reuses the
+   ordinary ARM64 flag logic and pins a sandbox-friendly target triple.
 
-Android 17 also defaults 64-bit binaries to a 16KB page-size alignment on arm64
-and x86_64, adds the Intel `pantherlake` x86/x86_64 variant (mirrored in ART's
-feature tables), extends the RISC-V baseline ISA with the `zvbb` vector
-bit-manipulation extension, and advances the pinned Clang to `clang-r584948`.
+Android 17 also makes 16KB page-size alignment the default for 64-bit binaries
+on arm64 and x86_64. It adds the Intel `pantherlake` x86/x86_64 variant, which
+ART's feature tables mirror. It extends the RISC-V baseline ISA with the `zvbb`
+vector bit-manipulation extension. It also advances the pinned Clang to
+`clang-r584948`.
 
 The following table summarizes the characteristics of each supported
 architecture:

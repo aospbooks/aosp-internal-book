@@ -22,20 +22,27 @@ logcat, dumpsys). Chapters 54–56.
 Android has historically shipped operating-system updates as monolithic OTA
 images.  Every security patch, every bug fix, every API improvement had to flow
 through the device manufacturer, wait for carrier certification, and finally
-reach the user -- a pipeline that often took months.  Project Mainline
-fundamentally changes this model by carving the platform into *independently
-updatable modules* that Google can push directly to devices through the Google
-Play infrastructure.  This chapter dissects the architecture that makes that
-possible: the **APEX** container format, the **apexd** daemon that activates
-modules at boot, the catalog of 40+ Mainline modules shipped in AOSP, and the
-SDK Extensions mechanism that lets apps discover which module versions are
-present at runtime.  Android 17 (API level 37, codename CINNAMON_BUN) continues
-the trend: it adds a new "C" SDK-extension axis, ships fresh modules
-(`com.android.npumanager`, `com.android.webapp`, and the bootstrap APEXes), and
-teaches `apexd` to mount EROFS payloads directly from the APEX file without a
-loop device.  A new top-level `tools/mainline` repository now carries the
-open-source "train build" tooling that assembles those modules into the bundles
-shipped through Google Play.
+reach the user.  This pipeline often took months.  Project Mainline
+fundamentally changes this model.  It carves the platform into *independently
+updatable modules*.  Google can push these modules directly to devices through
+the Google Play infrastructure.
+
+This chapter dissects the architecture that
+makes that possible.  It covers four topics.  The first is the **APEX**
+container format.  The second is the **apexd** daemon that activates modules at
+boot.  The third is the catalog of 40+ Mainline modules shipped in AOSP.  The
+fourth is the SDK Extensions mechanism that lets apps discover which module
+versions are present at runtime.
+
+Android 17 (API
+level 37, codename CINNAMON_BUN) continues the trend.  It adds a new "C"
+SDK-extension axis and ships fresh modules (`com.android.npumanager`,
+`com.android.webapp`, and the bootstrap APEXes).  It also teaches `apexd` to
+mount EROFS payloads directly from the APEX file without a loop device.
+
+A new top-level `tools/mainline` repository now carries the open-source "train
+build" tooling that assembles those modules into the bundles shipped through
+Google Play.
 
 ---
 
@@ -53,15 +60,15 @@ roughly the same:
 5. The OTA reaches end-user devices.
 
 For a critical CVE in, say, the DNS resolver or the media codec stack, this
-pipeline could take anywhere from three months to *never*, depending on the
+pipeline could take from three months to *never*.  The time depended on the
 OEM's commitment and the device's age.  The result was a fragmented ecosystem
 where billions of devices ran dangerously outdated platform code.
 
 ### 54.1.2  The Solution: Modular, Updatable Components
 
-Project Mainline, introduced in Android 10 and expanded in every subsequent
-release, slices the platform into **modules** that can be updated independently
-of the base system image.  Each module is packaged as either:
+Project Mainline, introduced in Android 10 and expanded in every later
+release, slices the platform into **modules**.  Each module can be updated
+independently of the base system image.  Each module is packaged as either:
 
 - An **APEX** (Android Pony EXpress) -- a new container format for native
   code, Java libraries, and configuration files.
@@ -69,9 +76,8 @@ of the base system image.  Each module is packaged as either:
 - A standard **APK** -- for modules that are pure Java / Kotlin.
 
 Google pushes module updates through the **Google Play system update**
-mechanism (branded "Google Play system updates" on devices), allowing
-security-critical fixes to reach *all* supported devices within days rather
-than months.
+mechanism (branded "Google Play system updates" on devices).  Security-critical
+fixes can reach *all* supported devices within days rather than months.
 
 ### 54.1.3  Design Goals
 
@@ -125,9 +131,10 @@ activation fails, apexd rolls back to the pre-installed version.
 ## 54.2  APEX Format
 
 The APEX file format is the cornerstone of Project Mainline.  It solves a
-problem that APKs cannot: packaging and updating **native shared libraries**,
-**executables**, **configuration files**, and **Java bootclasspath fragments**
-as a single, signed, integrity-verified unit.
+problem that APKs cannot solve.  This problem is packaging and updating
+**native shared libraries**, **executables**, **configuration files**, and
+**Java bootclasspath fragments** as a single, signed, integrity-verified
+unit.
 
 ### 54.2.1  Why Not Just APK?
 
@@ -596,9 +603,10 @@ mounting process:
 ```
 
 Step 2 creates the block device that backs the payload.  As of Android 17,
-`MountPackageImpl` picks one of three strategies, in priority order: a
-`dm-linear` device for a *pinned* APEX, a **file-backed EROFS mount** that
-skips the block device entirely, or the classic loop device:
+`MountPackageImpl` picks one of three strategies, in priority order.  The first
+is a `dm-linear` device for a *pinned* APEX.  The second is a **file-backed
+EROFS mount** that skips the block device entirely.  The third is the classic
+loop device:
 
 ```cpp
 // Source: system/apex/apexd/apexd.cpp (MountPackageImpl)
@@ -622,10 +630,10 @@ if (UsesPinnedApex() && GetImageManager()->IsPinnedApex(apex)) {
 ```
 
 The EROFS file-backed branch is the headline change here (covered in detail in
-Section 54.11): when the `erofs_file_backed_mount` flag is on and a
-pre-installed EROFS APEX does not need its own dm-verity layer, `apexd` mounts
-the payload straight from the `.apex` file using the kernel's `fsoffset=` mount
-option, with no loop device involved.
+Section 54.11).  This branch applies when the `erofs_file_backed_mount` flag is
+on and a pre-installed EROFS APEX does not need its own dm-verity layer.
+`apexd` then mounts the payload straight from the `.apex` file.  It uses the
+kernel's `fsoffset=` mount option, with no loop device involved.
 
 Step 3 wraps the block device with dm-verity for integrity verification.  Pre-
 installed APEXes on dm-verity-protected partitions (like `/system`) can skip
@@ -717,8 +725,8 @@ if (mount(mount_device.c_str(), mount_point.c_str(), fs_type.c_str(),
 ```
 
 The final `mount_options` argument is how the file-backed EROFS path delivers
-its `fsoffset=` value to the kernel; for the loop-device and dm-linear paths it
-is empty.
+its `fsoffset=` value to the kernel.  For the loop-device and dm-linear paths
+it is empty.
 
 The mount flags enforce:
 
@@ -964,8 +972,8 @@ void ProcessSessions(ActivationContext& ctx) {
 }
 ```
 
-This is the core logic that makes Mainline updates work across reboots: a
-session is "staged" before reboot, and then on the next boot, `ProcessSessions`
+This is the core logic that makes Mainline updates work across reboots.  A
+session is "staged" before reboot.  Then on the next boot, `ProcessSessions`
 activates it.
 
 ```mermaid
@@ -1026,8 +1034,8 @@ or that can gracefully restart their services.
 
 Android 16 (Baklava) introduced the concept of **brand-new APEXes** -- APEXes
 that can be installed on a device even if they were not pre-installed.  This
-allows Google to add entirely new modules to existing devices through Play
-updates, and it remains the backstop in Android 17 for shipping new modules
+lets Google add entirely new modules to existing devices through Play
+updates.  It remains the backstop in Android 17 for shipping new modules
 (like `com.android.npumanager` and `com.android.webapp`, both flag-gated) to
 fleets that did not factory-install them.
 
@@ -1100,9 +1108,9 @@ prebuilt_apex {
 }
 ```
 
-When the build system needs to access the contents of a prebuilt APEX (e.g., to
-compile against a bootclasspath fragment's JAR files), it uses the `deapexer`
-tool to extract the contents:
+Sometimes the build system needs the contents of a prebuilt APEX (e.g., to
+compile against a bootclasspath fragment's JAR files).  Then it uses the
+`deapexer` tool to extract the contents:
 
 ```bash
 # Extract all contents
@@ -1115,12 +1123,12 @@ $ deapexer list com.android.art.apex
 $ deapexer info com.android.art.apex
 ```
 
-The `deapexer` tool understands the APEX format at a low level: it opens the
-ZIP, finds the payload image, mounts or reads it (using `debugfs` for ext4 or
-`fsck.erofs` for erofs), and extracts the files.
+The `deapexer` tool understands the APEX format at a low level.  It opens the
+ZIP and finds the payload image.  Then it mounts or reads the image (it uses
+`debugfs` for ext4 or `fsck.erofs` for erofs) and extracts the files.
 
-This two-way flow -- building APEXes with `apexer` and decomposing them with
-`deapexer` -- enables the modular development workflow where different teams
+This two-way flow has two parts.  APEXes are built with `apexer` and
+decomposed with `deapexer`.  The flow enables the modular development workflow where different teams
 can work on different modules and integrate through prebuilt artifacts.
 
 ```mermaid
@@ -1277,12 +1285,15 @@ Mainline modules.  Each module typically produces one or more APEX packages.
 ### 54.3.1  Complete Module Inventory
 
 The following table lists every module directory in `packages/modules/` that
-produces a Mainline artifact as of Android 17 (the shared `common` directory,
-which holds the build defaults and tooling used by every module, and the
-legacy `vndk` directory are omitted), its APEX package name(s), the Android
-release in which it became updatable, and a summary of what it provides.  Not every directory produces an
-APEX: some are APKs, some are pure code locations, and the Android 17 newcomers
-(`NpuManager`, `WebApp`, `WebViewBootstrap`) are gated behind release flags.
+produces a Mainline artifact as of Android 17.  Two directories are omitted.
+The shared `common` directory holds the build defaults and tooling used by
+every module.  The `vndk` directory is legacy.  For each module, the table
+gives its APEX package name(s) and the Android release in which it became
+updatable.  It also gives a summary of what the module provides.
+
+Not every directory produces an APEX.  Some are APKs and some are pure code
+locations.  The Android 17 newcomers (`NpuManager`, `WebApp`,
+`WebViewBootstrap`) are gated behind release flags.
 
 | # | Module Directory | APEX Name | Launch | Description |
 |---|-----------------|-----------|--------|-------------|
@@ -1610,7 +1621,7 @@ StatsD is responsible for:
 - Forwarding metrics to the server-side analytics pipeline.
 
 Its launch in R (Android 11) was significant because it moved a core platform
-service into a Mainline module, allowing Google to fix metrics collection bugs
+service into a Mainline module.  This lets Google fix metrics collection bugs
 and add new atom definitions without a full platform OTA.
 
 ### 54.3.8  Deep Dive: DnsResolver Module
@@ -1634,10 +1645,10 @@ apex {
 
 Notice what is missing: the definition declares no `native_shared_libs`,
 `binaries`, or classpath fragments at all.  `com.android.resolv` is today an
-**empty legacy container**.  `libnetd_resolv.so`, the native library that
-handles all DNS resolution on the device, ships inside the Connectivity APEX
-(`com.android.tethering`, Section 54.3.4), whose `native_shared_libs` list
-carries `libnetd_resolv` alongside `libnetd_updatable`
+**empty legacy container**.  `libnetd_resolv.so` is the native library that
+handles all DNS resolution on the device.  It ships inside the Connectivity APEX
+(`com.android.tethering`, Section 54.3.4).  The `native_shared_libs` list of
+that APEX carries `libnetd_resolv` alongside `libnetd_updatable`
 (`packages/modules/Connectivity/Tethering/apex/Android.bp`).  DNS resolver
 features are therefore updated through the Connectivity module today:
 
@@ -1713,8 +1724,8 @@ apex {
 }
 ```
 
-By using DCLA, the adb APEX can share common libraries (like `libc++`) with
-other APEXes instead of bundling its own copy, reducing the total on-device
+With DCLA, the adb APEX can share common libraries (like `libc++`) with
+other APEXes instead of bundling its own copy.  This reduces the total on-device
 storage footprint.
 
 ### 54.3.11  Module Lifecycle Across Releases
@@ -1779,11 +1790,11 @@ apex {
 }
 ```
 
-- `com.android.media` -- The main media APEX containing extractors, the media
-  framework service, and `updatable-media.jar` on the bootclasspath (its
-  bootclasspath fragment lists `contents: ["updatable-media"]`;
-  `framework-media` is the stubs library for the APIs `updatable-media`
-  provides).
+- `com.android.media` -- The main media APEX. It contains extractors, the media
+  framework service, and `updatable-media.jar` on the bootclasspath.  Its
+  bootclasspath fragment lists `contents: ["updatable-media"]`.
+  `framework-media` is the stubs library for the APIs that `updatable-media`
+  provides.
 
 - `com.android.media.swcodec` -- A separate process for software codecs
   (isolated for security via `mediaswcodec` service).
@@ -1880,8 +1891,8 @@ static const std::unordered_set<SdkModule> kCModules = {};
 ```
 
 Android 17 adds the `kCModules` set for the new "C" extension train.  It is
-empty today: the C axis exists so that *future* module updates can declare
-APIs targeting "Android 17 and up," but no module currently moves the C
+empty today.  The C axis exists so that *future* module updates can declare
+APIs targeting "Android 17 and up."  But no module currently moves the C
 extension on its own.  The same pattern held for V (`kVModules` was, and still
 is, empty).
 
@@ -2103,20 +2114,20 @@ For version 6:
 **Result**: R extension version = 5.
 
 The TETHERING module at version 6 does not meet the minimum requirement of 7
-for extension version 6.  If Google pushes a Connectivity module update that
-brings TETHERING to version 7 or higher, the R extension version would
+for extension version 6.  Suppose Google pushes a Connectivity module update that
+brings TETHERING to version 7 or higher.  Then the R extension version would
 automatically advance to 6 on the next reboot.
 
-This mechanism ensures that apps can trust extension version checks: if
+This mechanism makes sure that apps can trust extension version checks.  If
 `SdkExtensions.getExtensionVersion(R) >= 6`, then *all* modules in the R
-train are at or above the required versions, and all APIs introduced in R
+train are at or above the required versions.  Also, all APIs introduced in R
 extension 6 are available.
 
 ### 54.4.7  Ad Services Extension
 
-The Ad Services extension is a special case: it has its own independent
-extension track (`AD_SERVICES = 1_000_000`) because the Privacy Sandbox
-APIs evolve on a different cadence from the platform extensions:
+The Ad Services extension is a special case.  It has its own independent
+extension track (`AD_SERVICES = 1_000_000`).  The reason is that the Privacy
+Sandbox APIs evolve on a different cadence from the platform extensions:
 
 ```java
 // Source: packages/modules/SdkExtensions/java/android/os/ext/SdkExtensions.java
@@ -2177,13 +2188,15 @@ It bundles:
 
 The `extensions_db` source lives in
 `packages/modules/SdkExtensions/gen_sdk/extensions_db.textpb`.  In Android 17
-the highest defined extension is **version 22**, at which most modules (ART,
-Conscrypt, Media, MediaProvider, Permissions, StatsD, Tethering, AppSearch,
-OnDevicePersonalization, ConfigInfrastructure, HealthFitness, NeuralNetworks,
-and others) are pinned.  Two modules are frozen below the current baseline:
-`gen_sdk/gen_sdk.py` lists `AD_SERVICES` and `EXT_SERVICES` in its
-`skipped_modules` set, holding both at version 20 (AdServices is discontinued
-after 20; ExtServices is no longer needed past 20).
+the highest defined extension is **version 22**.  Most modules are pinned at
+this version (ART, Conscrypt, Media, MediaProvider, Permissions, StatsD,
+Tethering, AppSearch, OnDevicePersonalization, ConfigInfrastructure,
+HealthFitness, NeuralNetworks, and others).
+
+Two modules are frozen below the
+current baseline.  `gen_sdk/gen_sdk.py` lists `AD_SERVICES` and `EXT_SERVICES`
+in its `skipped_modules` set, which holds both at version 20.  AdServices is
+discontinued after 20.  ExtServices is no longer needed past 20.
 
 ### 54.4.9  Extension Version Lifecycle
 
@@ -2391,10 +2404,10 @@ Each APEX declares a `min_sdk_version` that determines:
 
 The `packages/modules/common/sdk/Android.bp` file defines standard defaults
 for each launch window.  The lowest supported `min_sdk_version` is itself a
-release-flag decision in Android 17: `APEX_LOWEST_MIN_SDK_VERSION` is `"30"`
+release-flag decision in Android 17.  `APEX_LOWEST_MIN_SDK_VERSION` is `"30"`
 (R) by default but flips to `"31"` (S) when
-`RELEASE_DEPRECATE_MAINLINE_R_SUPPORT` is set, reflecting the gradual sunset of
-R-era module support:
+`RELEASE_DEPRECATE_MAINLINE_R_SUPPORT` is set.  This reflects the gradual
+sunset of R-era module support:
 
 ```
 // Source: packages/modules/common/sdk/Android.bp
@@ -2448,8 +2461,8 @@ apex_defaults {
 ```
 
 As of Android 17 the highest launch-window default is still
-`b-launched-apex-module` (`min_sdk_version: "36"`); there is no
-`c-launched-apex-module` yet, so the Android 17 newcomers `NpuManager` and
+`b-launched-apex-module` (`min_sdk_version: "36"`).  There is no
+`c-launched-apex-module` yet.  So the Android 17 newcomers `NpuManager` and
 `WebApp` both inherit the `b-launched` defaults.
 
 All updatable APEXes inherit from `any-launched-apex-modules`:
@@ -2886,8 +2899,8 @@ package:com.android.wifi versionCode:370090000
 ...
 ```
 
-(On an Android 17 trunk-staging build the version codes start with `370…`; on
-older builds the leading SDK segment is lower, e.g. `340…` on the
+(On an Android 17 trunk-staging build the version codes start with `370…`.
+On older builds the leading SDK segment is lower, e.g. `340…` on the
 Tiramisu-era image.)
 
 **Inspect a mounted APEX:**
@@ -3064,8 +3077,8 @@ When a Mainline module adds a new API, the process is:
    appropriate extension train in `derive_sdk.cpp`.
 
 For example, if a new API was added to the Permission module for the T
-extension train at version 5, the `extensions_db` would be updated to require
-a minimum Permission module version that includes the new API.
+extension train at version 5, the `extensions_db` would be updated. It would
+require a minimum Permission module version that includes the new API.
 
 ### 54.6.12  Debugging Build Failures
 
@@ -3103,19 +3116,22 @@ Fix: Ensure all dependencies use stable API levels (NDK, SDK stubs).
 At the source level, an APEX simply carries an `int64 version` in its
 `apex_manifest.pb` (see Section 54.2.3), and `SelectApexForActivation()` always
 prefers the higher number.  AOSP builds stamp this with the platform build
-number, so a locally built APEX reports a version code like `370090000` for an
-Android 17 (`bp1a`-style) trunk-staging build.
+number. A locally built APEX therefore reports a version code like `370090000`
+for an Android 17 (`bp1a`-style) trunk-staging build.
 
 The released-train version codes that Google publishes follow a structured
-`XYYZZZNNN` convention so that newer trains always sort higher: a leading digit
-for the train type, a platform-SDK segment, an incrementing build segment, and
-a trailing variant segment (release vs. development).  This encoding is applied
-by the train-build tooling, not by AOSP's `apexer`; in Android 17 that tooling
-moved into the new `tools/mainline/train_build/` repository
-(`versioning_action.py` bumps the codes, `pack_action.py` packs the result --
-see Section 54.10).  Because the leading SDK segment advances with each
-platform release, an Android 17 train always outranks an Android 16 train of
-the same module, which is exactly what the Play Store update mechanism needs.
+`XYYZZZNNN` convention, so that newer trains always sort higher. The convention
+has four segments. They are a leading digit for the train type, a platform-SDK
+segment, an incrementing build segment, and a trailing variant segment (release
+vs. development).
+
+The train-build tooling applies this encoding, not AOSP's
+`apexer`. In Android 17 that tooling moved into the new
+`tools/mainline/train_build/` repository (`versioning_action.py` bumps the
+codes, `pack_action.py` packs the result -- see Section 54.10).  The leading
+SDK segment advances with each platform release. Therefore an Android 17 train
+always outranks an Android 16 train of the same module. This is exactly what
+the Play Store update mechanism needs.
 
 ---
 
@@ -3338,9 +3354,9 @@ has a sliding-window quota for read, write, and aggregate operations.
 
 ### 54.7.7  Data Priority and Aggregation
 
-When multiple apps write the same data type (e.g., both a watch and a phone
-record steps), Health Connect uses a **data origin priority order** to resolve
+When multiple apps write the same data type, Health Connect uses a **data origin priority order** to resolve
 conflicts during aggregation.  Users can reorder the priority in Settings.
+An example is a watch and a phone that both record steps.
 
 ```java
 // Source: framework/java/android/health/connect/HealthConnectManager.java
@@ -3597,9 +3613,9 @@ anomalous patterns and can trigger profiling automatically.
 ## 54.9  Deep Dive: UWB (Ultra-Wideband)
 
 The UWB module (`com.android.uwb`) provides Android's Ultra-Wideband radio
-stack -- a short-range, high-bandwidth wireless technology used for precise
-ranging (distance measurement), angle-of-arrival positioning, and secure
-device-to-device communication.
+stack. UWB is a short-range, high-bandwidth wireless technology. It is used for
+precise ranging (distance measurement), angle-of-arrival positioning, and
+secure device-to-device communication.
 
 ### 54.9.1  Module Structure
 
@@ -3714,11 +3730,11 @@ libuwb-uci/src/rust/
 
 `uci_hal_android.rs` is the binder client that implements `uwb_core`'s
 `UciHal` trait against the `android.hardware.uwb` AIDL HAL (`IUwb` /
-`IUwbChip`) -- not a JNI bridge.  The JNI layer through which the Java
-service enters the Rust stack lives separately in
+`IUwbChip`) -- not a JNI bridge.  The JNI layer lives separately in
 `packages/modules/Uwb/service/uci/jni/` (entry point
-`uci_jni_android_new.rs`), which wraps `uwb_core`; `uwb_core` in turn drives
-`uci_hal_android` to talk to the hardware.
+`uci_jni_android_new.rs`). The Java service enters the Rust stack through this
+layer. It wraps `uwb_core`. In turn, `uwb_core` drives `uci_hal_android` to talk
+to the hardware.
 
 UCI session states follow the standard state machine:
 
@@ -3730,10 +3746,10 @@ UCI session states follow the standard state machine:
 | `IDLE` | 0x03 | Configured but not ranging |
 
 Below the UCI layer sits the `android.hardware.uwb` AIDL HAL (`IUwb` /
-`IUwbChip`), and Android 17 ships a reference vendor implementation of it for
+`IUwbChip`). Android 17 ships a reference vendor implementation of it for
 NXP SR1XX silicon at `hardware/nxp/uwb`. The thin AIDL service binary
 (`android.hardware.uwb-service.nxp`, registered as init service
-`vendor.uwb_hal`) bridges into NXP's legacy HAL core under `halimpl/`, which
+`vendor.uwb_hal`) bridges into NXP's legacy HAL core under `halimpl/`. This core
 handles HBCI firmware download, the SPI TML transport, OTP calibration, and
 session/time-sync. This is what makes hardware UWB ranging work on NXP
 devices feeding the stack described above.
@@ -3782,8 +3798,9 @@ soong_config_variables: {
 
 ### 54.9.7  Out-of-Band Ranging Spec (v2/v3)
 
-When two devices range with each other they have to agree on which technology to
-use and how to configure it before any ranging frames fly. The generic Ranging
+When two devices range with each other, they have to agree on which technology
+to use. They also have to agree on how to configure it. They do this before any
+ranging frames fly. The generic Ranging
 stack carries that negotiation over an out-of-band (OOB) channel -- typically
 BLE GATT -- using a small message protocol defined in
 `packages/modules/Uwb/ranging/service/oob/oob_packets.pdl`. The `.pdl` file is a
@@ -3794,8 +3811,8 @@ Every message begins with the same two-byte `OobMessage` header: a `version`
 byte and a `MessageId`.
 
 The protocol is versioned. The `Version` enum declares `V1 = 1`, `V2 = 2`, and
-`CURRENT = 3`, so a device advertises which revision it speaks and the two sides
-fall back to the lowest common version. Two later revisions add capabilities on
+`CURRENT = 3`. As a result, a device advertises which revision it speaks, and the two sides fall
+back to the lowest common version. Two later revisions add capabilities on
 top of the v1 baseline:
 
 - **v2 -- supported-technology transitioning.** The capabilities exchange can
@@ -3804,10 +3821,10 @@ top of the v1 baseline:
   a `supported_transitioning` field of type `TechnologyTransitioning`, whose
   values are `NOT_SUPPORTED` and `MAKE_BEFORE_BREAK`. The initiator reads this
   field to pick a "make before break" engine that brings up the next technology
-  before dropping the current one. (The OOB protocol negotiates several
+  before dropping the current one. The OOB protocol negotiates several
   technologies through the `Technology` / `TechnologySet` types: UWB, BLE
-  channel sounding, Wi-Fi NAN RTT, BLE RSSI, and -- marked as an
-  in-development v4 addition in the PDL -- Wi-Fi PD.)
+  channel sounding, Wi-Fi NAN RTT, BLE RSSI, and Wi-Fi PD. The PDL marks Wi-Fi
+  PD as an in-development v4 addition.
 
 - **v3 -- motion notification.** A new `MOTION_NOTIFICATION` message
   (`MessageId = 0x8`) carries a `Motion` payload reporting detected movement as
@@ -3816,16 +3833,16 @@ top of the v1 baseline:
   `NOT_SUPPORTED` / `SUPPORTED`) added to `ConfigurationRequestV3`. The initiator
   session handles incoming `MotionNotification` messages in
   `session/OobInitiatorRangingSession.java` (the `oob/` package only holds the
-  protocol builders and parsers), so an application can react to a peer
-  reporting that it is moving.
+  protocol builders and parsers). So an application can react to a peer that
+  reports that it is moving.
 
 The full message set is the `MessageId` enum: capabilities request/response,
 configuration request/response, stop request/response, and the v3 motion
-notification. Because each message type is versioned independently in the PDL
-(for example `CapabilitiesResponseV1` versus `CapabilitiesResponseV2`, and
-`ConfigurationRequestV1` versus `ConfigurationRequestV3`), the generated parser
-selects the right layout from the header version, which is how a v3 device stays
-interoperable with a v1 or v2 peer.
+notification. Each message type is versioned independently in the PDL (for
+example `CapabilitiesResponseV1` versus `CapabilitiesResponseV2`, and
+`ConfigurationRequestV1` versus `ConfigurationRequestV3`). So the generated
+parser selects the right layout from the header version. This is how a v3
+device stays interoperable with a v1 or v2 peer.
 
 ### 54.9.8  Session Management
 
@@ -3882,9 +3899,10 @@ enforced through channel usage restrictions (`ChannelUsage`).
 ## 54.10  The `tools/mainline` Train-Build Repository
 
 Up to this point the chapter has treated each module as a self-contained APEX.
-In practice Google does not ship modules one at a time: related modules are
-bundled into a **train** -- a set of APEX and APK files released together,
-version-stamped together, and rolled out together through Google Play.  Android
+In practice Google does not ship modules one at a time. Related modules are
+bundled into a **train**. A train is a set of APEX and APK files that are
+released together, version-stamped together, and rolled out together through
+Google Play.  Android
 17 adds a new top-level repository, `tools/mainline`, that carries the
 open-source portion of the tooling that assembles those trains.
 
@@ -3892,10 +3910,10 @@ open-source portion of the tooling that assembles those trains.
 
 The per-module `Android.bp` files describe how to *build one APEX*.  Turning a
 collection of freshly built module artifacts into a signed, correctly versioned
-train is a separate, cross-module step: it must trim each module down to the
-architectures a given target needs, build the shared common-library APEX,
-re-stamp version codes so the train sorts above the previous release, and pack
-everything into the final bundle.  Historically this logic lived in
+train is a separate, cross-module step. This step must trim
+each module down to the architectures a given target needs, and build the
+shared common-library APEX. It must also re-stamp version codes so the train
+sorts above the previous release, and pack everything into the final bundle.  Historically this logic lived in
 Google-internal scripts.  Android 17 splits out the reusable, AOSP-shareable
 machinery into `tools/mainline/train_build/`, leaving the proprietary
 mock data and glue in `vendor/google/train_build`.
@@ -3903,9 +3921,10 @@ mock data and glue in `vendor/google/train_build`.
 ### 54.10.2  The `train_build` Pipeline
 
 `tools/mainline/train_build/Android.bp` defines a set of `python_binary_host`
-"worker" binaries and `python_library_host` "action" libraries, each
-implementing one stage of the pipeline, plus `python_test_host` unit tests for
-most stages (trim, versioning, and the two orchestrators and their workers):
+"worker" binaries and `python_library_host` "action" libraries. Each one
+implements one stage of the pipeline. The file also defines `python_test_host`
+unit tests for most stages (trim, versioning, and the two orchestrators and
+their workers):
 
 | Stage | Action module | Responsibility |
 |-------|--------------|---------------|
@@ -3935,8 +3954,8 @@ class TrainType(Enum):
   UNKNOWN = 8
 ```
 
-The presence of a dedicated `NPU` train type is itself an Android 17 signal:
-the new `com.android.npumanager` module (Section 54.11) is significant enough to
+The presence of a dedicated `NPU` train type is itself an Android 17 signal.
+The new `com.android.npumanager` module (Section 54.11) is significant enough to
 ship on its own train cadence.
 
 ### 54.10.3  The Shared DCLA Library APEX
@@ -3954,9 +3973,9 @@ GO_DCLA = 'com.google.mainline.go.primary.libs'
 ```
 
 `dcla_apex_info.py` records, per module, which DCLA libraries that module
-expects to be provided externally, so the trimming and packing stages can wire
-the shared APEX into the train instead of letting each module bundle its own
-copy of `libc++`, `libcrypto`, and friends.
+expects to be provided externally. So the trimming and packing stages can wire
+the shared APEX into the train. Then each module does not need to bundle its
+own copy of `libc++`, `libcrypto`, and friends.
 
 ### 54.10.4  Train-Build Flow
 
@@ -3981,20 +4000,19 @@ flowchart TD
 
 ## 54.11  Android 17 apexd and Module Changes
 
-Android 17 makes two notable changes to the runtime side of Mainline: `apexd`
-gains a way to activate EROFS APEX payloads without a loop device, and the
-module set itself grows with the `com.android.npumanager` and
+Android 17 makes two notable changes to the runtime side of Mainline. First,
+`apexd` gains a way to activate EROFS APEX payloads without a loop device.
+Second, the module set itself grows with the `com.android.npumanager` and
 `com.android.webapp` newcomers.
 
 ### 54.11.1  EROFS File-Backed Mounts
 
-Every loop device an APEX consumes is a finite kernel resource, and as the
-module count climbs (Section 54.3 now lists more than forty directories), so
-does the loop-device pressure at boot.  Android 17 addresses this for EROFS
-payloads with **file-backed mounting**: when the payload is EROFS and does not
-need its own dm-verity layer, `apexd` mounts the payload directly from the
-`.apex` file using the kernel's `fsoffset=` mount option, with no loop device
-in between.  This is the EROFS branch of `MountPackageImpl` shown earlier in
+Every loop device an APEX consumes is a finite kernel resource. The module
+count climbs (Section 54.3 now lists more than forty directories), and so does
+the loop-device pressure at boot.  Android 17 addresses this for EROFS payloads
+with **file-backed mounting**. If the payload is EROFS and does not need its own
+dm-verity layer, `apexd` mounts the payload directly from the `.apex` file.
+It uses the kernel's `fsoffset=` mount option, with no loop device in between.  This is the EROFS branch of `MountPackageImpl` shown earlier in
 Section 54.2.9:
 
 ```cpp
@@ -4027,10 +4045,10 @@ flag {
 
 Because not every kernel supports file-backed EROFS mounts, `apexd` does not
 trust the flag blindly.  At runtime it performs a one-time **test mount** of a
-bundled empty EROFS image and caches the result in the non-persistent runtime
-property `apexd.config.runtime.erofs_file_backed_mount`, so later checks
-within the same boot skip the probe (the vendor-settable override is
-`apexd.config.erofs_file_backed_mount`):
+bundled empty EROFS image. It caches the result in the non-persistent runtime
+property `apexd.config.runtime.erofs_file_backed_mount`. So later checks
+within the same boot skip the probe. The vendor-settable override is
+`apexd.config.erofs_file_backed_mount`:
 
 ```cpp
 // Source: system/apex/apexd/apexd_mount.cpp
@@ -4050,9 +4068,9 @@ if (mount(kTestMountImage, kApexTestMountFolder, "erofs", mount_flags,
 ```
 
 The companion `microdroid_no_loop_device` flag lets Microdroid activate *block*
-APEXes through a `dm-linear` device instead of a loop device (the
+APEXes through a `dm-linear` device instead of a loop device. This is the
 `CreateDmLinearForBlockApex` branch of `MountPackageImpl`, compiled in only when
-the flag is built).  Together these two paths shrink the per-APEX loop-device
+the flag is built.  Together these two paths shrink the per-APEX loop-device
 cost as the module set keeps growing.
 
 ```mermaid
@@ -4070,9 +4088,9 @@ flowchart TD
 
 `com.android.npumanager` (`packages/modules/NpuManager/apex/Android.bp`) is one
 of the two genuinely new Android 17 modules.  It arbitrates access to on-device
-**Neural Processing Units (NPUs)** across competing apps -- apps do not get raw
-accelerator access; they ask the module's service whether loading a model is
-advisable, and the service answers based on memory budgets and priorities.  The
+**Neural Processing Units (NPUs)** across competing apps.  Apps do not get raw
+accelerator access.  They ask the module's service whether loading a model is advisable, and
+the service answers based on memory budgets and priorities.  The
 APEX is gated behind the `RELEASE_NPUMANAGER_MODULE` release flag and inherits
 `b-launched-apex-module` defaults (`min_sdk_version: "36"`):
 
@@ -4096,18 +4114,18 @@ apex {
 ```
 
 The bootclasspath fragment contributes `framework-npumanager` (the public
-`NpuManager` API surface), the systemserver fragment contributes
-`service-npumanager` (`NpuManagerService`), and the module ships its own
-`npumanager-module-sdk` so other components can compile against its exported
-APIs.  The detailed admission-control architecture -- the model-loading
-policies, the Rust-backed native buffer management, and the paired
-`android.hardware.npu` vendor HAL -- is covered in Chapter 53.
+`NpuManager` API surface).  The systemserver fragment contributes
+`service-npumanager` (`NpuManagerService`).  The module ships its own
+`npumanager-module-sdk`, so other components can compile against its exported
+APIs.  The detailed admission-control architecture is covered in Chapter 53.
+It includes the model-loading policies, the Rust-backed native buffer
+management, and the paired `android.hardware.npu` vendor HAL.
 
 ### 54.11.3  WebApp Module
 
 `com.android.webapp` (`packages/modules/WebApp/apex/Android.bp`) is the second
 Android 17 newcomer.  It installs and manages **Progressive Web Apps (PWAs)** as
-first-class installed entities, exposing a `WebAppManager`
+first-class installed entities.  It exposes a `WebAppManager`
 (`packages/modules/WebApp/framework/java/android/content/pm/webapp/WebAppManager.java`)
 backed by a `WebAppService` APK inside the APEX.  Like NpuManager it is
 flag-gated (`RELEASE_WEBAPP_MODULE`) and inherits `b-launched-apex-module`
@@ -4132,7 +4150,7 @@ apex {
 
 The bundled `aapt2` binary and `webapp-template-res` prebuilt let the module
 compile resources at install time to materialize a PWA as an installable
-package -- the package-manager integration is discussed in Chapter 26.
+package.  The package-manager integration is discussed in Chapter 26.
 
 ### 54.11.4  Bootstrap and Code-Location Directories
 
@@ -4140,18 +4158,18 @@ Not every Android 17 addition under `packages/modules/` is an updatable APEX:
 
 - `WebViewBootstrap` (`packages/modules/WebViewBootstrap/apex/Android.bp`)
   defines `com.android.webview.bootstrap`, an essentially **empty** bootstrap
-  APEX (`v-launched-apex-module` defaults) that reserves a mount point; it
+  APEX (`v-launched-apex-module` defaults) that reserves a mount point.  It
   bundles no apps, libraries, or classpath fragments.
-- `ImsStack` (`packages/modules/ImsStack/`) is a **code location** -- Java,
-  native libs, and feature flags consumed by the telephony stack -- but
+- `ImsStack` (`packages/modules/ImsStack/`) is a **code location**.  It holds Java,
+  native libs, and feature flags that the telephony stack uses.  It
   produces no APEX of its own.
 - `GenericBootstrappingArchitecture`
   (`packages/modules/GenericBootstrappingArchitecture/`) ships an
   `android_app` named `GbaService` (Generic Bootstrapping Architecture carrier
   authentication), not an APEX.
 
-Distinguishing these from true APEX modules matters when reasoning about what
-`apexd` actually mounts at boot: only directories whose `Android.bp` declares an
+It is important to tell these apart from true APEX modules when reasoning about what
+`apexd` actually mounts at boot.  Only directories whose `Android.bp` declares an
 `apex {` (or `custom_apex {` / `virt_apex {`) stanza contribute a `/apex/<name>`
 mount.
 
@@ -4204,9 +4222,9 @@ Check all SDK extension versions:
 $ adb shell getprop | grep build.version.extensions
 ```
 
-Compare the R, S, T, U, V, B, and C extension versions.  Using the
+Compare the R, S, T, U, V, B, and C extension versions.  Look at the
 `kRModules`, `kSModules`, `kTModules` (and the empty `kVModules` / `kCModules`)
-sets from `derive_sdk.cpp`, identify which modules contribute to each extension
+sets in `derive_sdk.cpp`.  Identify which modules contribute to each extension
 level.
 
 ### Exercise 54.4: Examine APEX Build Rules
@@ -4594,30 +4612,30 @@ graph TB
 ### Key Source Files
 
 Project Mainline represents one of the most significant architectural changes
-in Android's history.  By packaging platform components into independently
-updatable APEX modules, Google can deliver security fixes and feature
-improvements to billions of devices without waiting for the traditional OEM
-update pipeline.
+in Android's history.  Google packages platform components into independently
+updatable APEX modules.  With these modules, Google can deliver security fixes
+and feature improvements to billions of devices without waiting for the
+traditional OEM update pipeline.
 
 Key takeaways from this chapter:
 
-- **APEX** is a ZIP containing a dm-verity-signed filesystem image, enabling
-  native code, Java libraries, and configuration to be updated as a single
+- **APEX** is a ZIP containing a dm-verity-signed filesystem image.  This lets native
+  code, Java libraries, and configuration be updated as a single
   atomic unit.
 
-- **apexd** manages the full lifecycle: scanning partitions at boot, creating
-  loop (or, in Android 17, dm-linear / file-backed EROFS) devices and dm-verity
-  tables, bind-mounting active versions, processing staged updates, and
-  supporting rollback.
+- **apexd** manages the full lifecycle.  It scans partitions at boot and
+  creates loop (or, in Android 17, dm-linear / file-backed EROFS) devices and
+  dm-verity tables.  It bind-mounts active versions, processes staged updates,
+  and supports rollback.
 
 - **40+ modules** in `packages/modules/` cover networking, security, media,
-  telephony, ML, and more -- each with its own APEX name, signing key, and
+  telephony, ML, and more.  Each has its own APEX name, signing key, and
   version lifecycle.  Android 17 adds `com.android.npumanager` and
   `com.android.webapp` (both flag-gated) and the new `tools/mainline`
   train-build repository.
 
-- **SDK Extensions** solve the runtime API-availability problem by deriving
-  extension version numbers from actual installed module versions at boot time;
+- **SDK Extensions** solve the runtime API-availability problem.  At boot time
+  they derive extension version numbers from the actual installed module versions.
   Android 17 (API 37, CinnamonBun) raises the extension-database baseline to
   version 22 and adds a new "C" extension axis.
 
@@ -4649,22 +4667,26 @@ The source files central to understanding this system:
 # Chapter 55: OTA Updates
 
 Over-the-Air (OTA) updates are the mechanism by which Android devices receive
-new system images, security patches, and feature updates without requiring
-physical access or manual flashing. What began as a simple "download a zip, boot
-into recovery, apply it" model has evolved into one of AOSP's most sophisticated
-subsystems -- spanning a dedicated native daemon (`update_engine`), kernel-level
-copy-on-write snapshots, bootloader integration protocols, and a streaming
-pipeline that can apply gigabyte-scale payloads without ever writing the full
-image to userdata.
+new system images, security patches, and feature updates. They need no physical
+access and no manual flashing. OTA began as a simple "download a zip, boot into
+recovery, apply it" model. It has evolved into one of AOSP's most sophisticated
+subsystems. The subsystem includes a dedicated native daemon (`update_engine`),
+kernel-level copy-on-write snapshots, and bootloader integration protocols. It
+also includes a streaming pipeline that can apply gigabyte-scale payloads
+without ever writing the full image to userdata.
 
 This chapter traces an OTA update from the moment a server announces its
-availability to the moment the device has rebooted into the new software and
-marked the slot as successful. We examine every layer: the payload binary
-format, the action pipeline inside `update_engine`, the A/B and Virtual A/B
-slot-switching mechanisms, the `snapuserd` daemon that makes compressed
-copy-on-write possible in userspace, the Python tooling that generates payloads,
-recovery mode as the legacy fallback, and the framework APIs that tie everything
-together.
+availability. It ends when the device has rebooted into the new software and
+marked the slot as successful. We examine every layer:
+
+- the payload binary format
+- the action pipeline inside `update_engine`
+- the A/B and Virtual A/B slot-switching mechanisms
+- the `snapuserd` daemon that makes compressed copy-on-write possible in
+  userspace
+- the Python tooling that generates payloads
+- recovery mode as the legacy fallback
+- the framework APIs that tie everything together
 
 ---
 
@@ -4683,15 +4705,15 @@ Source path: system/update_engine/         -- A/B and Virtual A/B engine
 
 In Android 17 the snapshot code moved out of `system/core`: `libsnapshot`,
 `snapuserd`, and the COW format implementation now live under
-`system/fs/fs_mgr/libsnapshot/` (the `system/core/fs_mgr/libsnapshot/` path used
-by earlier releases no longer exists). All snapshot citations in this chapter
+`system/fs/fs_mgr/libsnapshot/`. Earlier releases used the
+`system/core/fs_mgr/libsnapshot/` path, which no longer exists. All snapshot citations in this chapter
 use the new location.
 
 **Non-A/B (Legacy)**. The original scheme, used from Android 1.0 through
 approximately Android 9 (though it remains supported). The device has a single
 set of partitions (system, boot, vendor, etc.) plus a dedicated `recovery`
-partition. To update, the device reboots into recovery, which mounts the OTA
-package (a signed zip file containing an updater binary and image data), and
+partition. To update, the device reboots into recovery. Recovery mounts the OTA
+package (a signed zip file with an updater binary and image data) and
 applies block-level patches in-place. If the update fails partway through, the
 device may be left in an unbootable state -- the dreaded "brick."
 
@@ -4699,7 +4721,9 @@ device may be left in an unbootable state -- the dreaded "brick."
 every updatable partition: slot A and slot B. While the user runs from one slot,
 `update_engine` writes the new image to the other slot in the background. When
 complete, the bootloader is instructed to switch active slots. If the new slot
-fails to boot, the bootloader rolls back. The device never enters recovery for
+fails to boot, the bootloader rolls back.
+
+The device never enters recovery for
 OTA purposes, and the user experiences zero downtime during the write phase.
 The cost is roughly doubled partition storage.
 
@@ -4736,10 +4760,14 @@ timeline
 ```
 
 Android 17 does not introduce a new scheme; it refines Virtual A/B. The big
-changes are the **UBLK** userspace-block-driver backend for serving snapshots
-(an alternative to the `dm-user` path), **zstd compression for `REPLACE`
-operations**, and the removal of squashfs build/OTA support. These are covered
-in detail in section 55.26.
+changes are:
+
+- the **UBLK** userspace-block-driver backend for serving snapshots (an
+  alternative to the `dm-user` path)
+- **zstd compression for `REPLACE` operations**
+- the removal of squashfs build/OTA support
+
+These are covered in detail in section 55.26.
 
 ### 55.1.2 High-Level Data Flow
 
@@ -4801,10 +4829,10 @@ ro.virtual_ab.compression.xor.enabled=true
 ro.virtual_ab.ublk.enabled=true   # Device configured for UBLK snapshots
 ```
 
-The `ro.virtual_ab.ublk.enabled` property is one of three conditions checked by
-`IsUblkEnabled()` before snapshots are served over UBLK rather than `dm-user`;
-the other two are an aconfig flag and a kernel version of 6.6 or newer (see
-section 55.26).
+The `ro.virtual_ab.ublk.enabled` property is one of three conditions that
+`IsUblkEnabled()` checks. The check happens before snapshots are served over
+UBLK rather than `dm-user`. The other two conditions are an aconfig flag and a
+kernel version of 6.6 or newer (see section 55.26).
 
 ```
 Source: system/fs/fs_mgr/libsnapshot/capabilities.cpp
@@ -5149,9 +5177,9 @@ Source: system/update_engine/payload_consumer/payload_constants.cc
         system/update_engine/payload_consumer/payload_metadata.cc
 ```
 
-The payload begins with a fixed 24-byte header, followed by a serialized
-protobuf manifest, an optional metadata signature, the binary data blobs, and
-finally a payload signature.
+The payload begins with a fixed 24-byte header. After the header come a
+serialized protobuf manifest, an optional metadata signature, the binary data
+blobs, and finally a payload signature.
 
 ```mermaid
 block-beta
@@ -5226,7 +5254,7 @@ Source: system/update_engine/payload_consumer/payload_constants.h
 
 Android 17 added minor version 10 (`kZstdMinorPayloadVersion`), and
 `kMaxSupportedMinorPayloadVersion` is now `kZstdMinorPayloadVersion`. The minor
-version of a payload is the highest version whose features it uses; a device
+version of a payload is the highest version whose features it uses. A device
 refuses any payload whose minor version exceeds the maximum it supports
 (`kUnsupportedMinorPayloadVersion`, error 45).
 
@@ -5331,7 +5359,7 @@ but can update any device regardless of its current state.
 source image and the target. They use `SOURCE_COPY`, `SOURCE_BSDIFF`,
 `PUFFDIFF`, `ZUCCHINI`, and similar operations that reference source blocks.
 Delta payloads are dramatically smaller (often 50-200 MB vs. 2-4 GB for a full
-payload) but require the device to be running the exact source build.
+payload). But they require the device to run the exact source build.
 
 ```mermaid
 flowchart TD
@@ -5484,8 +5512,8 @@ bool DeltaPerformer::ProcessOperation(const InstallOperation* op,
 The decompression for a `REPLACE_*` operation is applied by stacking the right
 `ExtentWriter` on top of the partition writer. `InstallOperationExecutor::ExecuteReplaceOperation`
 wraps the base writer in a `BzipExtentWriter`, `XzExtentWriter`, or -- new in
-Android 17 -- a `ZstdExtentWriter` depending on the operation type, then writes
-the decompressed bytes to the target extents:
+Android 17 -- a `ZstdExtentWriter`, depending on the operation type. Then it
+writes the decompressed bytes to the target extents:
 
 ```
 Source: system/update_engine/payload_consumer/install_operation_executor.cc
@@ -5579,7 +5607,7 @@ On resume, `CanResumeUpdate()` checks the stored payload hash against the new
 payload's hash to determine whether the checkpoint is still valid.
 
 When the device reboots mid-update (power loss, crash), the next `ApplyPayload`
-call detects the stored checkpoint and resumes from where it left off, skipping
+call detects the stored checkpoint. It resumes from where it left off and skips
 already-applied operations.
 
 ---
@@ -5773,11 +5801,11 @@ Source: system/fs/fs_mgr/libsnapshot/
         system/update_engine/aosp/dynamic_partition_control_android.h
 ```
 
-The key insight: rather than maintaining a full copy of each partition, Virtual
-A/B stores only the *differences* between the running (source) and updated
-(target) versions. These differences are stored in COW format, and a daemon
-(`snapuserd`) presents a merged view of the base partition + COW data to the
-rest of the system.
+The key insight: Virtual A/B does not keep a full copy of each partition. It
+stores only the *differences* between the running (source) and updated (target)
+versions. These differences are stored in COW format. A daemon (`snapuserd`)
+presents a merged view of the base partition + COW data to the rest of the
+system.
 
 ```mermaid
 flowchart TD
@@ -5813,8 +5841,8 @@ super partition is a physical partition that contains a GPT-like metadata table
 within it.
 
 For Virtual A/B, the logical partitions have A and B entries in the metadata,
-but the actual data can overlap because the inactive slot may not physically
-exist until a COW is created.
+but the actual data can overlap. This is because the inactive slot may not
+physically exist until a COW is created.
 
 ### 55.6.3 Snapshot Manager
 
@@ -5856,9 +5884,10 @@ Source: system/fs/fs_mgr/libsnapshot/libsnapshot_cow/writer_v3.cpp
         system/fs/fs_mgr/libsnapshot/libsnapshot_cow/cow_format.cpp
 ```
 
-The v3 format carries per-operation compression metadata, so a single COW image
-can mix uncompressed, lz4, and zstd blocks, and it supports the larger
-compression factors selected by `--compression_factor` (4k through 256k).
+The v3 format carries per-operation compression metadata. A single COW image
+can therefore mix uncompressed, lz4, and zstd blocks. The format also supports
+the larger compression factors selected by `--compression_factor` (4k through
+256k).
 
 COW operations:
 
@@ -5890,13 +5919,14 @@ flowchart LR
 ### 55.6.5 snapuserd
 
 `snapuserd` is the userspace daemon that serves snapshot block devices. It runs
-very early in the boot process (first-stage init) and presents merged views of
+very early in the boot process (first-stage init). It presents merged views of
 base-partition + COW data to the kernel through a userspace block device. That
-block device is abstracted behind an `IBlockServer` interface: historically the
-only backend was `dm-user`, but Android 17 added a `ublk` backend that the
-daemon can select at startup (covered in section 55.26). The interface lives in
-`snapuserd/include/snapuserd/block_server.h`; the two implementations are
-`dm_user_block_server.cpp` and `ublk_block_server.cpp`.
+block device is abstracted behind an `IBlockServer` interface. Historically the
+only backend was `dm-user`. Android 17 added a `ublk` backend that the daemon
+can select at startup (covered in section 55.26).
+
+The interface lives in `snapuserd/include/snapuserd/block_server.h`. The two
+implementations are `dm_user_block_server.cpp` and `ublk_block_server.cpp`.
 
 ```
 Source: system/fs/fs_mgr/libsnapshot/snapuserd/
@@ -6047,9 +6077,9 @@ Supported compression algorithms:
 | None | `none` | No compression |
 
 XOR compression (`ro.virtual_ab.compression.xor.enabled=true`) further reduces
-COW size by storing XOR deltas instead of full replacement blocks. When a block
-changes only slightly (e.g., a timestamp in a header), the XOR of old and new
-blocks compresses much better than the full new block.
+COW size by storing XOR deltas instead of full replacement blocks. A block can
+change only slightly (e.g., a timestamp in a header). In this case, the XOR of
+the old and new blocks compresses much better than the full new block.
 
 ```mermaid
 flowchart LR
@@ -6135,8 +6165,8 @@ OPTIONS.enable_replace_zstd = False      # Android 17: zstd for REPLACE ops
 ```
 
 The `--enable_replace_zstd` flag (added in Android 17) makes `delta_generator`
-emit `REPLACE_ZSTD` operations instead of plain `REPLACE`, shrinking full
-payloads and the full portions of incremental payloads. It is passed through to
+emit `REPLACE_ZSTD` operations instead of plain `REPLACE`. This makes full
+payloads, and the full portions of incremental payloads, smaller. It is passed through to
 the native generator as `--enable_replace_zstd=true` and is mutually disabled by
 `--disable_replace_compression`.
 
@@ -6680,9 +6710,10 @@ public static final class UpdateStatusConstants {
 
 The Java `UpdateStatusConstants` class stops at `DISABLED = 9`. The native
 `UpdateStatus` enum (`system/update_engine/client_library/include/update_engine/update_status.h`)
-carries two additional states that are not mirrored in the Java constants:
-`NEED_PERMISSION_TO_UPDATE = 10` and `CLEANUP_PREVIOUS_UPDATE = 11` (the
-post-reboot snapshot-merge phase of a Virtual A/B update).
+carries two additional states that are not mirrored in the Java constants.
+These states are `NEED_PERMISSION_TO_UPDATE = 10` and
+`CLEANUP_PREVIOUS_UPDATE = 11` (the post-reboot snapshot-merge phase of a
+Virtual A/B update).
 
 ### 55.10.4 UpdateEngineStable
 
@@ -6938,7 +6969,7 @@ Reported fields include:
   backend rather than `dm-user`.
 
 In Android 17 the older `ISnapshotMergeStats` / `snapshot_stats.h` accumulator
-that update_engine used to instantiate was removed; stats are now read back from
+that update_engine used to instantiate was removed. Stats are now read back from
 the persisted merge report instead.
 
 ### 55.13.3 Log Locations
@@ -7357,12 +7388,12 @@ Source: system/update_engine/common/cpu_limiter.h
         system/update_engine/common/cpu_limiter.cc
 ```
 
-The `CPULimiter` class does not monitor system load; it simply lowers the
-process's cgroup `cpu.shares` to a low value for a bounded window, then
+The `CPULimiter` class does not monitor system load. It simply lowers the
+process's cgroup `cpu.shares` to a low value for a bounded window. Then it
 restores the normal value when a timeout fires. On Android it is not actually
-wired up -- no production code instantiates it -- and the update process's CPU
-and I/O footprint is instead managed by the `OtaProfiles` task profile applied
-in `system/update_engine/update_engine.rc`. Keeping the update cheap matters
+wired up, because no production code instantiates it. Instead, the CPU and I/O footprint
+of the update process is managed by the `OtaProfiles` task profile applied in
+`system/update_engine/update_engine.rc`. Keeping the update cheap matters
 most during the compute-intensive diff operations (bsdiff, puffdiff,
 zucchini).
 
@@ -7517,13 +7548,13 @@ static const unsigned kProgressOperationsWeight;   // Apply contribution
 
 ### 55.20.3 The MultiRangeHttpFetcher
 
-The `MultiRangeHttpFetcher` is a simple wrapper around a base `HttpFetcher`:
-the client hands it a list of byte ranges, and it fetches each range in turn
+The `MultiRangeHttpFetcher` is a simple wrapper around a base `HttpFetcher`.
+The client hands it a list of byte ranges. It fetches each range in turn
 through the same underlying fetcher. `update_engine` uses it mainly to fetch
-the payload starting at an offset (for example when resuming). Sequencing
-payloads and forwarding the received bytes to the `DeltaPerformer` is the job
-of `DownloadAction`, which constructs the fetcher and feeds the performer from
-its `ReceivedBytes` callback.
+the payload starting at an offset (for example when resuming). `DownloadAction`
+sequences the payloads and forwards the received bytes to the `DeltaPerformer`.
+It constructs the fetcher and feeds the performer from its `ReceivedBytes`
+callback.
 
 ---
 
@@ -7577,8 +7608,8 @@ message PartitionUpdate {
 information flattened into scalar offset/size fields.)
 
 When `write_verity` is true in the `InstallPlan`, the performer computes
-hash trees and FEC codes on-device after writing partition data, rather than
-including them in the payload. This saves payload size significantly.
+hash trees and FEC codes on-device after it writes partition data. The payload
+does not include them. This saves payload size significantly.
 
 ---
 
@@ -7745,8 +7776,8 @@ ExtentMap<const CowMergeOperation*, ExtentLess> xor_map_;
 ```
 
 For blocks in the XOR map, source copy operations produce `COW_XOR` entries
-instead of `COW_COPY`, storing the XOR delta between old and new data for
-better compression.
+instead of `COW_COPY`. The entries store the XOR delta between old and new data
+for better compression.
 
 ---
 
@@ -7841,25 +7872,26 @@ sequenceDiagram
 ## 55.26 Android 17 OTA Changes
 
 Android 17 does not add a fourth update scheme. Instead it refines Virtual A/B
-along three axes: a new userspace-block-device backend (UBLK) for serving
-snapshots, zstd compression for `REPLACE` operations, and a set of removals and
-memory optimizations on both the generation and application sides. This section
+along three axes. The first is a new userspace-block-device backend (UBLK) to
+serve snapshots. The second is zstd compression for `REPLACE` operations. The
+third is a set of removals and memory optimizations on both the generation and
+application sides. This section
 collects those changes and ties them back to the mechanisms described earlier in
 the chapter.
 
 ### 55.26.1 The UBLK Snapshot Backend
 
-Through Android 16, `snapuserd` served snapshot block devices exclusively
-through the kernel `dm-user` device: the kernel forwarded each I/O request up to
-userspace over a `dm-user` character device, and `snapuserd` replied with merged
+Through Android 16, `snapuserd` served snapshot block devices only through the
+kernel `dm-user` device. The kernel forwarded each I/O request up to userspace
+over a `dm-user` character device, and `snapuserd` replied with merged
 base-plus-COW data. Android 17 introduces a second backend built on **UBLK**
-(userspace block driver), where `snapuserd` registers a `/dev/ublkb*` block
-device and services requests through the in-kernel `ublk` driver via the
+(userspace block driver). With it, `snapuserd` registers a `/dev/ublkb*` block
+device. It services requests through the in-kernel `ublk` driver via the
 `libublksrv` host library (`external/ublksrv`).
 
-Both backends sit behind the same `IBlockServer` abstraction, so the merge
-logic, COW reader, and worker threads are unchanged; only the transport between
-kernel and daemon differs.
+Both backends sit behind the same `IBlockServer` abstraction. The merge logic,
+COW reader, and worker threads are therefore unchanged. Only the transport
+between kernel and daemon differs.
 
 ```
 Source: system/fs/fs_mgr/libsnapshot/snapuserd/include/snapuserd/block_server.h
@@ -7904,12 +7936,12 @@ bool IsUblkEnabled() {
 
 `KernelSupportsUblk()` parses `uname()` and returns true only for kernel 6.6 or
 newer. The aconfig flag (`com::android::libsnapshot::vabc_with_ublk_support`) is
-the rollout gate; the build flag `RELEASE_VABC_UBLK_ENABLE_FLAG` drives it and
+the rollout gate. The build flag `RELEASE_VABC_UBLK_ENABLE_FLAG` drives it. It
 was advanced to true in trunk staging during the 17 cycle.
 
 The chosen mode is persisted as a hint file at `/metadata/ota/snapuserd_mode`
-(`kSnapuserdModeHintFile`) so that the daemon makes a consistent choice across
-the boot stages, and first-stage init starts the daemon in the right mode:
+(`kSnapuserdModeHintFile`). This lets the daemon make a consistent choice across
+the boot stages. First-stage init then starts the daemon in the right mode:
 
 ```
 Source: system/core/init/snapuserd_transition.cpp (LaunchFirstStageSnapuserd)
@@ -7951,7 +7983,7 @@ message DynamicPartitionMetadata {
 ```
 
 `ota_from_target_files` exposes a corresponding option to set this from the
-manifest, and it also disables UBLK automatically when the target build does not
+manifest. It also disables UBLK automatically when the target build does not
 declare UBLK support. This gives OEMs an escape hatch if a particular kernel or
 device exhibits a UBLK regression, without rebuilding the device configuration.
 
@@ -7970,7 +8002,7 @@ Source: system/update_engine/payload_consumer/zstd_extent_writer.cc
 ```
 
 On the application side, `REPLACE_ZSTD` dispatches through the same
-`PerformReplaceOperation` path as the other `REPLACE` variants (section 55.4.2);
+`PerformReplaceOperation` path as the other `REPLACE` variants (section 55.4.2).
 `InstallOperationExecutor` simply stacks a `ZstdExtentWriter` on top of the
 target writer. On the generation side, `--enable_replace_zstd` (section 55.7.1)
 tells `delta_generator` to emit `REPLACE_ZSTD` rather than `REPLACE`. Note this
@@ -7994,13 +8026,13 @@ Android 17 trims the OTA stack and reduces its peak memory footprint:
 - **Lower peak RAM during application.** `update_engine` no longer keeps the raw
   manifest bytes resident after parsing and frees per-partition manifest memory
   once a partition is finished. Large diff patches are now written to a
-  temporary file and applied via a file descriptor instead of being buffered
-  entirely in memory, which matters for the multi-gigabyte partitions on modern
-  devices.
+  temporary file. They are applied via a file descriptor instead of being
+  buffered entirely in memory. This matters for the multi-gigabyte partitions on
+  modern devices.
 
 - **Merge-stats interface simplified.** The standalone `ISnapshotMergeStats` /
-  `snapshot_stats.h` accumulator was removed; merge metrics are read back from
-  the persisted `SnapshotMergeReport` (section 55.13.2), which gained the
+  `snapshot_stats.h` accumulator was removed. Merge metrics are read back from
+  the persisted `SnapshotMergeReport` (section 55.13.2). The report gained the
   `ublk_used` field to record which backend served the merge.
 
 ```
@@ -8012,35 +8044,39 @@ Source: build/make/tools/releasetools/ota_from_target_files.py
 These changes are invisible to OTA clients: the `UpdateEngine` Java API, the
 payload format header, and the action pipeline are unchanged. A device that
 takes a 17 OTA may simply find its snapshots served over UBLK and its `REPLACE`
-data carried as zstd, with no change to how an update is requested or monitored.
+data carried as zstd. Nothing changes in how an update is requested or
+monitored.
 
 ---
 
 ## 55.27 Dynamic System Updates (DSU) and gsid
 
-Every mechanism described so far rewrites the *installed* system: an A/B OTA
-flips slots, a Virtual A/B OTA writes COW snapshots over the real partitions.
+Every mechanism described so far rewrites the *installed* system. An A/B OTA
+flips slots. A Virtual A/B OTA writes COW snapshots over the real partitions.
 **Dynamic System Updates (DSU)** is the opposite trade. It boots a downloaded
-Generic System Image (GSI) *without touching the installed system at all*. The
-real `system`/`product` partitions stay exactly as they were; the GSI and a
-fresh empty `userdata` live in image files on `/data`, are exposed as
+Generic System Image (GSI) *without touching the installed system at all*.
+
+The real `system`/`product` partitions stay exactly as they were. The GSI and a
+fresh empty `userdata` live in image files on `/data`. They are exposed as
 device-mapper block devices, and the device boots into them for one or more
-boots. Disable or wipe the DSU and the next reboot returns to the original,
-untouched OS. This makes DSU the tool of choice for trying a new platform build,
-running CTS against a GSI, or letting an app developer validate against a clean
-image, all without flashing and all reversible.
+boots.
+
+Disable or wipe the DSU and the next reboot returns to the original,
+untouched OS. This makes DSU the tool of choice to try a new platform build or
+to run CTS against a GSI. It also lets an app developer validate against a clean
+image. All of this happens without flashing, and all of it is reversible.
 
 DSU reuses the same dynamic-partition and image-mapping machinery this chapter
 already covered for Virtual A/B (`libfiemap`'s `ImageManager`, `liblp` metadata,
 device-mapper). The piece unique to DSU is a small system daemon, **`gsid`**
-(in `system/gsid/`), that stages the image into those
+(in `system/gsid/`). It stages the image into those
 dynamic image files and arms the one-shot boot.
 
 ### 55.27.1 The gsid daemon and IGsiService
 
 `gsid` runs as the `gsiservice` AIDL service. Its `.rc` file declares it
 `oneshot` and `disabled`, so it is started on demand (by binder) rather than at
-every boot, running as root with the `system`/`media_rw` groups:
+every boot. It runs as root with the `system`/`media_rw` groups:
 
 ```
 Source: system/gsid/gsid.rc
@@ -8068,8 +8104,8 @@ Source: system/gsid/aidl/android/gsi/IGsiService.aidl
         system/gsid/gsi_service.cpp (EnableGsi, SetBootMode, RunStartupTasks)
 ```
 
-The framework-facing entry point is `android.os.image.DynamicSystemManager`, and
-the command-line entry point is `gsi_tool` (`system/gsid/gsi_tool.cpp`), whose
+The framework-facing entry point is `android.os.image.DynamicSystemManager`. The
+command-line entry point is `gsi_tool` (`system/gsid/gsi_tool.cpp`). Its
 subcommands (`install`, `enable`, `disable`, `wipe`, `wipe-data`, `status`,
 `cancel`) are thin wrappers over the same binder calls.
 
@@ -8090,8 +8126,8 @@ Behind `createPartition`, `gsid` uses a `PartitionInstaller`
 The image data lives under `/data/gsi/dsu/` (default folder
 `kDefaultDsuImageFolder = "/data/gsi/dsu/"`) while the `liblp` partition metadata
 and DSU bookkeeping live under `/metadata/gsi/dsu/` (`DSU_METADATA_PREFIX`). When
-the DSU later boots, these images are mapped as device-mapper block devices,
-which is exactly the dynamic-partition path Virtual A/B uses, so the kernel sees
+the DSU later boots, these images are mapped as device-mapper block devices.
+This is exactly the dynamic-partition path Virtual A/B uses. So the kernel sees
 ordinary block devices for `system` and `userdata`.
 
 ```
@@ -8119,12 +8155,13 @@ Source: system/gsid/gsi_service.cpp (EnableGsi line 1017, SetBootMode line 558,
 ```
 
 The one-shot semantics live in `libgsi.cpp::CanBootIntoGsi`, called early in
-boot. It allows at most `kMaxBootAttempts` (1) tries; if the one-shot marker is
-present it pre-writes `disabled` into the status file so that *this* boot enters
-the GSI but the *next* reboot falls back to the installed system automatically.
+boot. It allows at most `kMaxBootAttempts` (1) tries. If the one-shot marker is
+present, it pre-writes `disabled` into the status file. It does this so that *this* boot enters
+the GSI, but the *next* reboot falls back to the installed system automatically.
+
 `gsid run-startup-tasks` (the `exec_background` line in `gsid.rc`, running
-`RunStartupTasks`) then marks a successful GSI boot as `ok`, or honors a pending
-`wipe` request by reclaiming the images. The fallback is deliberately
+`RunStartupTasks`) then marks a successful GSI boot as `ok`. It also honors a
+pending `wipe` request by reclaiming the images. The fallback is deliberately
 fail-safe: a GSI that fails to boot once is abandoned, so a bad image can never
 brick the device.
 
@@ -8162,18 +8199,19 @@ DSU is wired into two subsystems covered in other chapters:
   DSU image. This is the GUI front end to the same `IGsiService` calls
   `gsi_tool` makes.
 - **First-stage mount (Chapter 4).** During early boot,
-  `FirstStageMountAndroid` (`system/core/init/first_stage_mount_android.cpp`) is
-  the code that consults `libgsi` (`CanBootIntoGsi`, `GetActiveDsu`, `MarkSystemAsGsi`) and maps the
-  DSU image files as the `system`/`userdata` device-mapper devices, then exports
-  the `ro.gsid.image_running` / DSU-slot properties (`04-boot-and-init.md`). DSU
+  `FirstStageMountAndroid` (`system/core/init/first_stage_mount_android.cpp`)
+  consults `libgsi` (`CanBootIntoGsi`, `GetActiveDsu`, `MarkSystemAsGsi`). It
+  maps the DSU image files as the `system`/`userdata` device-mapper devices. It
+  then exports the `ro.gsid.image_running` / DSU-slot properties
+  (`04-boot-and-init.md`). DSU
   reuses the same first-stage logical-partition mount path that ordinary dynamic
   partitions and Virtual A/B rely on.
 
-In short, `gsid` is a focused staging-and-arming daemon: it borrows OTA's
+In short, `gsid` is a focused staging-and-arming daemon. It borrows OTA's
 dynamic-partition and image-mapping infrastructure to place a downloaded system
-image into `/data`, writes a few small marker files under `/metadata/gsi/dsu`,
-and lets first-stage init boot it for a controlled, reversible trial of a whole
-new system image.
+image into `/data`. It writes a few small marker files under
+`/metadata/gsi/dsu`. Then it lets first-stage init boot the image for a
+controlled, reversible trial of a whole new system image.
 
 ---
 
@@ -8427,8 +8465,8 @@ mindmap
 The OTA subsystem is one of Android's most critical yet least visible pieces of
 infrastructure. A well-functioning OTA pipeline means devices stay secure and
 up-to-date without user intervention. The evolution from non-A/B through A/B to
-Virtual A/B reflects a persistent engineering drive toward reliability (no
-bricks), user experience (no downtime), and storage efficiency (no wasted
+Virtual A/B reflects a persistent engineering drive. The goals are reliability
+(no bricks), user experience (no downtime), and storage efficiency (no wasted
 space).
 
 The key source paths for further exploration:
@@ -8457,9 +8495,9 @@ Android Virtualization Framework (AVF) brings hardware-backed virtual machines t
 devices, enabling confidential computing workloads that are isolated even from the host
 operating system. Built on pKVM (protected KVM), crosvm, and Microdroid, AVF creates a
 complete ecosystem for running trusted code within protected virtual machines (pVMs).
-This chapter examines every layer of the stack -- from the EL2 hypervisor through the
-VM firmware, the Rust-based virtual machine monitor, the lightweight guest OS, and the
-userspace service architecture that ties it all together.
+This chapter examines every layer of the stack. The layers are the EL2 hypervisor, the
+VM firmware, the Rust-based virtual machine monitor, and the lightweight guest OS.
+The last layer is the userspace service architecture that ties them all together.
 
 ---
 
@@ -8544,11 +8582,11 @@ independently of the main Android platform. The APEX contains:
 - The `crosvm` binary
 - Java and native client libraries
 
-Two closely related components live outside this APEX: the `composd`
+Two closely related components live outside this APEX. The `composd`
 compilation orchestration daemon ships in the separate `com.android.compos`
-APEX, and `pvmfw.bin` is a standalone firmware image (installed at
-`system/etc/pvmfw.bin` in the product output) that the bootloader loads
-rather than anything unpacked from the APEX.
+APEX. `pvmfw.bin` is a standalone firmware image (installed at
+`system/etc/pvmfw.bin` in the product output). The bootloader loads it.
+It is not unpacked from the APEX.
 
 To install the APEX from source:
 
@@ -8648,10 +8686,10 @@ As described in `packages/modules/Virtualization/docs/pvm_dice_chain.md`:
 > involved in the VM's loading and boot process.
 
 Vendors construct the chain from ROM to ABL, then hand it off to pvmfw. The
-handover format is CBOR-encoded. Illustrative CDDL for the three fields (the
-labels below are descriptive, not source identifiers; the Rust side parses this
-as `BccHandover` and walks it via `DiceChainInfo` / `DiceChainEntry` in
-`packages/modules/Virtualization/guest/pvmfw/src/dice/chain.rs`):
+handover format is CBOR-encoded. Illustrative CDDL for the three fields follows.
+The labels below are descriptive, not source identifiers. The Rust side parses
+this as `BccHandover` and walks it via `DiceChainInfo` / `DiceChainEntry` in
+`packages/modules/Virtualization/guest/pvmfw/src/dice/chain.rs`:
 
 ```
 DiceHandover = {
@@ -8748,8 +8786,8 @@ packages/modules/Virtualization/
 pKVM (protected KVM) is a lightweight hypervisor that runs at ARM Exception Level 2
 (EL2). It extends the standard Linux KVM to provide memory isolation guarantees that
 hold even if the host kernel is compromised. Unlike traditional hypervisors, pKVM is
-designed to have a minimal trusted computing base (TCB) -- it does not manage devices
-or schedule VMs; instead, it focuses exclusively on memory access control.
+designed to have a minimal trusted computing base (TCB). It does not manage devices
+or schedule VMs. Instead, it focuses exclusively on memory access control.
 
 ```mermaid
 graph TB
@@ -9087,7 +9125,7 @@ Each device has its own seccomp policy file that whitelists only the syscalls it
 needs. The policy files include a common base (`common_device.policy`) and add
 device-specific syscalls.
 
-The sandboxing provides defense in depth: even if a malicious guest compromises a
+The sandboxing provides defense in depth. Even if a malicious guest compromises a
 virtual device process, the attacker is confined to a minimal syscall set within
 an isolated namespace.
 
@@ -9518,7 +9556,7 @@ Microdroid requires:
 3. **KVM support** -- `/dev/kvm` must exist.
 4. **For protected VMs** -- pKVM hypervisor must be active.
 
-The APEX can be added to a product by including in the product makefile:
+To add the APEX to a product, include it in the product makefile:
 
 ```makefile
 $(call inherit-product, packages/modules/Virtualization/build/apex/product_packages.mk)
@@ -9542,8 +9580,9 @@ on property:microdroid_manager.encrypted_store.status=mounted
     setprop microdroid_manager.encrypted_store.status ready
 ```
 
-The encryption keys are derived from the VM's DICE chain, ensuring that only the
-same VM instance (with the same code and configuration) can decrypt the data.
+The encryption keys are derived from the VM's DICE chain. This makes sure that
+only the same VM instance (with the same code and configuration) can decrypt the
+data.
 
 ---
 
@@ -9596,7 +9635,7 @@ mod memory;
 mod rollback;
 ```
 
-The `no_std` constraint means pvmfw operates without a standard library -- it has
+The `no_std` constraint means pvmfw operates without a standard library. It has
 no heap allocator by default (it uses a configured one), no filesystem, and no
 operating system services. This minimizes the trusted computing base.
 
@@ -9676,10 +9715,10 @@ fn main<'a>(
 }
 ```
 
-The individual configuration blobs -- the current DICE handover, debug policy,
-VM DTBO, VM reference DT, and reserved memory -- are no longer separate
-parameters; they are reached through the `config: &mut Entries` argument, the
-parsed set of pvmfw configuration-data entries (see section 56.9).
+The individual configuration blobs are no longer separate parameters. These
+blobs are the current DICE handover, debug policy, VM DTBO, VM reference DT, and
+reserved memory. They are reached through the `config: &mut Entries` argument,
+the parsed set of pvmfw configuration-data entries (see section 56.9).
 
 ### 56.5.5 Verified Boot
 
@@ -9694,8 +9733,8 @@ const PUBLIC_KEY: &[u8] = include_bytes!(
 ```
 
 The embedded `PUBLIC_KEY` is only the first entry in the slice of trusted
-keys: `main()` extends it with any additional keys carried in the
-`TrustedKeys` configuration entry before verification.
+keys. Before verification, `main()` extends the slice with any additional keys
+carried in the `TrustedKeys` configuration entry.
 
 The verified boot process:
 
@@ -10309,8 +10348,8 @@ graph LR
     COMPOS --> DEX2OAT
 ```
 
-composd uses the VM to run dex2oat compilation in a trusted environment, ensuring
-that the compiled artifacts have not been tampered with. The output is signed with
+composd uses the VM to run dex2oat compilation in a trusted environment. This
+makes sure that the compiled artifacts have not been tampered with. The output is signed with
 a key derived from the VM's DICE chain.
 
 ### 56.6.10 Shutdown Protocol
@@ -10435,7 +10474,7 @@ use virtualmachineservice::IVirtualMachineService::VM_TOMBSTONES_SERVICE_PORT;
 ```
 
 When a VM crashes, the tombstoned client in the guest sends the crash dump to
-the host, where it is stored using the standard Android tombstone infrastructure.
+the host. There it is stored using the standard Android tombstone infrastructure.
 
 ---
 
@@ -10848,7 +10887,7 @@ pub fn entry_count(&self) -> Result<usize> {
 ```
 
 This means a config with an unknown 1.x minor version is parsed as the latest
-known version (currently 1.4), with any new entries beyond the known set
+known version (currently 1.4). Any new entries beyond the known set are
 silently ignored. Major version changes (2.x) would be rejected.
 
 ### 56.9.4 Error Handling
@@ -10968,7 +11007,7 @@ untrusted. pvmfw must therefore:
   guest kernel
 
 This is why pvmfw starts from a template FDT rather than modifying the VMM-provided
-one in place -- it ensures the guest receives a device tree that only contains
+one in place. This makes sure the guest receives a device tree that only contains
 known-safe contents.
 
 ---
@@ -11051,7 +11090,7 @@ pub fn main(argv: &[usize]) {
 ```
 
 The `main!` macro expects a function taking `argv: &[usize]`; vmbase's own
-entry code initialises the logger before `main` runs, so the application only
+entry code initializes the logger before `main` runs. So the application only
 adjusts the log level with `log::set_max_level()`.
 
 The build system uses a combination of `rust_ffi_static` and `cc_binary` rules
@@ -11119,10 +11158,10 @@ fn map_data_slice<'a>(addr: usize, size: usize)
 }
 ```
 
-This separation ensures that the kernel image and the ramdisk are mapped
-read-only via `map_data_slice()` (backed by `map_rodata`), while only the
-regions pvmfw must modify -- the FDT, and on x86_64 the boot params and setup
-data -- are mapped read-write via `map_data_slice_mut()`.
+This separation makes sure that the kernel image and the ramdisk are mapped
+read-only via `map_data_slice()` (backed by `map_rodata`). Only the regions
+pvmfw must modify are mapped read-write via `map_data_slice_mut()`. These
+regions are the FDT, and on x86_64 the boot params and setup data.
 
 ---
 
@@ -11762,8 +11801,8 @@ Feature flags on the virtio-gpu device:
 | `RESOURCE_UUID` | UUID-based buffer identification |
 
 The cross-domain capability enables direct sharing of AHardwareBuffers between
-the Android host and the Linux guest, allowing the guest's display output to
-appear in Android's SurfaceFlinger composition without extra copies.
+the Android host and the Linux guest. The guest's display output then appears
+in Android's SurfaceFlinger composition without extra copies.
 
 ### 56.15.9 Use Cases
 
@@ -11784,15 +11823,16 @@ graph LR
 
 #### Development Environment
 
-Running native Linux development tools on Android hardware without dual-boot
-or external machines — compilers, IDEs, container runtimes, and databases run
-in the isolated VM with near-native performance via gfxstream GPU acceleration.
+Native Linux development tools run on Android hardware without
+dual-boot or external machines. Compilers, IDEs, container runtimes, and
+databases run in the isolated VM with near-native performance via gfxstream GPU
+acceleration.
 
 #### Secure Isolation
 
 The Linux VM runs under pKVM's Stage-2 page table protection (see section
-56.2), ensuring that a compromised guest cannot access Android's memory or
-vice versa. This provides stronger isolation than containers.
+56.2). This makes sure that a compromised guest cannot access Android's memory
+or vice versa. This provides stronger isolation than containers.
 
 ---
 
@@ -11957,15 +11997,17 @@ write /proc/sys/vm/watermark_scale_factor 600
 
 A full Debian desktop (Section 56.15) is memory- and disk-hungry, and it runs on a phone
 that also has to keep Android responsive. The technique that lets the two share a fixed
-budget is **ballooning** -- and it is worth being clear that this is a *standard
-virtualization concept*, not a new Android subsystem. A virtio **balloon** is a driver
-inside the guest that the host can *inflate* (the guest allocates pages and hands them back
-to the host, shrinking what the guest can use) or *deflate* (the host returns memory to the
-guest). crosvm implements the device in `devices/src/virtio/balloon.rs`; **storage
+budget is **ballooning**. It is a *standard virtualization concept*, not a new
+Android subsystem. A virtio **balloon** is a driver inside the guest. The host
+can *inflate* it: the guest allocates pages and hands them back to the host,
+and this shrinks what the guest can use. The host can also *deflate* it: the
+host returns memory to the guest.
+
+crosvm implements the device in `devices/src/virtio/balloon.rs`; **storage
 ballooning** is the same idea applied to the sparse disk image. Neither is novel to Android.
 
-What Android contributes is the *policy* that drives the balloon from the app lifecycle, so
-the Linux VM gives resources back the moment it is not in use:
+What Android contributes is the *policy* that drives the balloon from the app lifecycle.
+As a result, the Linux VM gives resources back the moment it is not in use:
 
 - **`MemBalloonController`** (`android/TerminalApp/.../MemBalloonController.kt`) is a lifecycle
   observer on the Terminal app. On `onResume` it deflates the balloon to 0 -- "give maximum
@@ -11976,10 +12018,11 @@ the Linux VM gives resources back the moment it is not in use:
 - **`StorageBalloonWorker`** does the analogous job for disk, gated by the
   `terminal_storage_balloon` flag ("Flag for storage ballooning support in terminal"); the
   VM config also carries `auto_memory_balloon`.
-- **`IGuestAgent.trimAsync()`** -- a method on the `IGuestAgent` interface (Section 56.30; the
-  interface moved to the `virtualizationcommon` package in 17 but `trimAsync` itself predates it)
-  -- lets the host additionally ask the guest to *trim* its own memory
-  (drop caches, reclaim) under Android memory pressure, on top of the coarse balloon.
+- **`IGuestAgent.trimAsync()`** is a method on the `IGuestAgent` interface (Section 56.30). The
+  interface moved to the `virtualizationcommon` package in 17, but `trimAsync` itself predates it.
+  The method lets the host additionally ask the guest to *trim* its own memory
+  (drop caches, reclaim) under Android memory pressure. This works on top of the
+  coarse balloon.
 
 ```mermaid
 graph TD
@@ -11994,9 +12037,9 @@ graph TD
     style HOST fill:#2196F3,color:#fff
 ```
 
-Together with huge pages (56.17.2) and the I/O tuning above, ballooning is what makes a
-heavyweight guest OS a cooperative citizen rather than a memory hog -- the performance side
-of the pKVM-hosted OS-convergence story.
+Together with huge pages (56.17.2) and the I/O tuning above, ballooning makes a
+heavyweight guest OS a cooperative citizen. It does not become a memory hog. This is the
+performance side of the pKVM-hosted OS-convergence story.
 
 ---
 
@@ -12213,8 +12256,8 @@ pass the Secretkeeper public key to VMs:
 > - Passing the vendor hashtree digest to run Microdroid with verified vendor image.
 
 The bootloader adds the Secretkeeper public key to the host device tree under
-`/avf/reference/`, and pvmfw validates that if the same property appears in the
-VM's device tree, its value matches the reference.
+`/avf/reference/`. If the same property appears in the VM's device tree, pvmfw
+validates that its value matches the reference.
 
 ---
 
@@ -12676,18 +12719,17 @@ The pvmfw README acknowledges this forward compatibility:
 ## 56.27 AVF Multitenancy
 
 Through Android 16, a Microdroid VM hosted a single payload owned by a single
-app. Android 17 (the 26Q2 release) adds multitenancy, letting several mutually
-distrusting payloads share one VM while remaining isolated from each other. This
-matters when a confidential workload wants to compose code from multiple owners
-(for example, an APK payload plus a platform APEX) without paying the per-VM
-boot, memory, and attestation cost of running each in its own VM.
+app. Android 17 (the 26Q2 release) adds multitenancy. Several mutually
+distrusting payloads can share one VM and stay isolated from each other. This
+matters when a confidential workload wants to compose code from multiple owners (for
+example, an APK payload plus a platform APEX). Each owner then does not need its
+own VM, so the workload avoids the per-VM boot, memory, and attestation cost.
 
 ### 56.27.1 The Signed TenancyConfig
 
 The trust model is a *signed declaration of trusted cohabitation by the VM
 owner*. The VM owner authors a `TenancyConfig` that names every tenant allowed
-into the VM, and any payload not described there is rejected by the pVM
-instance. From `packages/modules/Virtualization/docs/multitenancy.md`:
+into the VM. The pVM instance rejects any payload not described there. From `packages/modules/Virtualization/docs/multitenancy.md`:
 
 > We introduce TenancyConfig, which is a signed declaration of trusted
 > cohabitation by the VM owner. This essentially is a description of each of the
@@ -12696,10 +12738,10 @@ instance. From `packages/modules/Virtualization/docs/multitenancy.md`:
 > use case owner & is reflected in the pVM certificates (DICE chains).
 
 Concretely the `TenancyConfig` is the payload config JSON file embedded in the
-APK, typically set with `VirtualMachineConfig#setPayloadConfigPath`. Because the
-config is part of the signed payload, it is measured into the DICE chain
-(Section 56.1.6), so the set of admitted tenants becomes part of the VM's
-verifiable identity rather than something the untrusted host can tamper with.
+APK, typically set with `VirtualMachineConfig#setPayloadConfigPath`. The
+config is part of the signed payload, so it is measured into the DICE chain
+(Section 56.1.6). The set of admitted tenants therefore becomes part of the VM's
+verifiable identity. The untrusted host cannot tamper with it.
 
 ### 56.27.2 Tenant Configuration Schema
 
@@ -12744,8 +12786,8 @@ pub struct ExpectedAuthority {
 ```
 
 At runtime `ExpectedAuthority::resolve_authority()` (lines 182-198) reads the
-`ro.build.tags` system property and selects the matching authority string,
-falling back to the `release-keys` value when the tag is absent. The authority
+`ro.build.tags` system property and selects the matching authority string.
+It falls back to the `release-keys` value when the tag is absent. The authority
 is the hex-encoded SHA-512 hash of the signing certificate (for an APK tenant)
 or of the signing public key (for an APEX tenant).
 
@@ -12786,28 +12828,30 @@ four invariants, documented at the top of the file:
 
 Because `expected_authority` is now mandatory in the schema (a deserialization
 test enforces this), a tenant cannot be admitted without pinning its signer.
-The comment at lines 217-218 explains why: Microdroid does not persist authority
-data in the replay-protected instance spec, so the authority must travel with
+The comment at lines 217-218 explains why. Microdroid does not persist authority
+data in the replay-protected instance spec. So the authority must travel with
 the signed config on every boot.
 
 A concrete Android 17 consumer of this multitenant pVM model is **AiSeal**, the
 platform's sealed environment for on-device AI host payloads. Its in-VM native
-host service lives at `frameworks/native/services/aisealhostservice/`, which
-loads a `VmPayloadConfig` plus an `AiSealPayloadConfig` of tenants whose
-`exported_services` are reached from the host over vsock
-(`aisealhostservice/src/config.rs`, `aisealhostservice/src/main.rs`). The VM is
-protected by default but gated by the `service.aiseal.protected_vm` property
-(`AISEAL_PROTECTED_VM_FLAG` in `config.rs`, default `true`), which can select a
-non-protected VM where a protected VM is unavailable (such as on Cuttlefish,
-Section 56.1.5). The AiSeal framework and API surface,
+host service lives at `frameworks/native/services/aisealhostservice/`. The
+service loads a `VmPayloadConfig` plus an `AiSealPayloadConfig` of tenants. The
+host reaches the `exported_services` of these tenants over vsock
+(`aisealhostservice/src/config.rs`, `aisealhostservice/src/main.rs`).
+
+The VM is
+protected by default. This is gated by the `service.aiseal.protected_vm` property
+(`AISEAL_PROTECTED_VM_FLAG` in `config.rs`, default `true`). The
+property can select a non-protected VM where a protected VM is unavailable (such
+as on Cuttlefish, Section 56.1.5). The AiSeal framework and API surface,
 along with its per-user key handling, are covered in Chapter 51.
 
 ## 56.28 Trusty as a Protected VM
 
 Android 17 lets Trusty, the reference Trusted Execution Environment OS, run as a
 pVM rather than only in TrustZone's secure world. A "Trusty pVM" is a protected
-VM managed by AVF that runs the Trusty kernel plus its built-in Trusted
-Applications, isolated from the host by pKVM exactly like Microdroid. The design
+VM managed by AVF. It runs the Trusty kernel plus its built-in Trusted
+Applications. pKVM isolates it from the host exactly like Microdroid. The design
 is documented in `packages/modules/Virtualization/guest/trusty/docs/trusty_vm.md`.
 
 ### 56.28.1 Why Run a TEE in a pVM
@@ -12828,7 +12872,7 @@ the AVF environment, the Trusty kernel was extended with several capabilities
 
 ### 56.28.2 Building and Signing the Trusty Payload
 
-A Trusty pVM image is a single signed ELF: the Trusty kernel and all its TAs are
+A Trusty pVM image is a single signed ELF. The Trusty kernel and all its TAs are
 baked in, because Trusty pVMs do not yet load TAs dynamically (trusty_vm.md,
 lines 228-231). The image is produced by a chain of Soong rules
 (trusty_vm.md, lines 37-121):
@@ -12836,34 +12880,34 @@ lines 228-231). The image is produced by a chain of Soong rules
 1. A `genrule` (for example `trusty_security_vm_arm64.bin`) compiles Trusty into
    a raw binary.
 2. An `avb_add_hash_footer` rule (`trusty_security_vm_signed_bin`) signs it and
-   adds the pvmfw footer. Key arguments: `private_key` (`:avb_testkey_rsa4096`
-   in AOSP, re-signed for production), `partition_name: "boot"` as the AVB
-   domain separator, a fixed public `salt` for reproducible builds,
-   `rollback_index` set from `platform_security_patch_timestamp`, and `props`
-   carrying `com.android.virt.cap` and `com.android.virt.name`.
+   adds the pvmfw footer. Key arguments are `private_key` (`:avb_testkey_rsa4096`
+   in AOSP, re-signed for production) and `partition_name: "boot"` as the AVB
+   domain separator. Other arguments are a fixed public `salt` for reproducible
+   builds, `rollback_index` set from `platform_security_patch_timestamp`, and
+   `props` with `com.android.virt.cap` and `com.android.virt.name`.
 3. A `cc_genrule`/`cc_object`/`cc_binary` chain wraps the signed blob in an ELF
    that crosvm can load, installed via `prebuilt_etc` as `trusty_security_vm.elf`.
 
 The `com.android.virt.name` property is the only AVF-managed value inside the
-signature. As trusty_vm.md notes (lines 96-101), this prevents a malicious host
-from making two Trusty VMs signed by the same key impersonate each other for
-DICE-based authentication.
+signature. As trusty_vm.md notes (lines 96-101), this prevents a malicious
+host from making two Trusty VMs impersonate each other for DICE-based
+authentication. This holds even when the same key signs both VMs.
 
 ### 56.28.3 The Launcher and Its CLI
 
 The pVM is started by the `trusty_security_vm_launcher` binary at
 `packages/modules/Virtualization/guest/trusty/security_vm/launcher`, a Rust
 service usually invoked from an `.rc` file at device boot. Its argument parsing
-lives in `.../launcher/src/main.rs`, and the `VmConfig` it builds plus the
+lives in `.../launcher/src/main.rs`. The `VmConfig` it builds plus the
 `run_vm()` entry point are in `.../launcher/src/lib.rs` (the `vm_launcher`
 crate, struct at line 35, `run_vm` at line 74).
 
 The CLI flags (main.rs, lines 35-83) include `--kernel` (the signed ELF),
 `--protected`, `--name`, `--memory-size-mib`, `--rpc-services-config` (repeatable),
 `--cpu-topology` (`one-cpu` or `match-host`), `--vm-instance-id`, and
-`--allow-ffa`. The FF-A flag is special: when set, the launcher converts it into
-a single TEE service request, the `guest_ffa_tee_service` constant defined at
-main.rs line 33 (lines 138-141):
+`--allow-ffa`. The FF-A flag is special. When set, the launcher converts it into
+a single TEE service request. This request is the `guest_ffa_tee_service`
+constant defined at main.rs line 33 (lines 138-141):
 
 ```rust
 let tee_services = match args.allow_ffa {
@@ -12909,20 +12953,20 @@ one input to the DICE chain, never a security guarantee on its own.
 The launcher acts as an accessor for the AIDL services the pVM implements over
 BinderRPC. Each service is described in a `--rpc-services-config` JSON entry
 with `port`, `accessor_name`, and `internal_rpc_service_name`
-(main.rs `RpcServiceConfig`, lines 178-183), and the matching `IAccessor`
+(main.rs `RpcServiceConfig`, lines 178-183). The matching `IAccessor`
 instances are declared in the `.rc` file so host processes can discover them.
 `register_accessor_service()` (main.rs, lines 192-206) calls
 `createAccessorBinder` and registers the result in the service manager.
 
-Security VMs that must run before `/data` is mounted use early boot: they take a
-fixed CID from the early-VM range and are mapped to their launcher by an
-`early_vms.xml` installed under `/system_ext/etc/avf/`, served by
-`early_virtmgr` (trusty_vm.md, lines 291-310; see also Section 56.6.11).
+Security VMs that must run before `/data` is mounted use early boot. They take a
+fixed CID from the early-VM range. An `early_vms.xml` installed under
+`/system_ext/etc/avf/` maps them to their launcher. `early_virtmgr` serves them
+(trusty_vm.md, lines 291-310; see also Section 56.6.11).
 
 ## 56.29 TEE Service Access for pVMs
 
 The Trusty FF-A channel above is one instance of a more general Android 17
-mechanism: protected VMs declaring, up front, which Trusted Execution
+mechanism. Protected VMs declare, up front, which Trusted Execution
 Environment services they may reach. The host cannot grant a pVM secure-world
 access silently; access is gated by SELinux and, for vendor services, by a HAL.
 
@@ -12931,12 +12975,14 @@ access silently; access is gated by SELinux and, for vendor services, by a HAL.
 TEE services are requested through the VM raw config. The AIDL field is
 `String[] teeServices` in
 `packages/modules/Virtualization/android/virtualizationservice/aidl/android/system/virtualizationservice/VirtualMachineRawConfig.aidl`
-(line 141), mirrored in `VirtualMachineAppConfig.aidl` (line 149). Native
+(line 141), mirrored in `VirtualMachineAppConfig.aidl` (line 149).
+
+Native
 clients populate it through the libavf LLNDK introduced in Android 17,
-`AVirtualMachineRawConfig_addTeeService`, declared at
+`AVirtualMachineRawConfig_addTeeService`. Its declaration is at
 `packages/modules/Virtualization/libs/libavf/include/android/virtualization.h`
-(lines 238-239, `__INTRODUCED_IN(37)`) and implemented in
-`.../libs/libavf/src/lib.rs` (lines 326-339), which validates the UTF-8 string
+(lines 238-239, `__INTRODUCED_IN(37)`). The implementation is in
+`.../libs/libavf/src/lib.rs` (lines 326-339). It validates the UTF-8 string
 and pushes it onto `config.teeServices`. The header documents the constraints:
 
 > TEE services are only supported for protected VMs. Attempting to create a
@@ -12945,7 +12991,7 @@ and pushes it onto `config.teeServices`. The header documents the constraints:
 
 The service name must match a label in one of the `tee_service_contexts`
 SELinux files (for example `/system/etc/selinux/plat_tee_service_contexts` or a
-vendor equivalent), which is what makes a TEE service name a policy-controlled
+vendor equivalent). This makes a TEE service name a policy-controlled
 capability rather than a free-form string.
 
 ### 56.29.2 SELinux Gating and the Vendor HAL Handover
@@ -12956,8 +13002,8 @@ When a VM is created, `virtmgr` enforces the policy. In
 `check_tee_service_permission(&caller_secontext, &config.teeServices)`. That
 function, in `.../virtmgr/src/selinux.rs` (lines 231-242), resolves each service
 name to its SELinux context through `TeeServiceSelinuxBackend` (which wraps
-`selinux_android_tee_service_context_handle`, lines 125-142) and checks the
-caller against it with the `tee_service` class and `use` permission:
+`selinux_android_tee_service_context_handle`, lines 125-142). It then checks the
+caller against that context with the `tee_service` class and `use` permission:
 
 ```rust
 for tee_service in tee_services {
@@ -12968,16 +13014,20 @@ for tee_service in tee_services {
 ```
 
 Built-in services and `vendor.`-prefixed services then diverge. The only
-built-in service is `guest_ffa_tee_service`, which crosvm turns into an
-`--ffa=auto` argument (`.../virtmgr/src/crosvm.rs`, lines 1176-1189) — this is
-the Trusty FF-A path from Section 56.28. Vendor services require the
-`IVmCapabilitiesService` HAL (Section 56.7.1): `virtmgr` separates them out
+built-in service is `guest_ffa_tee_service`. crosvm turns it into an
+`--ffa=auto` argument (`.../virtmgr/src/crosvm.rs`, lines 1176-1189). This is
+the Trusty FF-A path from Section 56.28.
+
+Vendor services require the
+`IVmCapabilitiesService` HAL (Section 56.7.1). `virtmgr` separates them out
 (virtualmachine.rs, lines 714-719) and refuses to start if the HAL is absent
-(lines 721-726). When vendor services are present the VM is started suspended
-(`start_suspended: !vendor_tee_services.is_empty()`, line 817); `virtmgr` then
+(lines 721-726).
+
+When vendor services are present, the VM is started suspended
+(`start_suspended: !vendor_tee_services.is_empty()`, line 817). `virtmgr` then
 calls `grantAccessToVendorTeeServices(vm_pfd, vendor_tee_services)` on the HAL
-(`handle_vendor_tee_services_internal`, lines 1504-1516) and only resumes the VM
-afterward with `resume_full()` (line 1519). This is the concrete plumbing behind
+(`handle_vendor_tee_services_internal`, lines 1504-1516). It resumes the VM only
+afterward, with `resume_full()` (line 1519). This is the concrete plumbing behind
 the capability-grant sequence already shown in Section 56.7.4.
 
 ## 56.30 In-Guest Linux VM Management
@@ -13004,11 +13054,12 @@ session.setup_vsock_client(VMADDR_CID_HOST, port)
 
 It then stands up a `DebianService` RPC server and registers an in-guest
 `GuestAgent` with the host via `service.registerGuestAgent(&guest_agent)`
-(main.rs, lines 53-61). The manager is deliberately not a static executable —
-its `Android.bp` warns that `static_executable: true` would crash the binder
-runtime with `SIGSEGV` — and it pulls in helper crates already used elsewhere in
-AVF (`forwarder_guest_launcher`, `shutdown_runner`, `storage_balloon_agent`) so
-the guest can forward ports, balloon storage, and power off cleanly.
+(main.rs, lines 53-61). The manager is deliberately not a static executable.
+Its `Android.bp` warns that `static_executable: true` would crash the binder
+runtime with `SIGSEGV`. The manager pulls in helper crates already used elsewhere in
+AVF (`forwarder_guest_launcher`, `shutdown_runner`, `storage_balloon_agent`).
+These crates let the guest forward ports, balloon storage, and power off
+cleanly.
 
 ### 56.30.2 The IGuestAgent Interface
 
@@ -13030,7 +13081,7 @@ impl IGuestAgent for GuestAgent {
 line 37); the host surfaces the registered agent through
 `IVirtualMachine.getGuestAgent()` and notifies callbacks via
 `IVirtualMachineCallback.onGuestAgentRegistered(cid, guestAgent)`. The host then
-drives the guest by calling `IGuestAgent` methods such as `shutdownAsync()`,
+drives the guest. It calls `IGuestAgent` methods such as `shutdownAsync()`,
 `trimAsync()`, and the user lifecycle hooks (`userUnlocked`, `userLocked`,
 `userRemoved`) over the same vsock binder channel. Note that
 `linux_vm_manager` builds against the `_non_microdroid` AIDL variants
@@ -13477,15 +13528,15 @@ security-critical components.
 # Chapter 57: Testing Frameworks and Infrastructure
 
 Testing in the Android Open Source Project is not an afterthought bolted onto the
-platform; it is a first-class citizen woven into every layer of the build system,
+platform.  It is a first-class citizen woven into every layer of the build system,
 the continuous integration pipeline, and the compliance certification process.
 Android ships on billions of devices made by hundreds of OEMs, which makes
 correctness verification at scale a survival requirement rather than a luxury.
 
 This chapter provides a comprehensive tour of every major testing subsystem in
-AOSP: from the philosophy that guides where tests live and how they run, through
-the build system module types that compile them, to the harness that executes
-them on hosts and devices.  Every section references real source files in the
+AOSP.  It starts with the philosophy that guides where tests live and how they
+run.  Then it covers the build system module types that compile the tests.  It
+ends with the harness that executes them on hosts and devices.  Every section references real source files in the
 tree so you can follow along in your own checkout.
 
 ---
@@ -13494,8 +13545,8 @@ tree so you can follow along in your own checkout.
 
 ### 57.1.1  The Android Test Pyramid
 
-Android's testing strategy borrows the classic test pyramid concept and extends
-it to account for the unique challenge of a platform that spans kernel, native
+Android's testing strategy borrows the classic test pyramid concept.  It extends
+the concept to account for the unique challenge of a platform that spans kernel, native
 libraries, a managed-runtime framework, and user-space applications.
 
 ```
@@ -13522,7 +13573,7 @@ represents execution cost.  Android tooling actively pushes tests downward:
 ### 57.1.2  The Major Test Suites
 
 Android defines several compliance and validation suites.  Each suite is a
-TradeFederation *plan* that selects a set of test modules, and each module
+TradeFederation *plan* that selects a set of test modules.  Each module
 declares its suite membership via the `test_suites` property in its build rule.
 
 | Suite | Full Name | Purpose | Runner |
@@ -13805,7 +13856,7 @@ public class InstrumentationTest
 ```
 
 Note that the runner is auto-detected from the installed test package when the
-`runner` option is left unset, rather than defaulting to a fixed class name.
+`runner` option is left unset.  It is not defaulted to a fixed class name.
 
 ### 57.2.4  Sharding
 
@@ -13888,10 +13939,11 @@ examines the outcome of each test run module and decides whether to retry.
 
 TradeFed splits its sources into two roots. The core runner contract
 `IRemoteTest` is an interface under the `invocation_interfaces` root
-(`tools/tradefederation/core/invocation_interfaces/com/android/tradefed/testtype/`),
-and `IDeviceTest` lives under the main `src/` root
-(`tools/tradefederation/core/src/com/android/tradefed/testtype/`, where
-TradeFed-internal runners such as `FakeTest` and `TfTestLauncher` also live).
+(`tools/tradefederation/core/invocation_interfaces/com/android/tradefed/testtype/`).
+`IDeviceTest` lives under the main `src/` root
+(`tools/tradefederation/core/src/com/android/tradefed/testtype/`).
+TradeFed-internal runners such as `FakeTest` and `TfTestLauncher` also live
+under that root.
 Most concrete test-runner implementations live in the separate `test_framework`
 source root at
 `tools/tradefederation/core/test_framework/com/android/tradefed/testtype/`:
@@ -13919,9 +13971,9 @@ public interface IRemoteTest {
 ### 57.2.7  Target Preparers
 
 Target preparers set up the device before tests run.  Like the runners in
-57.2.6, preparers are split across two source roots: `DeviceSetup`,
+57.2.6, preparers are split across two source roots.  `DeviceSetup`,
 `DeviceFlashPreparer`, and `TestAppInstallSetup` live under
-`tools/tradefederation/core/src/com/android/tradefed/targetprep/`, while
+`tools/tradefederation/core/src/com/android/tradefed/targetprep/`.
 `RootTargetPreparer`, `StopServicesSetup`, and `PushFilePreparer` live under
 `tools/tradefederation/core/test_framework/com/android/tradefed/targetprep/`.
 Key preparers:
@@ -14486,14 +14538,14 @@ The default path above produces an internal `_TestExecutionPlan`
 tests will execute." `_TestExecutionPlan.create()` picks one of two concrete
 plans: `_TestMappingExecutionPlan` for TEST_MAPPING runs and
 `_TestModuleExecutionPlan` for explicit module/class references. Each plan
-exposes `required_build_targets()`, `requires_device_update()`, and `execute()`,
-so the main loop can decide what to build, whether a device flash is needed, and
-how to run -- all without the runner code caring how the tests were selected.
+exposes `required_build_targets()`, `requires_device_update()`, and `execute()`.
+The main loop can use them to decide what to build, whether a device flash is needed, and
+how to run. The runner code does not need to know how the tests were selected.
 
 Android 17 layers a declarative selection model on top of this called **ACME**.
-Instead of naming modules, a developer (or a CI trigger) names *test triggers*
-and *execution plans* defined in protobuf (`test_configs_proto`, imported as
-`test_configs_pb2`), and atest resolves those into the modules to run. The
+A developer (or a CI trigger) does not name modules. The developer names *test
+triggers* and *execution plans* defined in protobuf (`test_configs_proto`,
+imported as `test_configs_pb2`). Then atest resolves those into the modules to run. The
 entry points are registered in `tools/asuite/atest/arg_parser.py` and handled by
 modules under `tools/asuite/atest/acme/`:
 
@@ -14508,8 +14560,8 @@ modules under `tools/asuite/atest/acme/`:
 `get_execution_plans_for_test_triggers()` maps trigger names to the workflows
 and execution plans they reference. The affected-triggers mode reuses the
 `TEST_MAPPING`/`test_mapping` machinery to compute which triggers a diff
-touches, giving developers a way to reproduce locally exactly what presubmit
-will run for their change without hand-listing modules.
+touches. Developers can use it to reproduce locally exactly what presubmit
+will run for their change, without a hand-written list of modules.
 
 On the harness side, 17 adds a matching TradeFed suite runner.
 `ExecutionPlanSuiteRunner`
@@ -14525,9 +14577,9 @@ gated behind a rollout flag (next section) while the feature stabilizes.
 Because atest ships to thousands of developers continuously, risky behavior
 changes are introduced behind a percentage rollout rather than a hard switch.
 `tools/asuite/atest/rollout_control.py` defines `RolloutControlledFeature`
-objects, each with a `rollout_percentage`, an `env_control_flag` to force the
-feature on or off locally, and an optional randomization keyed by run ID so a
-single developer sees consistent behavior within a run. Android 17 ships these
+objects, each with a `rollout_percentage` and an `env_control_flag` to force the
+feature on or off locally. Each object can also have a randomization keyed by
+run ID, so a single developer sees consistent behavior within a run. Android 17 ships these
 controlled features, among others:
 
 | Feature | Env flag | Notes |
@@ -14557,7 +14609,7 @@ They are the glue between code changes and presubmit/postsubmit test selection.
 ### 57.4.2  JSON Structure
 
 A `TEST_MAPPING` file contains a JSON object whose keys are *test groups*
-(typically `presubmit`, `postsubmit`, or custom names) and whose values are
+(typically `presubmit`, `postsubmit`, or custom names). The values are
 arrays of test objects.
 
 **Simple example** from `system/libbase/TEST_MAPPING`:
@@ -14883,25 +14935,26 @@ cc_test {
 
 The `isolated: true` property seen in 57.5.3 swaps the default
 `libgtest_main` for `libgtest_isolated_main`, which is the static-library
-entry point of the process-isolated gtest runner in
+entry point of the process-isolated gtest runner. The runner lives in
 `system/testing/gtest_extras/` (~2.3K LOC of runner code, about 4.8K
-including its own tests). Instead of running every test
-method in one address space, the isolated runner (`gtest_isolated/`) forks a
-fresh child process per test (`fork()` in
-`system/testing/gtest_extras/gtest_isolated/Isolate.cpp`) and waits on it,
-running several at a time according to a configurable job count
+including its own tests). The stock runner runs every test
+method in one address space. The isolated runner (`gtest_isolated/`) instead
+forks a fresh child process per test (`fork()` in
+`system/testing/gtest_extras/gtest_isolated/Isolate.cpp`) and waits on it. It
+runs several children at a time, according to a configurable job count
 (`gtest_isolated/Options.h`).
 
-Process isolation buys two things the stock single-process runner cannot. A
+Process isolation buys two things the stock single-process runner cannot. First, a
 test that crashes or corrupts global state can no longer take down the rest of
-the binary: the failure is confined to its own child, the parent records the
+the binary. The failure is confined to its own child. The parent records the
 terminating signal (`Isolate.cpp` reports `terminated by signal:` via
-`WIFSIGNALED`), and the remaining tests still run. And each child is held to a
-per-test wall-clock deadline (`deadline_threshold_ms` in `Options.h`); a hung
+`WIFSIGNALED`), and the remaining tests still run. Second, each child has a
+per-test wall-clock deadline (`deadline_threshold_ms` in `Options.h`). A hung
 test is killed and reported as a timeout rather than wedging the whole run.
-This is why low-level suites that deliberately exercise faulting and
-signal-handling paths -- bionic, ART's native-bridge tests, and the
-jemalloc/scudo allocator tests -- opt into `isolated: true` and link
+
+Low-level suites deliberately exercise faulting and
+signal-handling paths: bionic, ART's native-bridge tests, and the
+jemalloc/scudo allocator tests. For that reason, they opt into `isolated: true` and link
 `libgtest_isolated`. The runner is otherwise a drop-in: the same
 GoogleTest-authored `cc_test` source from 57.5.3 builds against either entry
 point.
@@ -15457,7 +15510,7 @@ cts-tradefed run cts --dynamic-sharding
 ```
 
 A separate option, `--enable-token-sharding`, makes sharding honor device
-tokens (for example a SIM-card capability), so that tests requiring a
+tokens (for example a SIM-card capability). As a result, tests that require a
 particular token only run on shards whose device provides it.
 
 ### 57.6.9  CTS Result Structure
@@ -15690,8 +15743,8 @@ VTS tests verify:
 
 Ravenwood is Android's solution for running framework tests on the host JVM
 without requiring a device or emulator.  It provides a lightweight environment
-where Android framework classes execute directly on a JDK 21+ host JVM,
-dramatically reducing test execution time from minutes to seconds.
+where Android framework classes execute directly on a JDK 21+ host JVM.
+This dramatically reduces test execution time from minutes to seconds.
 
 Source: `build/soong/java/ravenwood.go`
 
@@ -15841,8 +15894,8 @@ r.Library.ravenizer.enabled = true
 ```
 
 The Ravenizer rewrites bytecode to redirect framework calls to Ravenwood's
-host-compatible implementations, similar to how Robolectric's shadow system
-works but integrated more tightly with the platform build.
+host-compatible implementations. This is similar to how Robolectric's shadow
+system works, but it is integrated more tightly with the platform build.
 
 ### 57.8.7  Manifest Properties
 
@@ -15976,12 +16029,12 @@ if resourceApk != nil {
 ### 57.8.12  Host Graphics Stubs (libhostgraphics)
 
 Ravenwood (and other host-side framework tests) can compile and link against
-classes that internally call into `libhwui`, but `libhwui` was written to talk
+classes that internally call into `libhwui`. But `libhwui` was written to talk
 to a real `SurfaceFlinger`, a real `BufferQueue`, and a real `ANativeWindow`.
 On a host JVM running on a Linux/Mac/Windows workstation, none of those exist.
 `libhostgraphics` is the static C++ shim that lets `libhwui` build and link on
-the host by providing minimal, in-process replacements for the parts of the
-graphics stack it depends on.
+the host. It provides minimal, in-process replacements for the parts of the
+graphics stack that hwui depends on.
 
 Source: `frameworks/base/libs/hostgraphics/` (five C++ files, plus 9 header
 shims in `include/gui/` and `include/ui/`).
@@ -16002,7 +16055,7 @@ host: {
 
 This `static_libs` line is what makes "host hwui" possible. On a device,
 `libhwui` pulls in `libgui`, `libui`, `libnativewindow`, `libnativedisplay`,
-and `libsurfaceflinger`; on the host, those `shared_libs` entries are absent
+and `libsurfaceflinger`. On the host, those `shared_libs` entries are absent,
 and `libhostgraphics` provides the symbols the host build needs.
 
 #### The five stub translation units
@@ -16017,9 +16070,9 @@ and `libhostgraphics` provides the symbols the host build needs.
 
 The interesting case is `HostBufferQueue`. On device, producer (the app/hwui
 side) and consumer (SurfaceFlinger or a `BufferItemConsumer`) live in different
-processes, communicate via Binder, and exchange a ring of slot-indexed buffers
-guarded by fences. On host, there is no producer/consumer separation and no
-double-buffering — `createBufferQueue` hands back the same object as both
+processes. They communicate via Binder and exchange a ring of slot-indexed
+buffers guarded by fences. On host, there is no producer/consumer separation
+and no double-buffering. `createBufferQueue` hands back the same object as both
 endpoints, and every "buffer" is the same `GraphicBuffer`:
 
 ```cpp
@@ -16033,9 +16086,9 @@ void BufferQueue::createBufferQueue(sp<IGraphicBufferProducer>* outProducer,
 }
 ```
 
-That collapse is intentional: host tests only need to verify that hwui *issued
-the right draw calls* against *some* buffer, not that the buffer survived a
-round trip through SurfaceFlinger. Skipping the producer/consumer protocol
+That collapse is intentional. Host tests only need to verify that hwui *issued
+the right draw calls* against *some* buffer. They do not need to verify that
+the buffer survived a round trip through SurfaceFlinger. Skipping the producer/consumer protocol
 also avoids dragging in Binder, `libgui`, and the `libnativedisplay` HWC
 shims, all of which would need their own host stubs.
 
@@ -16105,15 +16158,15 @@ builds of hwui cannot exercise:
   ever exists)
 
 For those, you still need a device or an emulator. `libhostgraphics`'s job
-is only to keep the linker happy and let *unit* tests of hwui's algorithmic
+is only to keep the linker happy. It lets *unit* tests of hwui's algorithmic
 core (paint, canvas, font, hierarchy traversal) run on a developer laptop
 in milliseconds.
 
 ### 57.8.13  In-Process System Server
 
-Early Ravenwood could only host leaf utility classes. By Android 17 it stands up
-a lightweight, in-process **system server** so that code which looks up framework
-services through `Context.getSystemService()` or `ServiceManager` can run on the
+Early Ravenwood could only host leaf utility classes. By Android 17 it starts
+a lightweight, in-process **system server**. This lets code that looks up framework
+services through `Context.getSystemService()` or `ServiceManager` run on the
 host. `RavenwoodSystemServer`
 (`frameworks/base/ravenwood/junit-impl-src/android/platform/test/ravenwood/RavenwoodSystemServer.java`)
 registers fake or proxied implementations into `ServiceManager` and
@@ -16128,14 +16181,15 @@ registers fake or proxied implementations into `ServiceManager` and
 These are not the real services -- most are proxies that either delegate to a
 fake or throw "not implemented" for unsupported calls. Only `PLATFORM_COMPAT_*`
 and `INPUT_SERVICE` register unconditionally; the rest register inside
-`maybeRegisterExperimentalServices()`, gated by `isExperimentalApiEnabled()`. A
-companion `RavenwoodAppDriver`
+`maybeRegisterExperimentalServices()`, gated by `isExperimentalApiEnabled()`.
+
+A companion `RavenwoodAppDriver`
 (`frameworks/base/ravenwood/junit-impl-src/android/app/RavenwoodAppDriver.java`)
-brings up enough of `ActivityThread`/`Application` state that tests can obtain a
-real `Context`, settings provider, and compat configuration on the host. The
-practical effect is that the class of code Ravenwood can cover expands from data
-structures to framework logic that talks to system services -- still without a
-device, but no longer limited to dependency-free leaf classes.
+brings up enough of `ActivityThread`/`Application` state on the host. Tests
+can then get a real `Context`, settings provider, and compat configuration. The
+practical effect is that Ravenwood can now cover more than data structures. It
+covers framework logic that talks to system services. It still needs no device,
+and it is no longer limited to dependency-free leaf classes.
 
 ### 57.8.14  When to Use Ravenwood
 
@@ -16263,7 +16317,7 @@ func (r *robolectricTest) DepsMutator(ctx android.BottomUpMutatorContext) {
 ```
 
 In strict mode, the Robolectric library is added as a runtime-only dependency
-(not compile-time), preventing test code from directly calling Robolectric
+(not compile-time). This stops test code from directly calling Robolectric
 shadow APIs.
 
 ### 57.9.6  Test Config Generation
@@ -16884,9 +16938,9 @@ Flicker tests verify properties like:
 Flicker tests are written in Kotlin against `FlickerBuilder`
 (`platform_testing/libraries/flicker/src/android/tools/flicker/FlickerBuilder.kt`).
 A parameterized runner (`FlickerParametersRunnerFactory`, backed by
-`FlickerJUnit4ClassRunner`) executes them; a `@FlickerBuilderProvider` method
-configures the trace via `setup {}` / `transitions {}` / `teardown {}` blocks,
-and assertions live in `@Test` methods:
+`FlickerJUnit4ClassRunner`) executes them. A `@FlickerBuilderProvider` method
+configures the trace via `setup {}` / `transitions {}` / `teardown {}` blocks.
+Assertions live in `@Test` methods:
 
 ```kotlin
 @RunWith(Parameterized::class)
@@ -16955,8 +17009,8 @@ public void testButtonAppearance() {
 
 The `ScreenshotTestRule.assertBitmapAgainstGolden` entry point takes the
 captured bitmap, a golden identifier, and a `BitmapMatcher` (such as
-`MSSIMMatcher` for perceptual similarity or `PixelPerfectMatcher`); the
-higher-level `ViewScreenshotTestRule.screenshotTest(...)` helper wraps the
+`MSSIMMatcher` for perceptual similarity or `PixelPerfectMatcher`).
+The higher-level `ViewScreenshotTestRule.screenshotTest(...)` helper wraps the
 capture-and-compare flow for a single view.
 
 Golden images are updated with `update_goldens.py` when intentional visual
@@ -17066,9 +17120,10 @@ flicker.assertLayersEnd { layerState ->
 
 ### 57.11.10  Gating UI Tests by Form Factor and Environment
 
-As Android grew its desktop windowing, large-screen, and automotive surfaces,
-UI tests increasingly need to run on some form factors but not others, and to
-skip cleanly when running deviceless (Ravenwood/Robolectric) instead of failing.
+Android grew its desktop windowing, large-screen, and automotive surfaces. As a result, UI
+tests increasingly need to run on some form factors but not others. They
+also need to skip cleanly when they run deviceless (Ravenwood/Robolectric),
+instead of failing.
 `LimitDevicesRule`
 (`platform_testing/libraries/health/rules/src/android/platform/test/rule/LimitDevicesRule.kt`)
 is the JUnit `TestRule` that enforces these constraints with annotations matched
@@ -17086,8 +17141,8 @@ against `Build.PRODUCT`:
 
 The target devices are named by the `DeviceProduct` enum (Cuttlefish products
 such as `CF_PHONE`, `CF_TABLET`, `CF_FOLDABLE`, `CF_DESKTOP`, `CF_AUTO`, plus
-real products), and a free `isDesktop()` helper exposes the same desktop
-detection to test bodies. A test gates itself like this:
+real products). A free `isDesktop()` helper exposes the same desktop detection
+to test bodies. A test gates itself like this:
 
 ```kotlin
 class MyLargeScreenTest {
@@ -17105,9 +17160,9 @@ When the current device does not match the annotation, the rule throws an
 failed. The same module thus participates in phone, tablet, foldable, desktop,
 and deviceless runs without per-configuration test forks. The companion
 `@SkipOnDesktop`/`@SkipOnDeviceless` annotations are the platform-side mechanism
-behind the 17 desktop-windowing and Ravenwood test sweeps: a test that cannot
+behind the 17 desktop-windowing and Ravenwood test sweeps. A test that cannot
 yet pass on a desktop window or off-device is annotated rather than disabled
-globally, keeping its phone coverage intact.
+globally. Its phone coverage stays intact.
 
 ---
 
@@ -17192,9 +17247,9 @@ external/dexmaker/
   dexmaker-mockito-inline-dispatcher/    -- Dispatch mechanism
 ```
 
-Dexmaker solves a fundamental Android challenge: the Dalvik/ART runtime cannot
-use cglib or ByteBuddy (the standard JVM mock generation libraries) because
-they generate JVM bytecode, not DEX bytecode.  Dexmaker generates DEX files
+Dexmaker solves a fundamental Android challenge. The Dalvik/ART runtime cannot
+use cglib or ByteBuddy (the standard JVM mock generation libraries). This is because they
+generate JVM bytecode, not DEX bytecode.  Dexmaker generates DEX files
 at runtime for mock classes.
 
 The inline variant (`dexmaker-mockito-inline`) enables mocking of final classes
@@ -18084,8 +18139,8 @@ platform_testing/libraries/
 
 The Android 17 tree adds `androidbuildinternal/`, `media/`, `sdv/` (Software
 Defined Vehicle, covered in Chapter 62 (Device Form Factors), §62.7), and `uiautomator-accessibility/`
-to the set, reflecting the growth of the automotive/SDV test surface and an
-accessibility-driven UI-helper layer.
+to the set.  These additions show the growth of the automotive/SDV test surface
+and of an accessibility-driven UI-helper layer.
 
 ### 57.15.3  Key Libraries
 
@@ -18384,7 +18439,7 @@ graph TB
 ## 57.17  Try It: Write Tests at Every Level
 
 This hands-on section walks through writing tests at each level of the Android
-test pyramid, using a hypothetical `StringUtils` module as the system under test.
+test pyramid.  The system under test is a hypothetical `StringUtils` module.
 
 ### 57.17.1  Exercise 1: Host-Side Unit Test (cc_test_host)
 
@@ -18815,9 +18870,9 @@ android_test {
 
 **Step 3: Update golden images when designs change**
 
-Run the tests, pull the failure artifacts (the `.textpb` diff protos and
-actual `.png` screenshots) from the device, then point the update script at
-the directory containing them:
+Run the tests. Pull the failure artifacts from the device. These are the
+`.textpb` diff protos and the actual `.png` screenshots. Then point the update
+script at the directory that contains them:
 
 ```bash
 python3 platform_testing/libraries/screenshot/update_goldens.py \
@@ -19086,8 +19141,8 @@ updates the CL status.
 ### 57.17.14  Performance Optimization Tips
 
 1. **Minimize build noise**: Use `--build-output logged` with atest to write
-   build output to a log file instead of streaming it (the only valid values
-   are `streamed` and `logged`)
+   build output to a log file instead of streaming it. The only valid values
+   are `streamed` and `logged`.
 
 2. **Use --host**: Always add `--host` for host-only tests to skip device setup
 3. **Leverage caching**: atest caches test discovery results; avoid `--clear-cache`
@@ -19100,8 +19155,8 @@ updates the CL status.
    relevant to your change
 
 6. **Skip install**: Use `atest -t <module>` to run only the test step when
-   iterating (after an initial build); the `-b`, `-i`, and `-t` flags select
-   the build, install, and test steps respectively
+   iterating (after an initial build). The `-b`, `-i`, and `-t` flags select
+   the build, install, and test steps respectively.
 
 ---
 
@@ -19137,10 +19192,10 @@ of manufacturers.  The key takeaways from this chapter:
    providing a simple CLI that handles building, installing, and running any
    test in the tree.
 
-The best testing strategy for any AOSP module follows the pyramid: maximize
-fast host-side unit tests, add focused device integration tests for behavior
-that requires real hardware, and ensure compliance with the relevant test
-suites for your component.
+The best testing strategy for any AOSP module follows the pyramid. Maximize
+fast host-side unit tests. Add focused device integration tests for behavior
+that requires real hardware. Make sure your component complies with the
+relevant test suites.
 
 ### Test Infrastructure Component Map
 
@@ -19270,14 +19325,17 @@ graph TB
 # Chapter 58: Debugging and Profiling Tools
 
 Android ships a rich arsenal of debugging and profiling tools, most of them
-built directly into AOSP.  Unlike aftermarket solutions that attach from
-outside, these tools are woven into the platform: logd is an init service,
-debuggerd is a signal handler compiled into every native process, Perfetto
-data-sources live inside SurfaceFlinger, ART, and the kernel, and dumpsys
-talks to every registered Binder service.  This chapter walks through each
-tool layer by layer -- from the source code that implements them in the tree
-to the command-line invocations and analysis workflows that platform engineers
-use every day.
+built directly into AOSP.  Aftermarket solutions attach from outside.  These
+tools are part of the platform itself.
+
+logd is an init service.  debuggerd is a signal handler compiled into every
+native process.  Perfetto data-sources live inside SurfaceFlinger, ART, and the
+kernel.  dumpsys talks to every registered Binder service.
+
+This chapter walks through each tool layer by
+layer.  It starts at the source code that implements the tools in the tree.
+It continues to the command-line invocations and analysis workflows that
+platform engineers use every day.
 
 ---
 
@@ -19644,8 +19702,8 @@ class LogListener {
 ```
 
 The `ProcessBuffer()` method extracts the sender's credentials (`uid`, `gid`,
-`pid`) from the socket ancillary data (`SCM_CREDENTIALS`), ensuring that
-log messages cannot be spoofed.
+`pid`) from the socket ancillary data (`SCM_CREDENTIALS`).  This makes
+sure that log messages cannot be spoofed.
 
 **LogKlog** (`system/logging/logd/LogKlog.h`) reads kernel messages from
 `/proc/kmsg` (it opens `/dev/kmsg` only write-only, for logd's own dmesg
@@ -19855,7 +19913,7 @@ flowchart TD
     J -- No --> I
 ```
 
-This design addresses a real problem documented in the source: overly large
+This design addresses a real problem documented in the source.  Overly large
 custom log sizes combined with compressed logging can cause logcat to time
 out during bugreport collection (see comment referencing b/196856709).
 
@@ -20450,7 +20508,7 @@ Key UI features:
   and thread.
 
 - **SQL console**: Run ad-hoc queries against the trace.
-- **Metrics**: Pre-built metric queries for common analyses (startup time,
+- **Metrics**: Pre-built metric queries for common analysis tasks (startup time,
   jank, memory, etc.).
 
 - **Flamegraph**: For CPU profiling and heap profiling data.
@@ -20500,8 +20558,8 @@ database from them, which is then queryable via SQL.
 
 ### 58.3.9 Perfetto Metrics
 
-Perfetto ships with pre-built metrics that can be computed on a trace
-without writing SQL:
+Perfetto ships with pre-built metrics.  Each metric can run on a trace and
+needs no SQL:
 
 ```bash
 # Compute a specific metric
@@ -20941,9 +20999,9 @@ graph TD
 ### 58.4.11 JIT Debug Support
 
 simpleperf handles JIT-compiled code (from ART) through the
-`JITDebugReader` class (`system/extras/simpleperf/JITDebugReader.h`), which
-reads the JIT debug descriptor from the ART runtime to resolve symbols in
-JIT-compiled methods.
+`JITDebugReader` class (`system/extras/simpleperf/JITDebugReader.h`).  This
+class reads the JIT debug descriptor from the ART runtime to resolve symbols
+in JIT-compiled methods.
 
 ```mermaid
 sequenceDiagram
@@ -21027,16 +21085,16 @@ graph TB
    patches the malloc dispatch table at runtime.
 
 2. **Sampling**: Not every allocation is recorded.  heapprofd uses Poisson
-   sampling: each allocation has a probability proportional to its size of
-   being sampled.  The sampling interval is configurable (default: 4096
+   sampling: the probability that an allocation is sampled is proportional
+   to its size.  The sampling interval is configurable (default: 4096
    bytes).
 
 3. **Stack unwinding**: When an allocation is sampled, the client captures
-   the stack (using frame pointers or DWARF) and sends it to the daemon
-   via shared memory.
+   the stack (with frame pointers or DWARF).  Then it sends the stack to the
+   daemon via shared memory.
 
 4. **Bookkeeping**: The daemon deduplicates call stacks and tracks cumulative
-   allocation sizes, producing a compact representation.
+   allocation sizes.  This gives a compact representation.
 
 5. **Output**: Profile data flows into Perfetto's trace format, viewable in
    the Perfetto UI as a flamegraph.
@@ -21617,7 +21675,7 @@ graph TB
 **SurfaceFlinger traces:**
 
 The old binder-code trigger (`service call SurfaceFlinger 1025`) is
-deprecated and now returns `NAME_NOT_FOUND`; layer traces are captured
+deprecated and now returns `NAME_NOT_FOUND`.  Layer traces are captured
 through Perfetto as the `android.surfaceflinger.layers` data source:
 
 ```bash
@@ -22259,11 +22317,14 @@ memory map (165 entries):
 Modern tombstones are also written in protobuf format, defined in
 `system/core/debuggerd/proto/tombstone.proto`.  The protobuf format is
 machine-parseable and can be converted to text.  The top-level `Tombstone`
-message carries the crashing process identity (`pid`, `tid`, `uid`), the
-parent process id (`ppid`, field 29 -- added so triage tooling can attribute a
-crash to its launcher or zygote without re-reading `/proc`), the signal info,
-register sets, threads, memory mappings, and the GWP-ASan/Scudo "cause"
-records.  It can be rendered to the classic text layout shown above:
+message carries the crashing process identity (`pid`, `tid`, `uid`).  It also
+carries the parent process id (`ppid`, field 29).  Field 29 was added so triage
+tooling can attribute a crash to its launcher or zygote without re-reading
+`/proc`.
+
+The message also carries the signal info, register sets, threads,
+memory mappings, and the GWP-ASan/Scudo "cause" records.  It can be rendered to
+the classic text layout shown above:
 
 ```bash
 # View proto tombstone as text
@@ -22877,10 +22938,11 @@ adb shell dumpsys -t 600 meminfo --unreachable <process>
 
 ### 58.13.1 What Causes ANRs
 
-An Application Not Responding (ANR) event occurs when the main thread of an
-application does not respond to an input event within 5 seconds or a
-BroadcastReceiver does not complete within the timeout period (10 seconds
-for foreground, 60 seconds for background).
+An Application Not Responding (ANR) event occurs in two cases. In the first
+case, the main thread of an application does not respond to an input event
+within 5 seconds. In the second case, a BroadcastReceiver does not complete
+within the timeout period (10 seconds for foreground, 60 seconds for
+background).
 
 ```mermaid
 flowchart TD
@@ -23327,18 +23389,20 @@ adb pull /data/anr/ .
 
 Android 15 introduced the **Profiling Mainline Module**
 (`com.android.profiling`), which wraps Perfetto, heapprofd, and simpleperf
-behind a safe, rate-limited API that any app can call without root access
-or special permissions.  This section examines how the module integrates with
+behind a safe, rate-limited API. Any app can call this API without root
+access or special permissions.  This section examines how the module integrates with
 the debugging tools covered earlier in this chapter.
 
 Because it ships as a Mainline module, the Profiling subsystem evolves on its
 own train rather than with the platform dessert.  Android 17 (`CINNAMON_BUN`,
-SDK 37) is a substantial step: it adds the system-side **anomaly detector**
-(Section 58.19), grows the trigger catalogue from two types to twelve
-(Section 58.18.5), and adds result-delivery acknowledgement plus automatic
-cleanup of stale result files.  All of the new behaviour is guarded by aconfig
-flags in `packages/modules/Profiling/flags/flags.aconfig`, so an OTA of the
-module turns features on without a platform release.
+SDK 37) is a substantial step. It adds the system-side **anomaly detector**
+(Section 58.19). It grows the trigger catalog from two types to twelve
+(Section 58.18.5). It also adds result-delivery acknowledgement plus automatic
+cleanup of stale result files.
+
+All of the new behavior is guarded by aconfig
+flags in `packages/modules/Profiling/flags/flags.aconfig`. For that reason, an
+OTA of the module turns features on without a platform release.
 
 ### 58.18.1  Motivation
 
@@ -23559,8 +23623,8 @@ The background trace runs periodically (default ~24 hours, jittered between
 
 The trigger type constants are defined in
 `packages/modules/Profiling/framework/java/android/os/ProfilingTrigger.java`.
-Android 15 shipped two triggers (`APP_FULLY_DRAWN` and `ANR`); Android 17
-expands the set to twelve, with the newer triggers gated behind aconfig flags
+Android 15 shipped two triggers (`APP_FULLY_DRAWN` and `ANR`).  Android 17
+expands the set to twelve.  The newer triggers are gated behind aconfig flags
 in `packages/modules/Profiling/flags/flags.aconfig` (for example
 `profiling_trigger_oom`, `profiling_trigger_cold_start`, and
 `profiling_trigger_kill_excessive_cpu_usage`):
@@ -23635,17 +23699,17 @@ When the app next registers a global listener via
 Android 17 tightens this loop with two refinements, both flag-guarded:
 
 - **Delivery acknowledgement** (`notify_result_delivered`).  After the app's
-  callback has consumed a queued result, `ProfilingManager` calls back into the
+  callback consumes a queued result, `ProfilingManager` calls back into the
   service (`mProfilingService.notifyResultDelivered(...)`, see
-  `packages/modules/Profiling/framework/java/android/os/ProfilingManager.java`)
-  so the service knows the result was actually received and can stop retrying
-  and drop it from the queue, rather than relying solely on the retry/retention
-  ceiling.
+  `packages/modules/Profiling/framework/java/android/os/ProfilingManager.java`).
+  As a result, the service knows that the app actually received the result.  It can
+  stop retrying and drop the result from the queue.  It does not have to rely
+  only on the retry/retention ceiling.
 
-- **Old-file cleanup** (`old_files_cleanup`).  Result files that have already
-  been delivered are garbage-collected on both the service side and the app
-  side, so trigger-driven traces that pile up over days do not leak disk in the
-  app's private storage.
+- **Old-file cleanup** (`old_files_cleanup`).  Delivered result files
+  are garbage-collected on both the service side and the app side.  So
+  trigger-driven traces that pile up over days do not leak disk in the app's
+  private storage.
 
 ### 58.18.8  Practical Usage Patterns
 
@@ -23719,17 +23783,18 @@ The Profiling module complements the tools covered earlier in this chapter:
 | CPU hotspot identification | simpleperf | Exposes stack sampling via `PROFILING_TYPE_STACK_SAMPLING` |
 | Java memory analysis | ART hprof | Exposes heap dumps via `PROFILING_TYPE_JAVA_HEAP_DUMP` |
 
-The key advantage over using the underlying tools directly is that the
+The key advantage over the direct use of the underlying tools is that the
 Profiling module handles:
 
-- **Privacy**: Trace redaction ensures apps see only their own data.
+- **Privacy**: Trace redaction makes sure that apps see only their own data.
 - **Rate limiting**: Prevents runaway profiling from impacting device
   performance.
 
 - **Delivery**: Results are placed in the app's private storage with Binder
   callbacks.
 
-- **Persistence**: System-triggered results are queued and delivered later.
+- **Persistence**: The module queues system-triggered results and delivers
+  them later.
 
 ### 58.18.10  Key Source Paths
 
@@ -23751,25 +23816,29 @@ Profiling module handles:
 ## 58.19 The Anomaly Detector
 
 Android 17 adds a second pillar to the Profiling module: an on-device
-**anomaly detector**.  Where `ProfilingManager` is pull-based (an app asks for
-a trace), the anomaly detector is push-based: a privileged controller installs
-*rules* describing misbehaviour, the system watches continuous signals for
-those conditions, and when a rule matches it raises an `AnomalyReport` that can
-automatically capture a Perfetto trace through the Profiling pipeline.  The code
-lives in its own directory, `packages/modules/Profiling/anomaly-detector/`, and
+**anomaly detector**.  `ProfilingManager` is pull-based: an app asks for a
+trace.  The anomaly detector is push-based.  A privileged controller installs
+*rules* that describe misbehavior.  The system watches continuous signals for
+those conditions.  When a rule matches, the system raises an `AnomalyReport`
+that can automatically capture a Perfetto trace through the Profiling
+pipeline.
+
+The code lives in its own directory, `packages/modules/Profiling/anomaly-detector/`, and
 ships in the same `com.android.profiling` APEX.
 
 ### 58.19.1 Why a Detector in the Platform
 
-The motivating problem is "the app that quietly hurts the device": a
-background process hammering a `system_server` binder interface, leaking
-memory until it trips the runtime limit, or otherwise degrading the system
-without ever crashing.  Catching these after the fact from a bugreport is
-slow, and asking every app to instrument itself does not scale.  The anomaly
-detector lets the platform (or an OEM's privileged system app) declare the
-condition once and have the system both *detect* it and *react* to it -- where
-the canonical reaction is "grab a trace at the moment it happens", using the
-same redacted, rate-limited Profiling plumbing from Section 58.18.
+The motivating problem is "the app that quietly hurts the device".  Such
+an app is a background process.  It hammers a `system_server` binder
+interface, leaks memory until it trips the runtime limit, or otherwise
+degrades the system, but it never crashes.  Catching these after the fact from
+a bugreport is slow, and asking every app to instrument itself does not scale.
+
+With the anomaly detector, the platform (or an OEM's privileged system app)
+declares the condition once.  The system then both *detects* the condition and
+*reacts* to it.  The canonical reaction is "grab a trace at the moment it
+happens".  This reaction uses the same redacted, rate-limited Profiling
+plumbing from Section 58.18.
 
 ### 58.19.2 The Rule API
 
@@ -23788,7 +23857,7 @@ public void setAnomalyDetectorRules(@NonNull Set<Rule> rules);
 Important properties baked into the API contract:
 
 - **One controller per device.** Only a single privileged application may set
-  rules; a second caller is rejected.  This keeps the detector from becoming a
+  rules; a second caller is rejected.  This way, the detector does not become a
   free-for-all of competing policies.
 
 - **Replace, not merge.** Each call replaces the full rule set, and an empty
@@ -23800,10 +23869,10 @@ Important properties baked into the API contract:
 A `Rule`
 (`packages/modules/Profiling/anomaly-detector/framework/java/android/os/profiling/anomaly/Rule.java`)
 is built with a name and a *condition*.  Android 17 ships one condition type,
-`CONDITION_TYPE_BINDER_SPAM`, parameterised through a bundle with keys such as
-`BUNDLE_KEY_CONDITION_BINDER_SPAM_INTERFACE_NAME`,
+`CONDITION_TYPE_BINDER_SPAM`.  It is parameterized through a bundle with keys
+such as `BUNDLE_KEY_CONDITION_BINDER_SPAM_INTERFACE_NAME`,
 `..._METHOD_NAME`, `..._CALL_LIMIT`, and
-`..._BINDER_CALL_INTERVAL_MILLIS` -- in other words "more than N calls to this
+`..._BINDER_CALL_INTERVAL_MILLIS`.  In other words, "more than N calls to this
 interface/method within this interval is an anomaly".  Rules cross the binder
 boundary to the service as `RuleParcel` objects via
 `IAnomalyDetectorService.setRules()`.
@@ -23811,8 +23880,8 @@ boundary to the service as `RuleParcel` objects via
 ### 58.19.3 Detector Architecture
 
 Internally the detector is a small pipeline of three pluggable roles, each
-with its own registry so new signal sources, detectors, and reactions can be
-added without touching the core:
+with its own registry.  New signal sources, detectors, and reactions can be
+added, and the core stays unchanged:
 
 ```mermaid
 graph LR
@@ -23855,36 +23924,38 @@ The three roles, all under
 | Detector | `core/AnomalyDetector.java` | `detector/BinderSpamAnomalyDetector.java` | Evaluates collected data against the active rules and emits an `AnomalyReport` when a condition fires |
 | Handler | `core/AnomalyHandler.java` | `handler/ProfileAnomalyHandler.java`, `handler/LogAnomalyHandler.java` | Reacts to a report -- captures a profiling trace, or writes a structured log entry |
 
-The `BinderSpamAnomalyDetector` supports multiple rules and aggregates call
-data across binder transactions before deciding a process is spamming, so a
-single noisy method does not produce a storm of reports.
+The `BinderSpamAnomalyDetector` supports multiple rules.  It aggregates call
+data across binder transactions before it decides that a process is spamming.
+So a single noisy method does not produce a storm of reports.
 
 ### 58.19.4 From Report to Trace
 
 The link back into the rest of this chapter is `ProfileAnomalyHandler`.  When a
 detector raises an `AnomalyReport`, the handler asks the Profiling pipeline to
-capture a trace tagged with `TRIGGER_TYPE_ANOMALY` (value 8 in
+capture a trace.  The trace has the tag `TRIGGER_TYPE_ANOMALY` (value 8 in
 `ProfilingTrigger`, Section 58.18.5).  That trace flows through the same
-machinery as any other system-triggered profiling: it is collected by
-`traced`, redacted by `trace_redactor` so only the offending process's data
-survives, rate-limited, and delivered to the registered listener.  A
-`ProfilingSessionHelper`
-(`.../anomaly/handler/ProfilingSessionHelper.java`) bridges the detector's
-report to a Profiling session and bundles anomaly-highlighting metadata
-(via the `PerfettoMetadata` utility) into the result so the consuming tool can
-jump straight to the anomalous window.
+machinery as any other system-triggered profiling.  `traced` collects it, and
+`trace_redactor` redacts it so only the offending process's data survives.
+The trace is rate-limited and delivered to the registered listener.
 
-The practical payoff: a privileged monitoring app can install a binder-spam
-rule once, and from then on every offending background app produces a redacted
-Perfetto trace, captured at the moment of misbehaviour, without the monitoring
-app polling, attaching a profiler, or knowing which app would misbehave.
+A `ProfilingSessionHelper`
+(`.../anomaly/handler/ProfilingSessionHelper.java`) bridges the detector's
+report to a Profiling session.  It also bundles metadata that highlights the
+anomaly (via the `PerfettoMetadata` utility) into the result.  As a result, the tool that
+consumes the result can jump straight to the anomalous window.
+
+The practical payoff is clear.  A privileged monitoring app can install a
+binder-spam rule once.  From then on, every offending background app produces
+a redacted Perfetto trace.  The trace is captured at the moment of
+misbehavior.  The monitoring app does not poll, does not attach a profiler,
+and does not need to know which app will misbehave.
 
 ### 58.19.5 Inspecting the Detector
 
 The service ships a shell command handler
 (`packages/modules/Profiling/anomaly-detector/service/java/com/android/os/profiling/anomaly/AnomalyDetectorShellCommandHandler.java`) and a
-dumpsys hook for inspecting the currently active rules, which is the fastest
-way to confirm a controller's rules took effect:
+dumpsys hook to inspect the currently active rules.  This is the fastest
+way to confirm that a controller's rules took effect:
 
 ```bash
 # Show the active anomaly-detection rules
@@ -23905,19 +23976,20 @@ adb shell dumpsys anomaly_detector
 
 The other profiling-adjacent Mainline module that matured in Android 17 is
 **UprobeStats** (`com.android.uprobestats`), in
-`packages/modules/UprobeStats/`.  It provides *dynamic instrumentation*:
-server-configurable probing of userspace processes (notably `system_server`)
-using kernel **uprobes** plus **eBPF**, observing function invocations without
-modifying or recompiling the target binary.  This is how the platform gathers
-fleet-wide statistics on rare or hard-to-instrument code paths, and in 17 it
-grows a binder-transaction probe and an app-facing event-delivery API.
+`packages/modules/UprobeStats/`.  It provides *dynamic instrumentation*.  This
+is server-configurable probing of userspace processes (notably
+`system_server`).  It uses kernel **uprobes** plus **eBPF** to observe function
+invocations, and it does not modify or recompile the target binary.  This is
+how the platform gathers fleet-wide statistics on rare or hard-to-instrument
+code paths.  In 17 it grows a binder-transaction probe and an app-facing
+event-delivery API.
 
 ### 58.20.1 How a Uprobe Becomes a Statistic
 
 A UprobeStats *task* names a target process, one or more **probes** (a BPF
 program plus the function offsets to attach to), and an output sink.  The
-daemon resolves the function offsets in the target binary, attaches the BPF
-program at those addresses via a uprobe, and the BPF program writes a record to
+daemon resolves the function offsets in the target binary.  It attaches the BPF
+program at those addresses via a uprobe.  The BPF program writes a record to
 a ring buffer each time the function is hit.  The daemon drains the ring buffer
 and forwards each record either to **statsd** as an atom, or to a registered
 listener.
@@ -23960,12 +24032,12 @@ graph TB
     DAEMON --> BRIDGE
 ```
 
-The module is split across directories that mirror this flow:
-`config/` defines `UprobestatsConfig` (`config.proto`); `bpf_progs/` holds the
-BPF program sources; `bpfloader/` is `uprobestatsbpfload`, the module's own BPF
-loader (an APEX must ship its own loader); and `daemon/` is the Rust userspace
-daemon (`daemon/uprobestats.rs` and the `daemon/android/` helpers) that holds
-"the majority of the logic for the module" per its README.
+The module is split across directories that mirror this flow.
+`config/` defines `UprobestatsConfig` (`config.proto`).  `bpf_progs/` holds the
+BPF program sources.  `bpfloader/` is `uprobestatsbpfload`, the module's own BPF
+loader (an APEX must ship its own loader).  `daemon/` is the Rust userspace
+daemon (`daemon/uprobestats.rs` and the `daemon/android/` helpers).  Its README
+says that this daemon holds "the majority of the logic for the module".
 
 ### 58.20.2 Android 17 Additions
 
@@ -23974,7 +24046,8 @@ its current API surface:
 
 - **A binder-transaction probe.** `config.proto` gained a
   `BinderTransactionFilter` and the BPF/handler side learned to capture binder
-  interface/method invocations, writing binder-transaction events to statsd.
+  interface/method invocations and to write binder-transaction events to
+  statsd.
   This is the same raw signal the anomaly detector's binder-spam rule consumes
   conceptually, but here it is a configurable, fleet-wide statistic.
 
@@ -23984,7 +24057,7 @@ its current API surface:
   (`packages/modules/UprobeStats/framework/java/android/service/uprobestats/DynamicInstrumentationEventService.java`)
   that privileged apps extend to receive `DynamicInstrumentationEvent`s.
   Event delivery into the service is guarded by the
-  `SEND_DYNAMIC_INSTRUMENTATION_EVENTS` permission, while registering and
+  `SEND_DYNAMIC_INSTRUMENTATION_EVENTS` permission.  Registering and
   configuring instrumentation via `UprobeStatsBridgeService` requires
   `DYNAMIC_INSTRUMENTATION`.  Events are delivered
   through a renamed bridge service,
@@ -23993,15 +24066,15 @@ its current API surface:
   SDK level 37 and above (`@RequiresApi(Build.VERSION_CODES.CINNAMON_BUN)`).
 
 - **Hardened error reporting.** The BPF attach/load path now returns granular
-  error codes (a `UprobeStatsError` type), drains ring buffers before
-  attachment, and persists ring-buffer handles to avoid duplicate events --
-  reliability work that matters once the data feeds production statistics.
+  error codes (a `UprobeStatsError` type).  It also drains ring buffers before
+  attachment.  It persists ring-buffer handles to avoid duplicate events.  This
+  reliability work matters once the data feeds production statistics.
 
 ### 58.20.3 Relationship to the Other Tools
 
-UprobeStats is not a tool a developer points at their own app the way they use
-simpleperf or Perfetto -- it is platform instrumentation, configured by the
-system, feeding statsd (and now privileged event listeners).  It complements
+A developer does not point UprobeStats at their own app the way they use
+simpleperf or Perfetto.  It is platform instrumentation.  The system configures
+it, and it feeds statsd (and now privileged event listeners).  It complements
 this chapter's tools at a different altitude:
 
 | Tool | Granularity | Who drives it | Typical output |
@@ -24025,16 +24098,18 @@ this chapter's tools at a different altitude:
 ## 58.21 dmesgd: Kernel-Log to DropBox Bridge
 
 `dmesgd` (`system/dmesgd/`) is a small native daemon (a few hundred lines of
-C++) that bridges the kernel ring buffer into the same crash-report pipeline as
+C++).  It bridges the kernel ring buffer into the same crash-report pipeline as
 tombstones and ANRs.  On startup it runs `popen("dmesg", "r")` and feeds each
-line into a `DmesgParser` (`system/dmesgd/dmesg_parser.h`), which recognizes
-kernel `WARNING`/`ERROR` stanzas, strips sensitive data such as 64-bit
-addresses, and assembles a per-fault report with a title and a report type.
+line into a `DmesgParser` (`system/dmesgd/dmesg_parser.h`).  The parser
+recognizes kernel `WARNING`/`ERROR` stanzas and strips sensitive data such as
+64-bit addresses.  It also assembles a per-fault report with a title and a
+report type.
+
 When a report is ready, `dmesgd` posts it to `DropBoxManager`
 (`system/dmesgd/dmesgd.cpp` includes `<android/os/DropBoxManager.h>` and calls
-`addText()`) under a tag such as `SYSTEM_<type>_ERROR_REPORT`, which is exactly
-the tag space `dumpstate` scrapes when building a bugreport
-(section 58.8).  To avoid spamming duplicates across boots it remembers report
+`addText()`) under a tag such as `SYSTEM_<type>_ERROR_REPORT`.  This is exactly
+the tag space that `dumpstate` scrapes when it builds a bugreport
+(section 58.8).  To avoid duplicate reports across boots, it remembers report
 titles in `/data/misc/dmesgd/sent_reports.txt` and caps the number of reports
 per run.  The kernel side of this path -- how messages reach the `dmesg` ring
 buffer and persist across reboots via `pstore` -- is covered in Chapter 5.
@@ -24042,12 +24117,12 @@ buffer and persist across reboots via `pstore` -- is covered in Chapter 5.
 ## 58.22 liburingutils: io_uring Socket Helper
 
 `liburingutils` (`system/liburingutils/`) is a thin wrapper around the external
-`liburing` library that exposes a single helper class, `IOUringSocketHandler`
-(`system/liburingutils/include/IOUringSocketHandler/IOUringSocketHandler.h`),
-for receiving datagrams from a socket through io_uring's multishot `recvmsg`.
-This is the class `logd`'s `LogListener` holds in its `uring_listener_` member
-(section 58.2.5) to ingest log records at high throughput; the library is also
-packaged into the statsd APEX (`system/liburingutils/Android.bp`) for the same
+`liburing` library.  It exposes a single helper class, `IOUringSocketHandler`
+(`system/liburingutils/include/IOUringSocketHandler/IOUringSocketHandler.h`).
+The class receives datagrams from a socket through io_uring's multishot
+`recvmsg`.  This is the class `logd`'s `LogListener` holds in its
+`uring_listener_` member (section 58.2.5) to ingest log records at high
+throughput.  The library is also packaged into the statsd APEX (`system/liburingutils/Android.bp`) for the same
 asynchronous, batched socket-receive pattern.
 
 ---
@@ -24058,13 +24133,13 @@ Traceur (`packages/apps/Traceur/`), the system tracing UI, adds two
 toggleable Perfetto categories in Android 17, both defined in
 `packages/apps/Traceur/src_common/com/android/traceur/PerfettoUtils.java` with
 their user-visible labels in `TraceUtils.java`. The `wattson` category
-("Wattson power estimation") feeds the on-device power model: it enables the
-`linux.sys_stats` data source for periodic cpufreq and cpuidle samples plus a
-set of `linux.ftrace` events including `power/cpu_frequency`,
+("Wattson power estimation") feeds the on-device power model. It enables the
+`linux.sys_stats` data source for periodic cpufreq and cpuidle samples. It also
+enables a set of `linux.ftrace` events, such as `power/cpu_frequency`,
 `power/cpu_idle`, `power/suspend_resume`, `sched/sched_switch`, and the
 `cpuhp/*` hotplug tracepoints. The `mq` category ("messagequeue tracing")
-turns on a `track_event` data source scoped to the `mq` category, capturing
-Looper and `MessageQueue` dispatch.
+turns on a `track_event` data source scoped to the `mq` category. This data
+source captures Looper and `MessageQueue` dispatch.
 
 ---
 
@@ -24073,11 +24148,13 @@ Looper and `MessageQueue` dispatch.
 The tools so far in this chapter inspect software state. DeviceDiagnostics
 (`packages/apps/DeviceDiagnostics/`, package `com.android.devicediagnostics`)
 inspects the hardware itself. It is the app behind **System > Reset options >
-Device Diagnostics**: a Settings preference launches its `MainActivity`, and
-from there the user runs component checks and produces a signed report of the
-device's physical condition. The app is aimed at refurbishment and trade-in:
-it answers "is this screen, battery, and storage still good, and is this the
-device it claims to be" rather than "why is this app slow."
+Device Diagnostics**. A Settings preference launches its `MainActivity`. From
+there the user runs component checks and produces a signed report of the
+device's physical condition.
+
+The app is for refurbishment and trade-in. It answers "is this screen, battery,
+and storage still good, and is this the device it claims to be". It does not
+answer "why is this app slow."
 
 ### 58.24.1 Two Entry Paths
 
@@ -24085,24 +24162,25 @@ device it claims to be" rather than "why is this app slow."
 `res/xml/preferences_main.xml`) offers two top-level paths:
 
 - **Component health** (`DiagnosticsActivity`, `diagnostics_landing.xml`) runs
-  on-device checks: a manual **screen test** and **touch test** (the
+  on-device checks.  It has a manual **screen test** and **touch test**.  The
   `evaluated/ScreenTest*` and `TouchTest*` activities walk the user through
-  full-screen patterns and a touch grid), plus read-only **Battery** and
+  full-screen patterns and a touch grid.  It also has read-only **Battery** and
   **Storage** detail screens (`BatteryActivity`, `StorageActivity`).
 - **Evaluation mode** (`EvaluationModeActivity`) is the attested, two-device
-  flow used when grading a device for trade-in. It pairs over Bluetooth and
+  flow used when a device is graded for trade-in. It pairs over Bluetooth and
   exchanges QR codes between the device under test and a trusted verifier
-  device (the `trusted/` activities), and it is only offered when Bluetooth is
+  device (the `trusted/` activities). It is only offered when Bluetooth is
   enabled.
 
 ### 58.24.2 The DeviceReport and Key Attestation
 
-The hardware facts the app collects are gathered by the helpers in
+The app collects the hardware facts.  The helpers in
 `DeviceDiagnosticsLib/src/main/java/com/android/devicediagnostics/evaluated/`
-(battery, storage, camera, hinge, sensor, screen, lock, product) into a single
+(battery, storage, camera, hinge, sensor, screen, lock, product) gather them
+into a single
 `DeviceReport` protobuf defined in
 `DeviceDiagnosticsLib/src/main/proto/diagnostics.proto`. The report carries
-fields a buyer cares about: battery `cycle_count` and `state_of_health`,
+fields a buyer cares about. These are battery `cycle_count` and `state_of_health`,
 storage `useful_lifetime_remaining`, hinge fold counts, moisture-intrusion
 sensor state, factory-reset-protection status, and the screen/touch test
 results.
@@ -24110,7 +24188,7 @@ results.
 To make the report trustworthy, it embeds a **key attestation** certificate
 chain from the device's keystore. `AttestationController` sends the attestation
 record (with a caller-supplied challenge) to a verifier that parses it as a
-`ParsedAttestationRecord` and validates the chain over the network; a
+`ParsedAttestationRecord` and validates the chain over the network. A
 self-check may soft-fail the network step, but a graded device must verify.
 This is what lets a remote party trust that the report came from genuine,
 non-rooted hardware rather than a spoofing app.
@@ -24143,15 +24221,19 @@ returns the assembled `DeviceReport` as a single-row cursor, rendered to JSON by
 `EvaluateContentProvider` and `TradeInModeTestingContentProvider` drive the
 evaluation flow and are guarded by the `ENTER_TRADE_IN_MODE` permission.
 
-Trade-in mode itself lives in the separate `tradeinmode/` component: a
-`tradeinmode` Java command-line tool (a `java_binary` whose `main_class` is
-`com.android.devicediagnostics.commands.Commands`) plus an `AttestationCli`,
-keyed off the `persist.adb.tradeinmode` system property. The shipped
-`tradeinmode.rc` does not launch that command; it gates `adbd` on the
-property, stopping `adbd` when `persist.adb.tradeinmode` is `-1` on a
-non-debuggable build so the device cannot fall back to a normal shell. It lets a device be
-placed into a restricted state where a kiosk or partner can read the
-attested diagnostic report over adb without unlocking the device. The bulk of
+Trade-in mode itself lives in the separate `tradeinmode/` component. The
+component has a `tradeinmode` Java command-line tool (a `java_binary` whose
+`main_class` is `com.android.devicediagnostics.commands.Commands`) plus an
+`AttestationCli`. Both are keyed off the `persist.adb.tradeinmode` system
+property.
+
+The shipped `tradeinmode.rc` does not launch that command. It gates `adbd` on
+the property. It stops `adbd` when `persist.adb.tradeinmode` is `-1` on a
+non-debuggable build, so the device cannot fall back to a normal shell.
+
+This mechanism lets a device be placed into a restricted state. In this state,
+a kiosk or partner can read the attested diagnostic report over adb. The device
+does not need to be unlocked. The bulk of
 the UI and collection logic is built as a reusable `DeviceDiagnosticsLib`
 Android library, with `app/` and `tradeinmode/` as the shipping artifacts.
 
@@ -24170,7 +24252,7 @@ Android library, with `app/` and `tradeinmode/` as the shipping artifacts.
 ## 58.25 Try It: Debug a Real Performance Issue
 
 This section walks through a complete debugging workflow for a realistic
-performance problem: an application that exhibits jank (dropped frames)
+performance problem.  An application exhibits jank (dropped frames)
 during list scrolling.
 
 ### 58.25.1 Problem Statement
@@ -24399,14 +24481,14 @@ Total PSS:         35,678    48,321   +12,643 KB
 ```
 
 The significant growth in both Java and Native heap during scrolling
-confirms that images are being decoded and not properly cached.
+confirms that the app decodes images and does not cache them properly.
 
 ### 58.25.8 Step 7: Root Cause and Fix
 
 The debugging workflow reveals:
 
-1. **Root cause**: Images are being decoded from JPEG on the main thread
-   during `onBindViewHolder`, and no image cache is being used.
+1. **Root cause**: The app decodes images from JPEG on the main thread
+   during `onBindViewHolder`, and it uses no image cache.
 
 2. **Contributing factors**:
    - Each scroll event triggers new decode operations.
@@ -24483,7 +24565,7 @@ integrated with the platform.  The key takeaways from this chapter:
 
 1. **logd** (`system/logging/logd/`) provides the foundational logging
    infrastructure.  Its `LogBuffer` abstraction, per-UID statistics, and
-   pruning algorithms ensure that log data is both available and bounded.
+   pruning algorithms make sure that log data is both available and bounded.
    The `LogListener` class uses io_uring for high-throughput ingestion, while
    `LogReaderThread` provides per-client filtering and tail support.
 
@@ -24493,7 +24575,7 @@ integrated with the platform.  The key takeaways from this chapter:
    `trace_processor` provides powerful analysis capabilities, and the web UI
    makes traces visually accessible.
 
-3. **simpleperf** (`system/extras/simpleperf/`) leverages the kernel's
+3. **simpleperf** (`system/extras/simpleperf/`) uses the kernel's
    `perf_events` subsystem for CPU profiling with hardware counter support,
    call graphs via DWARF unwinding, and JIT-aware symbol resolution.
 
@@ -24514,28 +24596,36 @@ integrated with the platform.  The key takeaways from this chapter:
    dump collection and progress tracking.
 
 8. **debuggerd/tombstoned** (`system/core/debuggerd/`) provides automatic
-   crash dump generation with register capture via ptrace, stack unwinding,
-   memory snapshots via VM process forking, and integration with GWP-ASan
+   crash dump generation.  It captures registers via ptrace, unwinds stacks,
+   takes memory snapshots via VM process forking, and integrates with GWP-ASan
    and Scudo for memory error diagnosis.  Tombstones now also record the
    crashing process's parent pid (`ppid`, `system/core/debuggerd/proto/tombstone.proto`).
 
 9. **The Profiling Mainline module** (`packages/modules/Profiling/`) wraps
    Perfetto, heapprofd, and simpleperf behind a safe, rate-limited app API and
-   delivers redacted results.  Android 17 grows its trigger catalogue to twelve
-   types, adds result-delivery acknowledgement and old-file cleanup, and
-   introduces the **anomaly detector** (`anomaly-detector/`): a rule-driven
-   subsystem that watches signals such as binder spam and automatically
-   captures a redacted trace through the `TRIGGER_TYPE_ANOMALY` path.
-   **UprobeStats** (`packages/modules/UprobeStats/`) sits alongside it,
-   providing server-configured uprobe + eBPF instrumentation of system
-   processes that in 17 adds a binder-transaction probe and the
-   `dynamic_instrumentation` event API.
+   delivers redacted results.  Android 17 grows its trigger catalog to twelve
+   types and adds result-delivery acknowledgement and old-file cleanup.  It
+   also introduces the **anomaly detector** (`anomaly-detector/`).  This is a
+   rule-driven subsystem that watches signals such as binder spam and
+   automatically captures a redacted trace through the `TRIGGER_TYPE_ANOMALY`
+   path.
 
-The tools are designed to work together: use logcat and bugreport for triage,
-Perfetto for temporal analysis, simpleperf for CPU profiling, heapprofd for
-memory profiling, dumpsys for service state inspection, tombstones for
-crash investigation, and the Profiling module (with its anomaly detector) for
-safe, automatic, production-grade capture.  Mastering this toolkit is essential
-for any Android platform engineer.
+    **UprobeStats** (`packages/modules/UprobeStats/`) sits alongside it.  It
+    provides server-configured uprobe + eBPF instrumentation of system
+    processes.  In 17 it adds a binder-transaction probe and the
+    `dynamic_instrumentation` event API.
+
+The tools are designed to work together:
+
+- Use logcat and bugreport for triage.
+- Use Perfetto for temporal analysis.
+- Use simpleperf for CPU profiling.
+- Use heapprofd for memory profiling.
+- Use dumpsys for service state inspection.
+- Use tombstones for crash investigation.
+- Use the Profiling module (with its anomaly detector) for safe, automatic,
+  production-grade capture.
+
+It is essential for any Android platform engineer to master this toolkit.
 
 

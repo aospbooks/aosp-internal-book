@@ -2,14 +2,17 @@
 
 Android Enterprise is the umbrella term for the collection of APIs,
 infrastructure components, and management modes that allow organizations to
-manage Android devices at scale.  At its core lies the **Device Policy
-Framework** -- a system-server subsystem centered on `DevicePolicyManagerService`
-(DPMS) that translates high-level enterprise intentions ("require a six-digit
-PIN", "block the camera in the work profile") into concrete, enforced changes
-across the Android stack.  This chapter traces every major path through the real
-AOSP source code, from the XML metadata that declares an admin component, through
-the sprawling DPMS implementation, into the policy-engine resolution layer and
-out to the individual subsystem enforcers that make each policy stick.
+manage Android devices at scale.  At its core is the **Device Policy
+Framework**.  This system-server subsystem is centered on
+`DevicePolicyManagerService` (DPMS).  DPMS translates high-level enterprise
+intentions ("require a six-digit PIN", "block the camera in the work profile")
+into concrete, enforced changes across the Android stack.
+
+This chapter traces
+every major path through the real AOSP source code.  The paths start at the XML
+metadata that declares an admin component.  They go through the sprawling DPMS
+implementation and into the policy-engine resolution layer.  They end at the
+individual subsystem enforcers that make each policy stick.
 
 ---
 
@@ -25,10 +28,10 @@ Enterprise mobility management (EMM) must reconcile two opposing requirements:
 2. **User privacy** -- employees do not want their employer to see personal
    photos, read personal messages, or track their location after hours.
 
-Android Enterprise solves this tension through a combination of user-space
-isolation (work profiles), privilege tiers (Device Owner vs. Profile Owner),
-and fine-grained policy APIs (over 250 individually controllable policies in
-modern AOSP).
+Android Enterprise solves this tension in three ways.  It uses user-space
+isolation (work profiles) and privilege tiers (Device Owner vs. Profile Owner).
+It also uses fine-grained policy APIs (over 250 individually controllable
+policies in modern AOSP).
 
 ### 61.1.2  Management Modes
 
@@ -145,12 +148,12 @@ void load() {
 ### 61.1.5  COPE (Corporate-Owned, Personally-Enabled)
 
 COPE is a hybrid mode introduced in Android 11.  The device is corporate-owned,
-but there is **no Device Owner**: a Profile Owner runs in the work profile and
+but there is **no Device Owner**.  A Profile Owner runs in the work profile and
 is marked as the "profile owner on an organization-owned device".  That marking
-is what grants it a limited set of powers over the personal side (DPMS reports
-the COPE management mode only when no Device Owner exists and
+grants it a limited set of powers over the personal side.  DPMS reports the COPE
+management mode only when no Device Owner exists and
 `isProfileOwnerOfOrganizationOwnedDevice()` is true for the work profile's
-owner).
+owner.
 
 The COPE relationship is encoded in the provisioning parameters:
 
@@ -257,8 +260,8 @@ Android Version | Key Enterprise Features
 Android 16 added a tri-state content-protection policy
 (`setContentProtectionPolicy`) and the `system:` authority prefix that lets
 trusted platform services act as policy-engine admins. Android 17 builds on
-that foundation: the new Advanced Protection Mode (AAPM) service drives several
-device policies (MTE, USB, install-unknown-sources) as a *system admin*, and a
+that foundation.  The new Advanced Protection Mode (AAPM) service drives several
+device policies (MTE, USB, install-unknown-sources) as a *system admin*.  A
 new multi-user managed-device provisioning flow lands properly for headless
 deployments. Both are covered in detail in section 61.8.
 
@@ -462,7 +465,7 @@ sequenceDiagram
 ```
 
 Upon `PHASE_BOOT_COMPLETED`, the service handles any delayed factory resets
-and ensures the Device Owner user is started:
+and makes sure the Device Owner user is started:
 
 ```java
 // DevicePolicyManagerService.java, systemReady(int phase)
@@ -530,8 +533,8 @@ public static final int USES_POLICY_DISABLE_KEYGUARD_FEATURES = 9;
 ### 61.2.5  ActiveAdmin: Per-Admin State
 
 When an admin component is activated (either as a device admin, profile owner,
-or device owner), DPMS creates an `ActiveAdmin` object that stores the complete
-policy state for that admin:
+or device owner), DPMS creates an `ActiveAdmin` object.  The object stores the
+complete policy state for that admin:
 
 ```java
 // frameworks/base/services/devicepolicy/java/com/android/server/devicepolicy/ActiveAdmin.java
@@ -675,9 +678,9 @@ static final MostRestrictive<Boolean> TRUE_MORE_RESTRICTIVE =
 
 Every resolution mechanism subclasses the abstract `ResolutionMechanism<V>`.
 The Android 17 tree ships eight subclasses (all in the
-`com.android.server.devicepolicy` package) -- seven concrete plus the abstract
-`ListUnion<T>`, which is instantiated through its STRING and PACKAGE variants --
-with `LeastRecent` and `ListUnion` added in this release:
+`com.android.server.devicepolicy` package).  Seven are concrete.  The eighth is
+the abstract `ListUnion<T>`, which is instantiated through its STRING and
+PACKAGE variants.  `LeastRecent` and `ListUnion` are added in this release:
 
 | Mechanism | Source file | Description | Example Policy |
 |-----------|-------------|-------------|----------------|
@@ -752,11 +755,11 @@ public final class EnforcingAdmin {
 }
 ```
 
-The earlier `DevicePolicyEngine` design keyed admins by `<packageName, userId>`;
+The earlier `DevicePolicyEngine` design keyed admins by `<packageName, userId>`.
 Android 16/17 refactored that into a sealed `AdminKey` hierarchy
-(`AdminKey.Package`, `AdminKey.Legacy`, `AdminKey.System`) so that an
-enterprise/role admin, a legacy device admin, and a system admin can never
-collide even when they share a package name.  Static factory methods build the
+(`AdminKey.Package`, `AdminKey.Legacy`, `AdminKey.System`).  With this
+hierarchy, an enterprise/role admin, a legacy device admin, and a system admin
+can never collide, even when they share a package name.  Static factory methods build the
 appropriate identity for each authority:
 
 ```java
@@ -787,12 +790,14 @@ static EnforcingAdmin createSystemEnforcingAdmin(String systemEntity) {
 The fourth factory, `createRoleEnforcingAdmin`, takes only a package name and
 user (no `ComponentName`) and resolves the package's held roles into a set of
 `role:<roleName>` authorities.  The `SYSTEM_AUTHORITY_PREFIX` (`"system:"`) and
-`createSystemEnforcingAdmin` path are the load-bearing addition that lets
-trusted platform services -- most notably Advanced Protection Mode (section
-61.8.28) -- set device policies through the same engine that DPCs use, without
-being a DPC.  Parsing of a persisted authority string back into an
-`android.app.admin.Authority` instance lives in `getParcelableAuthority`, which
-maps `"enterprise"` to `DpcAuthority`, `"device_admin"` to
+`createSystemEnforcingAdmin` path are the load-bearing addition.  They let
+trusted platform services set device policies through the same engine that DPCs
+use.  These services do not need to be DPCs.  The most notable one is Advanced
+Protection Mode (section 61.8.28).
+
+Parsing of a persisted authority string back
+into an `android.app.admin.Authority` instance lives in
+`getParcelableAuthority`.  It maps `"enterprise"` to `DpcAuthority`, `"device_admin"` to
 `DeviceAdminAuthority`, a `role:` prefix to `RoleAuthority`, and a `system:`
 prefix to `SystemAuthority`.
 
@@ -1173,8 +1178,8 @@ public void addCrossProfileIntentFilter(
 ```
 
 When a personal app fires an intent that matches a cross-profile filter,
-the system resolves it in the work profile (or vice versa, depending on
-the flags).
+the system resolves it in the work profile. The reverse direction also
+exists, depending on the flags.
 
 Common cross-profile intent filter scenarios:
 
@@ -1345,9 +1350,9 @@ are in the "quiet" state:
 private static final String TAG_KEEP_PROFILES_RUNNING = "keep-profiles-running";
 ```
 
-This is important for scenarios where work apps need to receive push
-notifications or sync data even when the work profile is "paused" from the
-user's perspective.
+This is important when work apps must receive push notifications or sync
+data. It applies even when the work profile is "paused" from the user's
+perspective.
 
 ### 61.3.10  Work Profile Telephony
 
@@ -1496,8 +1501,9 @@ The complexity bands map to concrete requirements:
 | HIGH | 8+ digits, no repeating/ordered | N/A | 6+ chars incl. a non-numeric char |
 
 A pattern only ever satisfies LOW (`PasswordMetrics` allows the pattern
-credential type in the LOW and NONE buckets only), and the HIGH minimum length
-is 6 when the credential contains any non-numeric character, 8 otherwise.
+credential type in the LOW and NONE buckets only). The HIGH minimum length
+is 6 when the credential contains any non-numeric character, and 8
+otherwise.
 
 The `ActiveAdmin` class stores the password policy in a dedicated object:
 
@@ -2152,8 +2158,8 @@ A Device Owner has the broadest set of capabilities:
 ### 61.6.4  COPE Architecture
 
 COPE has no Device Owner.  Instead, the work-profile Profile Owner is flagged
-as the profile owner of an organization-owned device, which grants it a limited
-set of device-wide powers over the personal side.  The key distinction at
+as the profile owner of an organization-owned device.  This flag grants it a
+limited set of device-wide powers over the personal side.  The key distinction at
 provisioning time is the `mOrganizationOwnedProvisioning` flag:
 
 ```java
@@ -2655,9 +2661,9 @@ public void setAuditLogEventCallback(Executor executor,
 }
 ```
 
-Unlike legacy security logging -- which batches events and notifies the admin
-only when a buffer fills -- audit logging streams `SecurityEvent`s to the
-registered callback as they are produced, which is what makes it usable for
+Legacy security logging batches events. It notifies the admin only when a
+buffer fills. Audit logging is different: it streams `SecurityEvent`s to the
+registered callback as they are produced. This makes it usable for
 near-real-time compliance monitoring. The corresponding server methods are
 `setAuditLogEnabled(String callerPackage, boolean enabled)` and
 `isAuditLogEnabled(String callerPackage)` on `IDevicePolicyManager`.
@@ -3052,7 +3058,7 @@ import android.app.admin.PackagePolicy;
 
 ### 61.8.22  Ephemeral Users
 
-Device Owners can force ephemeral user creation, ensuring all user data
+Device Owners can force ephemeral user creation. This makes sure all user data
 is deleted when the user logs out:
 
 ```java
@@ -3109,7 +3115,7 @@ public static final int EXEMPT_FROM_POWER_RESTRICTIONS = ...;
 public static final int EXEMPT_FROM_SUSPENSION = ...;
 ```
 
-These exemptions ensure that critical enterprise apps (like VPN clients
+These exemptions make sure that critical enterprise apps (like VPN clients
 or management agents) continue to function even under battery optimization
 or suspension policies.
 
@@ -3160,12 +3166,12 @@ graph TB
 ### 61.8.28  Advanced Protection Mode as a System Admin
 
 Android 16 introduced, and Android 17 expands, **Advanced Protection Mode
-(AAPM)** -- a single user-facing toggle (Settings) that turns on a hardened
-profile of security features at once.  Architecturally the interesting part is
-*how* it enforces those features: AAPM is **not** part of DPMS and is **not** a
-DPC.  It is a standalone system service that drives a handful of existing device
-policies as a *system admin* through the same policy engine described in section
-61.2.
+(AAPM)**. AAPM is a single user-facing toggle (Settings) that turns on a
+hardened profile of security features at once.  Architecturally the interesting
+part is *how* it enforces those features: AAPM is **not** part of DPMS and is
+**not** a DPC.  It is a standalone system service.  It drives a handful of
+existing device policies as a *system admin*.  It does this through the same
+policy engine described in section 61.2.
 
 The service and its client API live outside the devicepolicy package:
 
@@ -3207,8 +3213,8 @@ That overload (`DevicePolicyManager.setMtePolicy(String systemEntity, int
 policy)`) calls `IDevicePolicyManager.setMtePolicyBySystem(systemEntity,
 policy)`, and DPMS records the value against a
 `createSystemEnforcingAdmin(ADVANCED_PROTECTION_SYSTEM_ENTITY)` identity -- the
-`system:` authority from section 61.2.10.  Because AAPM's MTE preference enters
-the engine as just another admin's value, it coexists with any DPC's MTE policy
+`system:` authority from section 61.2.10.  AAPM's MTE preference enters the
+engine as just another admin's value.  So it coexists with any DPC's MTE policy
 under the normal resolution rules instead of fighting it.
 
 Four concrete hooks (each `extends AdvancedProtectionHook`) ship in the 17 tree:
@@ -3226,14 +3232,16 @@ mDevicePolicyManager.addUserRestrictionGlobally(ADVANCED_PROTECTION_SYSTEM_ENTIT
 // DisallowCellular2GAdvancedProtectionHook.java -> ...DISALLOW_CELLULAR_2G
 ```
 
-`addUserRestrictionGlobally(systemEntity, ...)` still lands in DPMS (it records
-the restriction against the same system `EnforcingAdmin`), so the user-restriction
-sits in the policy engine alongside any DPC's value rather than being written
-straight into `UserManager`.  The USB hook is the odd one out: it does **not** set
+`addUserRestrictionGlobally(systemEntity, ...)` still lands in DPMS.  It records
+the restriction against the same system `EnforcingAdmin`.  So the user-restriction
+sits in the policy engine alongside any DPC's value.  It is not written
+straight into `UserManager`.
+
+The USB hook is the odd one out: it does **not** set
 a user restriction at all.  On enable it toggles USB *data signaling* via
-`setUsbDataSignalIfPossible(...)`, gated on the keyguard state (it disables the
-data line only while the device is locked and re-enables it on unlock, by way of
-`IUsbManagerInternal.enableUsbDataSignal`).  There is no `DISALLOW_USB`
+`setUsbDataSignalIfPossible(...)`.  The keyguard state gates this toggle.  The hook
+disables the data line only while the device is locked.  It re-enables the line on
+unlock, by way of `IUsbManagerInternal.enableUsbDataSignal`.  There is no `DISALLOW_USB`
 `UserManager` constant; `FEATURE_ID_DISALLOW_USB` is only the hook's feature id.
 
 ```mermaid
@@ -3259,9 +3267,9 @@ graph LR
     DPMS --> ENGINE["DevicePolicyEngine<br/>MostRestrictive for user restrictions<br/>TopPriority for MEMORY_TAGGING"]
 ```
 
-A subtle but important rule: a DPC cannot silently undo AAPM.  Because the user
-opted into Advanced Protection, several of these features are resolved with the
-restrictive value pinned by the system admin, so an enterprise admin's "allow"
+A subtle but important rule: a DPC cannot silently undo AAPM.  The user
+opted into Advanced Protection.  So several of these features are resolved with the
+restrictive value pinned by the system admin.  An enterprise admin's "allow"
 cannot relax a protection the user explicitly enabled.
 
 ### 61.8.29  Multi-User Managed Device Provisioning
@@ -3285,24 +3293,24 @@ public static final int RESULT_MULTIUSER_MANAGED_DEVICE_PROVISIONED = 124;
 public void startMultiuserManagedDeviceProvisioning();
 ```
 
-The parameter objects backing the flow are the `Multiuser*ProvisioningParams`
+The parameter objects for the flow are the `Multiuser*ProvisioningParams`
 family in `frameworks/base/core/java/android/app/admin/`
 (`MultiuserManagedDeviceProvisioningParams.java`,
 `MultiuserManagedUserProvisioningParams.java`, and their `*Transport.aidl`
-parcelable forms), and completion is reported through
+parcelable forms).  Completion is reported through
 `MultiuserDeviceProvisioningCompletion.java`.  The older
 `MultiUserDeviceProvisioningParams` is being deprecated in favor of these.
 
 Conceptually this separates "provision the device" from "provision a managed
-user on that device": the Device Owner is established against the headless
-system user, and managed users are then provisioned with their own owner state.
+user on that device".  The Device Owner is established against the headless
+system user.  Managed users are then provisioned with their own owner state.
 This is the provisioning counterpart to `HEADLESS_DEVICE_OWNER_MODE_SINGLE_USER`
 and `HEADLESS_DEVICE_OWNER_MODE_AFFILIATED` from `DeviceAdminInfo`.
 
 ### 61.8.30  Policy Schema Versioning and Migration
 
-Because the policy engine persists resolved state to disk (section 61.2.13), the
-on-disk schema is versioned so that an OTA can migrate older XML forward.  DPMS
+The policy engine persists resolved state to disk (section 61.2.13).  So the
+on-disk schema is versioned. This lets an OTA migrate older XML forward.  DPMS
 pins the current schema version:
 
 ```java
@@ -3314,15 +3322,17 @@ upgrader.upgradePolicy(DPMS_VERSION);
 ```
 
 `PolicyVersionUpgrader.upgradePolicy(int)` walks a chain of `if (currentVersion
-== N)` steps from the persisted version up to `DPMS_VERSION`, rewriting policies
-and bumping the stored version at each step (for example, the version 5 -> 6 step
-flips the default of a boolean policy, so loading a version-5 file initializes
-the field to the old default before re-persisting at version 6).  A separate
+== N)` steps from the persisted version up to `DPMS_VERSION`.  At each step it
+rewrites policies and bumps the stored version.  For example, the version 5 -> 6
+step flips the default of a boolean policy.  So a version-5 file loads with the
+field set to the old default, before it is re-persisted at version 6.
+
+A separate
 `PolicyMigrator.migrateV1PoliciesToDevicePolicyEngineLocked()` handles the
 one-time migration of pre-engine (Android 13 and earlier) policies -- permitted
 input methods, account-management-disabled, and similar -- into the
-`DevicePolicyEngine` representation.  Both run inside the DPMS lock during boot,
-which is why a first boot after a major upgrade does a small amount of policy
+`DevicePolicyEngine` representation.  Both run inside the DPMS lock during boot.
+For this reason a first boot after a major upgrade does a small amount of policy
 bookkeeping before management APIs become fully live.
 
 ### 61.8.31  Enterprise RCS Archival
@@ -3340,8 +3350,8 @@ archival package per user:
 ```
 
 It exists so that, on a managed device, the messaging-archival capability can be
-delegated to a designated app (for compliance retention) and revoked cleanly
-when that app changes, rather than being a free-for-all grant.
+delegated to a designated app (for compliance retention).  The capability can
+then be revoked cleanly when that app changes.  It is not a free-for-all grant.
 
 ---
 
@@ -4015,36 +4025,36 @@ spanning the core service and its client API.
 Here are the key architectural insights:
 
 1. **Management modes** (Fully Managed, Work Profile/BYOD, COPE) offer a
-   spectrum from complete IT control to maximum user privacy.  The mode is
-   determined at provisioning time and fundamentally shapes what policies can
+   spectrum from complete IT control to maximum user privacy.  The mode is set at
+   provisioning time.  It fundamentally shapes what policies can
    be enforced.
 
 2. **DevicePolicyManagerService** is the central policy broker and one of
    AOSP's largest system services.  It validates
-   caller permissions, delegates to the policy engine for resolution, persists
-   versioned state to XML (`DPMS_VERSION = 6` in Android 17), and notifies
-   subsystems of policy changes.
+   caller permissions and delegates to the policy engine for resolution.  It
+   persists versioned state to XML (`DPMS_VERSION = 6` in Android 17).  It also
+   notifies subsystems of policy changes.
 
 3. **The DevicePolicyEngine** (introduced in Android 14) brings formal
-   multi-admin policy resolution.  Android 17 ships eight resolution strategies
-   -- `MostRestrictive`, `TopPriority`, `MostRecent`, `LeastRecent`,
-   `PackageSetUnion`, `ListUnion`, `FlagUnion`, and `StringSetIntersection` --
-   and four admin authority
+   multi-admin policy resolution.  Android 17 ships eight resolution strategies:
+   `MostRestrictive`, `TopPriority`, `MostRecent`, `LeastRecent`,
+   `PackageSetUnion`, `ListUnion`, `FlagUnion`, and `StringSetIntersection`.
+   It also has four admin authority
    kinds (`enterprise`, `device_admin`, `role:`, and the newer `system:`).  This
    lets DPC admins, role-based admins, legacy device admins, and trusted system
    services such as Advanced Protection Mode coexist on the same policies.
 
-4. **Work profiles** leverage Android's multi-user infrastructure to create
+4. **Work profiles** use Android's multi-user infrastructure to create
    a cryptographically separate container for work data.  Cross-profile
    communication is tightly controlled through intent filters, provider
    access policies, and the `CrossProfileApps` API.
 
 5. **Security infrastructure** includes security logging (events from logd),
    network logging (DNS and TCP events via netd), hardware-backed device
-   attestation, certificate management, and compliance checking -- all
-   designed to give enterprises verifiable assurance about device state.
+   attestation, certificate management, and compliance checking.  All of these
+   give enterprises verifiable assurance about device state.
 
 6. **The permission model** has evolved from requiring a specific admin
-   `ComponentName` to fine-grained `MANAGE_DEVICE_POLICY_*` permissions,
-   enabling non-DPC apps to participate in device management through roles
+   `ComponentName` to fine-grained `MANAGE_DEVICE_POLICY_*` permissions.
+   Non-DPC apps can now participate in device management through roles
    and delegation.

@@ -16,17 +16,17 @@ OTA updates on your own channel. Chapter 65 (Custom ROM Guide).
 # Chapter 65: Custom ROM Guide
 
 This chapter is the capstone of the book. We take everything covered in the
-preceding 62 chapters -- build system, init, HALs, system services, SystemUI,
-the emulator, security, signing -- and weave it into a single, end-to-end
-walkthrough: building, customizing, signing, and distributing a fully
-functional custom ROM.
+preceding 62 chapters. This includes the build system, init, HALs, system
+services, SystemUI, the emulator, security, and signing. We combine it into a
+single, end-to-end walkthrough. The walkthrough shows how to build, customize,
+sign, and distribute a fully functional custom ROM.
 
 Our target device is the AOSP Goldfish emulator (`sdk_phone64_x86_64`). This is
 a deliberate choice: every reader of this book has access to a laptop or
-workstation that can run the emulator, no physical hardware required. Everything
-we build here -- custom device trees, overlays, apps, services, boot
-animations, kernel tweaks, HAL modifications -- applies equally to a physical
-device; only the `BoardConfig.mk` and kernel binaries change.
+workstation that can run the emulator. No physical hardware is required.
+Everything we build here applies equally to a physical device. This includes
+custom device trees, overlays, apps, services, boot animations, kernel tweaks,
+and HAL modifications. Only the `BoardConfig.mk` and kernel binaries change.
 
 Every file path, every command, and every code snippet in this chapter was
 verified against the Android 17 (`android17-release`) AOSP source tree.
@@ -208,12 +208,11 @@ The build is highly parallel. Each additional core shaves minutes off a full
 build. RAM is the second most important factor -- the linker (`lld`) and
 javac/d8 compilation stages can consume 2-4 GB per parallel job.
 
-A note on the build toolchain: AOSP ships its own host toolchain prebuilts,
-so you do **not** install a JDK or a C/C++ compiler from your distribution.
-The build picks up an in-tree OpenJDK (jdk21 is the global default, with jdk25
-present in-tree for opt-in toolchains; see
-`build/soong/ui/build/config.go`'s `ConfigJavaEnvironment`) and an in-tree
-clang. The host packages below are only the supporting libraries and tools the
+A note on the build toolchain: AOSP ships its own host toolchain prebuilts.
+For that reason, you do **not** install a JDK or a C/C++ compiler from your distribution.
+The build picks up an in-tree OpenJDK and an in-tree clang. The global default
+is jdk21, and jdk25 is present in-tree for opt-in toolchains (see
+`build/soong/ui/build/config.go`'s `ConfigJavaEnvironment`). The host packages below are only the supporting libraries and tools the
 build scripts shell out to.
 
 ### 65.2.2 Required Packages (Ubuntu/Debian)
@@ -452,9 +451,9 @@ lunch sdk_phone64_x86_64-trunk_staging-userdebug
 ```
 
 `list_products`, `list_releases`, and `list_variants` are standalone scripts
-under `build/soong/bin/` that `build/make/envsetup.sh` puts on your `PATH`
-(via its `set_global_paths` helper); `lunch` itself accepts a fully spelled
-`<product>-<release>-<variant>` string or, with no argument, prints a menu.
+under `build/soong/bin/`. `build/make/envsetup.sh` puts them on your `PATH`
+(via its `set_global_paths` helper). `lunch` itself accepts a fully spelled
+`<product>-<release>-<variant>` string. With no argument, it prints a menu.
 
 A lunch target has the form `<product>-<release>-<variant>`:
 
@@ -508,12 +507,14 @@ flowchart TD
 
 In Android 17 the final build step runs through **Siso** rather than classic
 Ninja by default. `build/soong/ui/build/config.go` sets
-`NINJA_DEFAULT = NINJA_SISO`, so `m` drives the Soong-generated build graph with
-Siso unless you override it (set `SOONG_NINJA=ninja` to fall back to classic
-Ninja; macOS CI builders also fall back automatically). Siso is wire-compatible
-with the Ninja manifest Soong emits, so from a ROM author's perspective the
-build still "feels like Ninja" -- the same `m`, the same `out/` layout -- but it
-adds better remote-execution and caching hooks. Everything in this chapter works
+`NINJA_DEFAULT = NINJA_SISO`. So `m` drives the Soong-generated build graph with
+Siso unless you override it. Set `SOONG_NINJA=ninja` to fall back to classic
+Ninja. macOS CI builders also fall back automatically.
+
+Siso is wire-compatible
+with the Ninja manifest Soong emits. For that reason, from a ROM author's perspective the
+build still "feels like Ninja", with the same `m` and the same `out/` layout.
+But it adds better remote-execution and caching hooks. Everything in this chapter works
 identically under either executor.
 
 ---
@@ -943,12 +944,12 @@ if the file does not exist -- useful for optional vendor overlays.
 
 ### 65.3.11 Generic System Images and Device Bring-Up
 
-Our `bookphone` product builds a complete device image, but Android also ships a
+Our `bookphone` product builds a complete device image. Android also ships a
 **Generic System Image (GSI)**: a single `system.img` built to the Treble
-interface contract that can boot on top of any Treble-compliant vendor
+interface contract. It can boot on top of any Treble-compliant vendor
 partition. The GSI is how you sanity-check a new device's vendor implementation
-against pure AOSP, and how Compatibility Test Suite on GSI (CTS-on-GSI) and the
-Vendor Test Suite validate the vendor/system split.
+against pure AOSP. The Compatibility Test Suite on GSI (CTS-on-GSI) and the
+Vendor Test Suite also use it to validate the vendor/system split.
 
 The GSI products live in `build/make/target/product/`:
 
@@ -990,8 +991,8 @@ fastboot reboot
 
 GSIs are a debugging and conformance tool, not a daily-driver ROM: they carry no
 vendor apps and rely entirely on the device's existing vendor partition. For our
-custom ROM we build the full device image instead, but knowing the GSI path is
-essential when bringing a custom ROM to a new piece of hardware.
+custom ROM we build the full device image instead. But you must know the GSI
+path when you bring a custom ROM to a new piece of hardware.
 
 ---
 
@@ -1284,19 +1285,19 @@ public class MainActivity extends Activity {
 
 ### 65.4.4 Removing Default Apps
 
-AOSP itself has no "remove this package" product variable (the
-`PRODUCT_PACKAGES_REMOVE` you may see in LineageOS trees is a vendor
-extension — `build/make/core/product.mk` declares only `PRODUCT_PACKAGES`
-and its `_DEBUG`/`_ENG`/`_TESTS` variants). In stock AOSP there are two
-ways to drop a default app:
+AOSP itself has no "remove this package" product variable. You may see
+`PRODUCT_PACKAGES_REMOVE` in LineageOS trees, but it is a vendor extension.
+`build/make/core/product.mk` declares only `PRODUCT_PACKAGES` and its
+`_DEBUG`/`_ENG`/`_TESTS` variants. In stock AOSP there are two ways to drop
+a default app:
 
 1. **Do not inherit the makefile that adds it** — most default apps enter
-   `PRODUCT_PACKAGES` through the `$(call inherit-product, ...)` chain, so
-   choosing a slimmer parent makefile keeps them out entirely.
+   `PRODUCT_PACKAGES` through the `$(call inherit-product, ...)` chain. If
+   you choose a slimmer parent makefile, they stay out entirely.
 2. **Override it with a replacement module** — a module that declares
    `overrides: ["Browser2"]` in Soong (or `LOCAL_OVERRIDES_PACKAGES` in
-   Make) removes the named module from `PRODUCT_PACKAGES` when both would
-   be installed:
+   Make) removes the named module from `PRODUCT_PACKAGES`. This happens
+   when both modules would be installed:
 
 ```json
 // In your replacement app's Android.bp
@@ -2439,9 +2440,9 @@ runtime_resource_overlay {
 </resources>
 ```
 
-The names describe the icon tone, not the UI mode: these two resources are
+The names describe the icon tone, not the UI mode. These two resources are
 defined in `frameworks/base/packages/SettingsLib/res/values/colors.xml`
-(SettingsLib is statically linked into SystemUI), where
+(SettingsLib is statically linked into SystemUI). There,
 `light_mode_icon_color_single_tone` is the light tint and
 `dark_mode_icon_color_single_tone` is the dark one.
 
@@ -2593,8 +2594,8 @@ color scheme for your ROM, use a theme overlay. The `system_accent*` palette
 is defined in framework resources
 (`frameworks/base/core/res/res/values/colors_dynamic.xml`, package
 `android`), so these overrides belong in the framework RRO
-(`BookFrameworkOverlay`, with `android:targetPackage="android"`) -- an
-overlay targeting `com.android.systemui` cannot override them:
+(`BookFrameworkOverlay`, with `android:targetPackage="android"`). An
+overlay that targets `com.android.systemui` cannot override them:
 
 ```xml
 <!-- device/AospBook/bookphone/overlay/BookFrameworkOverlay/res/values/colors.xml -->
@@ -2636,9 +2637,9 @@ SystemUI is built as a system app via:
 frameworks/base/packages/SystemUI/Android.bp
 ```
 
-To include your modifications, ensure that any new source files are added to
-the `srcs` list in the build file, or placed in a directory that is already
-included via a glob pattern.
+To include your modifications, make sure that any new source file is in the
+`srcs` list in the build file. A directory that a glob pattern already
+includes is also correct.
 
 ---
 
@@ -2869,8 +2870,8 @@ Common build errors and solutions:
 
 A change that affects every native binary in an Android 17 ROM is the move to
 **16 KB memory page sizes**. Modern arm64 SoCs can run their MMU with a 16 KB
-base page instead of the historical 4 KB; doing so reduces TLB misses and
-improves throughput, but it means all native code (`.so` files, executables)
+base page instead of the historical 4 KB. This reduces TLB misses and
+improves throughput. But all native code (`.so` files, executables)
 must be laid out so that loadable segments are 16 KB aligned.
 
 The build system already defaults to this on 64-bit targets.
@@ -2890,7 +2891,7 @@ endif
 
 So binaries you build from source through Soong are already 16 KB compatible.
 What can break is a **prebuilt `.so` shipped inside a prebuilt APK or a vendor
-blob** that was linked with 4 KB alignment by some older toolchain. Such a
+blob** that an older toolchain linked with 4 KB alignment. Such a
 library loads fine on a 4 KB kernel but fails to map on a 16 KB kernel.
 
 For development and testing, two knobs matter:
@@ -2918,12 +2919,13 @@ adb shell getconf PAGE_SIZE        # prints 16384 on a 16 KB build
 
 Use `getconf PAGE_SIZE` alone for this check. The related property
 `ro.product.build.16k_page.enabled` only reflects whether the product set
-`PRODUCT_16K_DEVELOPER_OPTION` (the dual-boot developer toggle), not whether
-the image is 16 KB aligned -- on `sdk_phone16k_x86_64`, which does not set
-that option, it reads `false` even though the build is a true 16 KB build.
+`PRODUCT_16K_DEVELOPER_OPTION` (the dual-boot developer toggle). The property does not
+show whether the image is 16 KB aligned. On `sdk_phone16k_x86_64`, which does
+not set that option, it reads `false` even though the build is a true 16 KB
+build.
 
-If a prebuilt fails to load on the 16 KB target, rebuild it from source (which
-picks up the 16 KB alignment automatically) or re-link it with a 16 KB
+If a prebuilt fails to load on the 16 KB target, rebuild it from source. This
+picks up the 16 KB alignment automatically. Or re-link it with a 16 KB
 `max-page-size`. Auditing prebuilts for 16 KB readiness is now a standard step
 when bringing a ROM forward to Android 17.
 
@@ -3302,8 +3304,8 @@ build/make/target/product/security/
 ```
 
 **CRITICAL**: The keys in that directory are publicly known test keys. Any
-ROM released with these keys is trivially vulnerable -- anyone can sign a
-malicious APK with the same key and it will be accepted as a system update.
+ROM released with these keys is trivially vulnerable. Anyone can sign a
+malicious APK with the same key, and it will be accepted as a system update.
 
 The `README` at `build/make/target/product/security/README` explicitly warns:
 
@@ -3439,11 +3441,11 @@ python3 build/make/tools/releasetools/ota_from_target_files.py \
 during ROM bring-up:
 
 - `ota_from_raw_img.py` builds an A/B payload directly from a set of `.img`
-  files instead of a full target-files package, which is convenient when you
+  files instead of a full target-files package. This is convenient when you
   only want to ship one or two repartitioned images.
 - `create_brick_ota.py` produces a recovery package that wipes the AVB/`vbmeta`
-  partitions to deliberately "brick" a device (used for RMA/secure-erase
-  flows), a reminder that an OTA payload is just a signed instruction set over
+  partitions to "brick" a device on purpose (used for RMA/secure-erase flows).
+  It is a reminder that an OTA payload is just a signed instruction set over
   partitions.
 
 These supplement, rather than replace, the `ota_from_target_files.py` path that
@@ -3655,8 +3657,8 @@ tools/bazel run //common:kernel_x86_64_dist -- --dist_dir=out/x86_64/dist
 # tools/bazel run //common:kernel_aarch64_dist -- --dist_dir=out/aarch64/dist
 ```
 
-Kleaf wraps the kernel build in Bazel rules; `tools/bazel` is the checked-in
-launcher and the `*_dist` targets stage the kernel image plus modules into the
+Kleaf wraps the kernel build in Bazel rules. `tools/bazel` is the checked-in
+launcher. The `*_dist` targets stage the kernel image plus modules into the
 `--dist_dir` you pass. The build configuration that used to live in
 `build.config.*` files is now expressed as Bazel `kernel_build` targets in the
 kernel tree.
@@ -3837,9 +3839,9 @@ RAMDISK_SYSTEM_KERNEL_MODULES := \
     vmw_vsock_virtio_transport.ko \
 ```
 
-These modules are loaded during first-stage init before the system partition
-is even mounted, because they provide the virtual hardware drivers needed to
-access the disk.
+These modules are loaded during first-stage init, before the system partition
+is even mounted. This is because they provide the virtual hardware drivers that are
+needed to access the disk.
 
 ---
 
@@ -4725,36 +4727,39 @@ device/AospBook/bookphone/
 
 ## 65.14 Case Study: MaruOS as a Convergence Custom ROM
 
-The thirteen sections above built up a generic "custom ROM" — a fork of AOSP
-with tailored apps, framework tweaks, branded SystemUI, custom kernel, and a
-release/distribution flow. To see how far this template can stretch in
-practice, consider **MaruOS** (<https://github.com/maruos>), an open-source
-custom ROM whose explicit goal is *"Your phone is your PC"* —
-*"when you're on the go, Maru is your phone; when you're at your desk, Maru
-is your desktop."* Plugging a supported Pixel or HTC 10 into a monitor over
-USB-C/HDMI brings up a full Debian GNU/Linux desktop session on the external
-display while the phone screen keeps running stock Android. Same kernel,
+The thirteen sections above built up a generic "custom ROM". It is a fork of
+AOSP with tailored apps, framework tweaks, branded SystemUI, a custom kernel,
+and a release/distribution flow. To see how far this template can stretch in
+practice, consider **MaruOS** (<https://github.com/maruos>), an
+open-source custom ROM. Its explicit goal is *"Your phone is your PC"*.
+The project describes the goal this way: *"when you're on the go, Maru is
+your phone; when you're at your desk, Maru is your desktop."*
+
+A supported Pixel or HTC 10 can be plugged into a monitor over USB-C/HDMI. A full
+Debian GNU/Linux desktop session then comes up on the external display. At
+the same time, the phone screen keeps running stock Android. Same kernel,
 same device, two simultaneous user-facing operating systems.
 
 ![MaruOS: a single phone driving both a mobile Android UI and a Debian desktop on an attached monitor](https://maruos.com/assets/img/hero.598c5250.jpg)
 
-MaruOS is not a typical custom ROM and is interesting precisely because of
-how it departs from the template the rest of this chapter laid out. It is a
-useful end-of-chapter exhibit: an unusual but production-realised demonstration
+MaruOS is not a typical custom ROM. It is interesting precisely because it
+departs from the template that the rest of this chapter laid out. It is a
+useful end-of-chapter exhibit: an unusual but production-realized demonstration
 of how much *room* the AOSP overlay model actually leaves a custom-ROM author.
 
 ### 65.14.1 Why MaruOS Is an Unusual Custom ROM
 
 A canonical custom ROM (LineageOS, GrapheneOS, /e/OS, ParanoidAndroid) keeps
-the AOSP shape unchanged and varies *content*: different APKs, different
-framework defaults, different SystemUI, different security posture, different
-kernel hardening. The runtime model the user experiences is still
+the AOSP shape unchanged and varies *content*. The differences are in the
+APKs, the framework defaults, SystemUI, the security posture, and the kernel
+hardening. The runtime model the user experiences is still
 zygote → activities → SystemUI → home launcher.
 
-MaruOS keeps that model intact for the phone surface but layers a *second*
-runtime model on top: a Debian system running inside an LXC container that
-the Android side starts on demand, with its own X11 desktop environment, its
-own package manager, and its own boot/login flow. The README states this
+MaruOS keeps that model intact for the phone surface. It also layers a
+*second* runtime model on top: a Debian system that runs inside an LXC
+container. The Android side starts the container on demand. The container has
+its own X11 desktop environment, its own package manager, and its own
+boot/login flow. The README states this
 explicitly:
 
 > *"It uses lightweight OS virtualization (containers) to spin up virtual
@@ -4765,7 +4770,7 @@ vendor blobs, branded apps), MaruOS ships:
 
 - An LXC container management daemon and supporting Android-side services.
 - A "Perspective" layer that bridges Android's display, input, and audio
-  pipelines to the container so the container can present a coherent
+  pipelines to the container. This lets the container present a coherent
   desktop on the external screen.
 - A build pipeline for the Debian container image, separate from the AOSP
   build.
@@ -4774,10 +4779,10 @@ vendor blobs, branded apps), MaruOS ships:
 - New SELinux policy to keep the container's Linux processes from
   trampling Android's domain model.
 
-The device list is intentionally narrow — recent forks track a few Pixel
-generations and the HTC 10, with device repos forked from LineageOS so the
-hardware-enablement layer is borrowed rather than maintained from scratch.
-See the manifest at `maruos/manifest` for the current set; supported devices
+The device list is intentionally narrow. Recent forks track a few Pixel
+generations and the HTC 10. The device repos are forked from LineageOS, so
+Maru borrows the hardware-enablement layer and does not maintain it from
+scratch. See the manifest at `maruos/manifest` for the current set; supported devices
 have changed across maru-0.x releases.
 
 The license is Apache-2.0 across the org, matching AOSP itself.
@@ -4832,20 +4837,20 @@ Three architectural points worth pulling out:
 1. **One kernel.** Both Android and Debian share `/proc/version`. The
    container runs by namespacing PIDs, mounts, network, IPC, and user IDs;
    it does not boot its own kernel image. This is the LXC bargain — much
-   lower overhead than a VM, but no defence against a kernel exploit
-   crossing the container boundary.
+   lower overhead than a VM, but no defense against a kernel exploit that
+   crosses the container boundary.
 2. **The Maru bridge daemon is Android-resident.** It runs as a normal
    Android process (Java/JNI on top of native C/C++) inside the AOSP user
-   space, listens for display-attach events, and uses ordinary Linux APIs
-   to start the LXC container. It is *not* an in-container piece of code;
-   the container only knows it's been booted.
+   space. It listens for display-attach events, and it uses ordinary Linux
+   APIs to start the LXC container. It is *not* an in-container piece of code;
+   the container only knows that it booted.
 3. **Two displays, two owners.** The phone screen continues to render
    Android's SystemUI on the internal display. The external display is
-   *not* running another Android UI — it is a presentation surface that
-   `SurfaceFlinger` hands off to the Linux side via mflinger (65.14.8),
-   so what the user sees on the monitor is rendered entirely by X.org and
-   the container's desktop environment (Xfce or whatever the Debian image
-   is configured with). The user's phone keeps running stock Android the
+   *not* running another Android UI. It is a presentation surface that
+   `SurfaceFlinger` hands off to the Linux side via mflinger (65.14.8).
+   X.org and the container's desktop environment (Xfce or whatever the
+   Debian image is configured with) render everything that the user sees
+   on the monitor. The user's phone keeps running stock Android the
    whole time the desktop is up.
 
 This is qualitatively different from "desktop mode" features built into
@@ -4856,9 +4861,9 @@ same kernel.
 ### 65.14.3 Kernel Configuration for LXC
 
 LXC is the mechanism that lets MaruOS run a Debian rootfs alongside Android
-without a second kernel, but it depends on Linux kernel features that stock
-Android kernels routinely disable. A custom ROM building on LXC has to start
-by making sure those features are present in the kernel image it ships.
+without a second kernel. But it depends on Linux kernel features that stock
+Android kernels routinely disable. A custom ROM that builds on LXC must first
+make sure those features are present in the kernel image it ships.
 
 Required kernel features for an unprivileged LXC container of the kind Maru
 runs:
@@ -4877,38 +4882,38 @@ runs:
 | Optional overlay FS | `CONFIG_OVERLAY_FS=y` | Layered container rootfs without full copies |
 
 The catch is `CONFIG_USER_NS`. Android's kernel teams historically disable
-this option on production kernels because user namespaces have been a
-recurring source of CVEs across Linux releases — the privilege boundary
+this option on production kernels, because user namespaces have been a
+recurring source of CVEs across Linux releases. The privilege boundary
 inside a user namespace has been harder to keep tight than the standard
-root-vs-non-root split, and Android's security posture is to remove
+root-vs-non-root split. Android's security posture is to remove
 attack surface where the platform itself does not need it. LineageOS device
-kernels typically inherit that default. MaruOS, in order to run LXC at all,
-must flip `CONFIG_USER_NS` back to `y` in its kernel build, knowingly
-accepting the additional attack surface.
+kernels typically inherit that default. To run LXC at all, MaruOS
+must flip `CONFIG_USER_NS` back to `y` in its kernel build, and it knowingly
+accepts the additional attack surface.
 
-The other features in the table are usually already on in an Android kernel:
-the Android Activity Manager uses cgroups (memory, freezer), the
-low-memory killer uses cgroup v2 memory controllers, seccomp filters are
-required by the Android sandbox, and namespaces are part of every modern
+The other features in the table are usually already on in an Android kernel.
+The Android Activity Manager uses cgroups (memory, freezer), and the
+low-memory killer uses cgroup v2 memory controllers. The Android sandbox
+requires seccomp filters, and namespaces are part of every modern
 Linux kernel's default configuration. So the kernel customization Maru
-needs is narrower than it first looks: enable `CONFIG_USER_NS`, confirm the
-remaining namespace and cgroup controllers are on, optionally enable
-`CONFIG_INPUT_UINPUT` if the synthetic-injection input path of 65.14.9 is
-wanted, and rebuild.
+needs is narrower than it first looks. Maru must enable `CONFIG_USER_NS`,
+confirm the remaining namespace and cgroup controllers are on, and rebuild.
+Maru can also enable `CONFIG_INPUT_UINPUT` if it wants the
+synthetic-injection input path of 65.14.9.
 
 This is why a Maru device build pulls a Maru-modified kernel from its
 `device_*` repos rather than reusing LineageOS's kernel as-is. Section 65.11
-covers the general kernel-customization workflow that MaruOS follows: a
-defconfig fragment that toggles the required options, layered on top of the
-device's base defconfig, and a rebuild of the boot image to flash alongside
-the system image.
+covers the general kernel-customization workflow that MaruOS follows. The
+workflow uses a defconfig fragment that toggles the required options on top
+of the device's base defconfig. Then the boot image is rebuilt. It is flashed
+alongside the system image.
 
-The trade-off is starkly stated. Enabling `CONFIG_USER_NS` opens an attack
+The trade-off is stark. Enabling `CONFIG_USER_NS` opens an attack
 surface that stock AOSP intentionally closes. For Maru this is an accepted
-cost of the convergence model. For any custom ROM considering an LXC-based
-or namespaces-based extension, the choice should be made deliberately, with
-the threat model written down — there is no way to get unprivileged LXC
-without this flag, and there is no way to flip this flag without expanding
+cost of the convergence model. Any custom ROM that considers an LXC-based
+or namespaces-based extension should make this choice deliberately, with
+the threat model written down. There is no way to get unprivileged LXC
+without this flag. There is also no way to flip this flag without expanding
 the kernel attack surface.
 
 ### 65.14.4 Repository Topology
@@ -4996,16 +5001,17 @@ vendor_maruos/
 Each directory has a specific role in the convergence story. Walking them
 in dependency order makes the overall design clearer than alphabetical:
 
-**`perspective/`** is the conceptual centre. The name signals the
+**`perspective/`** is the conceptual center. The name signals the
 abstraction: the device has multiple "perspectives" (phone screen, desktop
 screen, perhaps headphones-only) and Maru's job is to switch between them.
 The C++ + Java mix in this directory is the daemon that watches for
-display events, decides when the user's "desktop perspective" is active,
-and orchestrates everything below.
+display events. It decides when the user's "desktop perspective" is active,
+and it orchestrates everything below.
 
-**`container/`** holds the LXC integration: the lifecycle wrapper around
-`lxc-start`, the rootfs mount logic, the cgroup setup, the bind mounts
-that expose host resources to the container, and the tear-down path. It is
+**`container/`** holds the LXC integration. It has the lifecycle wrapper
+around `lxc-start` and the rootfs mount logic. It also has the cgroup setup,
+the bind mounts that expose host resources to the container, and the
+tear-down path. It is
 the layer that talks directly to LXC.
 
 **`overlay/`** uses AOSP's standard overlay mechanism (see section 65.5)
@@ -5017,30 +5023,31 @@ strings, and any pre-installed-app launch defaults.
 that the overlay system cannot express. Where overlays patch resource
 values inside an APK, `overrides/` replaces entire files or scripts.
 
-**`sepolicy/`** is the SELinux policy delta needed to let the container
+**`sepolicy/`** is the SELinux policy delta. It lets the container
 daemon talk to LXC, mount the rootfs, manipulate cgroups, forward input,
-and grab a framebuffer — none of which stock AOSP policy permits, because
+and grab a framebuffer. Stock AOSP policy permits none of these, because
 no stock AOSP component does any of those things.
 
 **`prebuilts/`** carries pre-compiled artifacts that the AOSP build does
-not produce on its own — typically the LXC toolchain binaries, helper
-shell scripts that aren't built per device, and any third-party Debian
-support pieces.
+not produce on its own. These are typically the LXC toolchain binaries,
+helper shell scripts that are not built per device, and any third-party
+Debian support pieces.
 
-**`mlogwrapper/`** is a small utility for redirecting Maru daemon logs
-into Android's logging infrastructure (`logd`/`logcat`) so a developer
-debugging Maru can use the same tools they'd use for any Android service.
+**`mlogwrapper/`** is a small utility that redirects Maru daemon logs
+into Android's logging infrastructure (`logd`/`logcat`). A developer who
+debugs Maru can then use the same tools that they use for any Android
+service.
 
-**`scripts/`** contains repo-level setup helpers — things invoked outside
-the normal `m`/`make` flow, like fetching the Debian rootfs from the
-blueprints build output and dropping it into a per-product path before
-the system image is packaged.
+**`scripts/`** contains repo-level setup helpers. These are things invoked
+outside the normal `m`/`make` flow. For example, one helper fetches the
+Debian rootfs from the blueprints build output. It drops the rootfs into a
+per-product path before the system image is packaged.
 
 ### 65.14.6 The blueprints Container Builder
 
-The Debian rootfs the container runs is not built by Soong. It is built by
-a separate repository, `maruos/blueprints`, which is a self-contained
-shell pipeline:
+The Debian rootfs the container runs is not built by Soong. A separate
+repository, `maruos/blueprints`, builds it. This repository is a
+self-contained shell pipeline:
 
 - `build.sh` — main build entry point. Reads a blueprint, invokes its
   per-blueprint hooks, produces an output tarball.
@@ -5057,55 +5064,59 @@ shell pipeline:
 The split is deliberate. AOSP's build system is excellent at producing
 Android system images and signed boot images, but it has no idea what a
 Debian rootfs is. Rather than teach Soong about `debootstrap`, Maru runs
-two builds — one Soong/Make for the Android side, one Shell/`debootstrap`
-for the Debian side — and a final assembly step folds the rootfs output
-into the appropriate product directory.
+two builds. One is Soong/Make for the Android side. The other is
+Shell/`debootstrap` for the Debian side. A final assembly step then folds
+the rootfs output into the appropriate product directory.
 
-What this means for the custom-ROM author: when your customization adds an
+This has a lesson for the custom-ROM author. If your customization adds an
 entirely foreign environment (a container, a VM, a different libc), the
-right answer is often a *sibling* build system that exports a tarball,
-not a Soong module that tries to model the foreign world.
+right answer is often a *sibling* build system. This build system exports a
+tarball. It is not a Soong module that tries to model the foreign world.
 
 ### 65.14.7 The "Perspective" Bridge Layer
 
 The `perspective/` and `include/perspective/` directories carry the
 hardest-to-classify part of the design: the Android-resident daemon that
-animates the entire convergence flow. From its structural position
-(Android user space, C++/Java mix, `include/` next to source) and the role
-the rest of the tree assumes it plays, it is responsible for at least the
-following:
+animates the entire convergence flow. We infer its duties from its
+structural position (Android user space, C++/Java mix, `include/` next to
+source). We also infer them from the role that the rest of the tree assumes
+for it. It is
+responsible for at least the following:
 
-1. **Display-attach detection.** Listening for `DisplayManager`
-   `onDisplayAdded` callbacks (or the equivalent at a lower level) and
-   deciding when an attached display is "desktop class" — large enough
+1. **Display-attach detection.** It listens for `DisplayManager`
+   `onDisplayAdded` callbacks (or the equivalent at a lower level). It
+   decides when an attached display is "desktop class" — large enough
    and external enough — to warrant launching the desktop perspective.
-2. **Container lifecycle.** Calling into `container/` to start the LXC
+2. **Container lifecycle.** It calls into `container/` to start the LXC
    container on first desktop attach and to stop it on the last desktop
-   detach, plus quiescing it on screen-off if Maru policy says so.
-3. **Input routing.** Forwarding keyboard, mouse, and possibly touch
-   events from Android's input system into the container so the user
-   driving an external keyboard sees the keystrokes land in Debian.
-4. **Audio routing.** Negotiating audio output between the phone's
-   speakers and any audio device the desktop monitor provides over HDMI.
-5. **Permission and authentication.** Some way for the user to confirm
-   that an attached display is allowed to host a desktop session — Maru
-   is not going to expose a Debian session to anyone who plugs into the
+   detach. It also quiesces the container on screen-off if Maru policy
+   says so.
+3. **Input routing.** It forwards keyboard, mouse, and possibly touch
+   events from Android's input system into the container. This lets a user who uses
+   an external keyboard see the keystrokes land in Debian.
+4. **Audio routing.** It negotiates audio output between the phone's
+   speakers and any audio device that the desktop monitor provides over
+   HDMI.
+5. **Permission and authentication.** It provides some way for the user to
+   confirm that an attached display is allowed to host a desktop session.
+   Maru does not expose a Debian session to anyone who plugs into the
    port.
 
-The repository organisation suggests the perspective layer is the
-"director" while `container/` is the "stagehand": one decides what
-should happen, the other actually moves the LXC machinery. The split is
-a useful pattern for any custom ROM author writing a long-running
+The repository organization suggests the perspective layer is the
+"director" while `container/` is the "stagehand". One decides what
+should happen. The other actually moves the LXC machinery. The split is
+a useful pattern for any custom ROM author who writes a long-running
 Android service that drives non-Android user-space resources.
 
 ### 65.14.8 mflinger and mclient: The Graphics Bridge
 
 When the X11 server inside the Debian container draws to its framebuffer,
-those pixels live in the container's address space — a different mount
-namespace, a different `/dev`, a different view of GPU memory. Android's
+those pixels live in the container's address space. The container has a
+different mount namespace, a different `/dev`, and a different view of GPU
+memory. Android's
 `SurfaceFlinger`, which owns presentation on the external display, knows
-nothing about that buffer. Some piece of software has to bridge the two,
-and the design Maru uses for this bridge is unusually elegant: it makes
+nothing about that buffer. Some piece of software has to bridge the two.
+The design Maru uses for this bridge is unusually elegant: it makes
 the LXC namespace boundary effectively invisible to the GPU.
 
 mflinger lives in its own repository at <https://github.com/maruos/mflinger>,
@@ -5114,13 +5125,13 @@ bridge for Maru OS."* The codebase is C-dominant (~64% C, 21% C++) with
 `src/`, `include/`, `lib/`, `tests/`, and `scripts/` directories — the
 layout of a small Linux system service.
 
-The name signals the analogy. Android's `SurfaceFlinger` is the consumer
-that takes per-producer graphics buffers — from apps, the camera HAL, video
+The name signals the analogy: Android's `SurfaceFlinger` is the consumer.
+It takes per-producer graphics buffers — from apps, the camera HAL, video
 decoders, and so on — via the standard `ANativeWindow`/`BufferQueue`
-producer protocol and composes them onto the display. mflinger plays the
-*producer* role for the container's frames: it asks SurfaceFlinger for an
-`ANativeWindow`-backed Surface, hands the underlying buffer to Linux for
-direct rendering, and tells SurfaceFlinger when the buffer is ready to
+producer protocol. Then it composes them onto the display. mflinger plays the
+*producer* role for the container's frames. It asks SurfaceFlinger for an
+`ANativeWindow`-backed Surface and hands the underlying buffer to Linux for
+direct rendering. Then it tells SurfaceFlinger when the buffer is ready to
 present.
 
 The mflinger architecture is split into two halves:
@@ -5128,32 +5139,32 @@ The mflinger architecture is split into two halves:
 - **mflinger** (the daemon, Android-side) runs as an Android user-space
   service started by `init.maru.rc`. It creates an Android `Surface`
   attached to the external display and uses the standard `ANativeWindow`
-  C API to dequeue `GraphicBuffer` slots. Each buffer is backed by a
-  gralloc allocation — typically a **dma-buf** on modern AOSP devices —
-  whose file descriptor mflinger can hand to a process in another
+  C API to dequeue `GraphicBuffer` slots. A gralloc allocation backs each
+  buffer — typically a **dma-buf** on modern AOSP devices. mflinger can
+  hand the file descriptor of this allocation to a process in another
   namespace.
 - **mclient** (the container-side client) ships inside the Debian rootfs.
   It receives the dma-buf file descriptor from mflinger over a Unix
-  domain socket using `SCM_RIGHTS` ancillary data — the standard Linux
-  mechanism for passing a kernel-managed fd between processes. This
-  works across the LXC namespace boundary because the kernel
+  domain socket. The transfer uses `SCM_RIGHTS` ancillary data — the
+  standard Linux mechanism to pass a kernel-managed fd between processes.
+  This works across the LXC namespace boundary because the kernel
   reference-counts the underlying object, not the path. mclient then
-  `mmap`s the dma-buf (or imports it via DRI3 as a pixmap) and exposes
+  `mmap`s the dma-buf (or imports it via DRI3 as a pixmap). It exposes
   the resulting memory region to X.org as the root window's backing
   store.
 
 The pivotal fact: **X.org renders directly into the same physical GPU
 memory that SurfaceFlinger will present.** When the X server commits a
-frame, mclient tells mflinger the buffer is ready; mflinger calls
-`queueBuffer` on the `ANativeWindow`; SurfaceFlinger picks the buffer up,
-includes it in its next composition pass on the external display, and the
+frame, mclient tells mflinger that the buffer is ready, and mflinger calls
+`queueBuffer` on the `ANativeWindow`. SurfaceFlinger picks the buffer up and
+includes it in its next composition pass on the external display. Then the
 user sees the desktop. There is no intermediate "container framebuffer"
-that gets copied across the boundary — the fd *is* the boundary, and the
+to copy across the boundary. The fd *is* the boundary, and the
 GPU memory is shared.
 
 This is the same producer/consumer pattern Android uses internally for
-every camera, codec, and OpenGL surface; mflinger generalises it by
-handing the producer end to a process living in a different mount
+every camera, codec, and OpenGL surface. mflinger generalizes it. It hands
+the producer end to a process that lives in a different mount
 namespace.
 
 The graphics bridge per frame.
@@ -5193,31 +5204,32 @@ Two consequences of this design worth pulling out:
 - **One composition per frame.** Because X.org draws directly into the
   buffer SurfaceFlinger will present, there is no separate "container
   framebuffer → host framebuffer" composition step. The same number of
-  compositions happen as for any normal Android surface, which is why the
-  design scales to a 1920×1080 external monitor without becoming the
+  compositions happen as for any normal Android surface. This is why the
+  design scales to a 1920×1080 external monitor and does not become the
   bottleneck on modest hardware.
 
-The Android-side SELinux policy in `vendor_maruos/sepolicy/` (65.14.11) is
-what permits mflinger to acquire `ANativeWindow` surfaces, talk to
-SurfaceFlinger over binder, and pass file descriptors out over its UDS;
-without those rules the daemon would be denied at process start. The
-bind-mount that exposes the mclient↔mflinger socket across the container
-boundary is set up by the container module in `vendor_maruos/container/`
-(65.14.5) when LXC starts.
+The Android-side SELinux policy in `vendor_maruos/sepolicy/` (65.14.11)
+permits mflinger to acquire `ANativeWindow` surfaces and to talk to
+SurfaceFlinger over binder. It also permits mflinger to pass file
+descriptors out over its UDS. Without those rules, the
+daemon would be denied at process start. The container module in
+`vendor_maruos/container/` (65.14.5) sets up the bind-mount that exposes
+the mclient↔mflinger socket across the container boundary when LXC starts.
 
 ### 65.14.9 Input Mapping Between Linux and Android
 
-The complement of the graphics bridge is the input bridge — but it is
-much smaller than the graphics bridge, and for the same architectural
-reason that the graphics bridge is small: Android and the LXC container
-share the same kernel.
+The complement of the graphics bridge is the input bridge. It is much
+smaller than the graphics bridge. The reason is the same: Android and the
+LXC container share the same kernel.
 
 Keyboard, mouse, and touch hardware lives in the kernel's input subsystem
 and is exposed through `/dev/input/event*` nodes. Because there is only
-one kernel, there is only one set of these nodes — there is not a separate
+one kernel, there is only one set of these nodes. There is not a separate
 "Linux input device" and "Android input device" pair per piece of
 hardware. Android's `InputReader` (inside `system_server`, see chapter 22)
-opens them through Android's `/dev/input/`. The container sees the same
+opens them through Android's `/dev/input/`.
+
+The container sees the same
 nodes through its own `/dev/input/` namespace, which Maru bind-mounts from
 the host at LXC startup. X.org inside the container reads them through
 the evdev input driver — the same evdev path X.org would use on a stock
@@ -5244,36 +5256,37 @@ What the bridge actually does, then, is *route* — decide which side
 3. **Exclusivity via `EVIOCGRAB`.** When the owning side needs to be
    the *only* reader of a device, the relevant process issues
    `ioctl(fd, EVIOCGRAB, 1)` on the event node. Without that, evdev's
-   read path is multicast — every open file descriptor on the same
-   `/dev/input/eventN` receives every event — and Android and X.org
+   read path is multicast. Every open file descriptor on the same
+   `/dev/input/eventN` receives every event, and Android and X.org
    would both dispatch the same keystroke. With `EVIOCGRAB`, the kernel
    delivers events only to the grabbing fd until the grab is released.
 4. **Coordinate translation for cross-display touch.** Touch events use
    absolute coordinates scaled to the originating panel's resolution. A
    touch on Android's internal 1080×1920 panel is meaningless to an X
-   server drawing on a 1920×1080 external monitor. The common case
-   doesn't hit this — the internal panel is owned by Android, the
-   external touch monitor is owned by the desktop. The uncommon case is
-   "use the phone screen as a touchpad for the desktop," where the
-   perspective daemon reads internal-panel events, rescales coordinates
-   into the desktop's space, and synthesises new events on a virtual
-   device. `CONFIG_INPUT_UINPUT` (65.14.3) is what enables this
-   synthetic-injection path. The common path does not need it.
+   server drawing on a 1920×1080 external monitor.
+
+    The common case does not hit this, because Android owns the internal
+    panel and the desktop owns the external touch monitor. The uncommon case is
+    "use the phone screen as a touchpad for the desktop." In that case the
+    perspective daemon reads internal-panel events and rescales coordinates
+    into the desktop's space. Then it synthesizes new events on a virtual
+    device. `CONFIG_INPUT_UINPUT` (65.14.3) is what enables this
+    synthetic-injection path. The common path does not need it.
 
 The whole pipeline is invisible to both ends. Android's `InputReader`
-enumerates the devices it owns and dispatches normally; the container's
-X server enumerates the devices it owns and dispatches normally; only the
-perspective daemon in the middle knows which side currently owns what.
+enumerates the devices it owns and dispatches normally. The container's
+X server does the same for the devices it owns. Only the perspective
+daemon in the middle knows which side currently owns what.
 
-The contrast with the graphics bridge is the architectural lesson here:
-when two user-space stacks share a kernel, anything the kernel already
+The contrast with the graphics bridge is the architectural lesson here.
+This applies when two user-space stacks share a kernel. Then anything the kernel already
 abstracts (input events, network sockets, fds, character devices) can be
 shared by routing instead of forwarding. Anything the kernel does *not*
 abstract (the GPU memory backing a Surface) has to be bridged with
 explicit fd-passing as in 65.14.8. Maru's input bridge stays small
-because the kernel does the work; the graphics bridge stays small
-because the bridge piggy-backs on the kernel's existing dma-buf
-fd-passing instead of inventing its own pixel transport.
+because the kernel does the work. The graphics bridge stays small
+because it piggy-backs on the kernel's existing dma-buf fd-passing
+instead of inventing its own pixel transport.
 
 ### 65.14.10 Init and Boot Integration
 
@@ -5283,8 +5296,8 @@ at boot, defining services and triggers. For MaruOS the file
 conceptually contains:
 
 - A `service` entry for the perspective daemon, with the right `user`,
-  `group`, and `seclabel` so that SELinux can place it in the Maru
-  domain and so that init can supervise restarts.
+  `group`, and `seclabel`. These let SELinux place it in the Maru
+  domain and let init supervise restarts.
 - One or more `on` triggers — `on boot`, `on property:sys.boot_completed=1`,
   perhaps `on property:maru.container.requested=1` — that decide when the
   daemon starts and what auxiliary setup runs first.
@@ -5326,9 +5339,9 @@ systems on demand."*
 
 ### 65.14.11 SELinux Implications
 
-Stock AOSP SELinux policy is designed around the assumption that no
-Android process needs to launch an LXC container, mount a rootfs, or
-manipulate cgroups outside the ones Android's lmkd/freezer already own.
+Stock AOSP SELinux policy assumes that no Android process needs to
+launch an LXC container or mount a rootfs. It also assumes that none needs
+to manipulate cgroups outside the ones Android's lmkd/freezer already own.
 Maru's `sepolicy/` directory carries the delta:
 
 - A new domain — call it `maru_perspective` and `maru_container` — for
@@ -5337,17 +5350,17 @@ Maru's `sepolicy/` directory carries the delta:
   the container rootfs at a Maru-specific path, and write to the
   cgroups the container uses.
 - Rules permitting the daemon to bind to the framebuffer (or surfaceflinger
-  equivalent) on the external display, since X11 inside the container
-  needs to draw somewhere visible.
+  equivalent) on the external display. X11 inside the container needs to
+  draw somewhere visible.
 - Rules permitting input pipes to cross from Android's input domain into
   the perspective domain so input forwarding works.
 
-What an aspiring ROM author should take from this: any custom ROM that
+An aspiring ROM author should take this from it. Any custom ROM that
 adds new system services with elevated capabilities has to author new
 SELinux policy, full stop. The cost is not in writing the `*.te` files
 themselves (Maru's `sepolicy/` is small) but in *bisecting denials*
-during development. Each new denial gets logged once on first hit,
-silently after that, which is why fresh installs of a Maru build
+during development. Each new denial is logged once on first hit. It is
+silent after that. This is why fresh installs of a Maru build
 on a different device often need an audit pass.
 
 ### 65.14.12 Privileged Permissions for Maru-System Apps
@@ -5355,10 +5368,10 @@ on a different device often need an audit pass.
 `privapp-permissions-maru.xml` lives at vendor-overlay scope and is
 processed by Android's privileged-permission allowlist mechanism (see
 section 65.4 on adding custom apps). Maru needs this file because its
-perspective-daemon companion APK — the user-facing UI that confirms
-desktop access, manages container settings, and surfaces the
-"desktop is active" notification — sits at `/system/priv-app/` and
-declares permissions that the allowlist must explicitly grant.
+perspective-daemon companion APK sits at `/system/priv-app/` and
+declares permissions that the allowlist must explicitly grant. This APK
+is the user-facing UI that confirms desktop access, manages container
+settings, and surfaces the "desktop is active" notification.
 
 The shape is a familiar one for ROM authors:
 
@@ -5375,7 +5388,7 @@ The shape is a familiar one for ROM authors:
 
 The exact entries are Maru's own decision; the file structure is mandated
 by AOSP. Any custom ROM with a privileged system app must ship one of
-these files, and a `dexopt`-time denial from `PackageManagerService`
+these files. A `dexopt`-time denial from `PackageManagerService`
 during boot is almost always traceable to a missing entry here.
 
 ### 65.14.13 The Build Flow
@@ -5407,28 +5420,28 @@ Three things stand out compared to the build flow in section 65.8:
 - **Two build systems.** The Soong/Make pipeline does not run the
   blueprints pipeline. The custom-ROM author orchestrates them by hand
   or via a wrapper script.
-- **The container image is a build artefact, not source.** The Debian
+- **The container image is a build artifact, not source.** The Debian
   rootfs is produced once per release, signed, and shipped inside the
   Maru system image. Devices do not run `debootstrap` at install time.
 - **The `lunch` combo embeds Maru.** A `maru_<device>` combo means the
-  product makefile inherits `device-maru.mk` (and via it `maru_build.mk`),
-  which is what pulls in `vendor_maruos` and turns on the Maru-specific
+  product makefile inherits `device-maru.mk` (and via it `maru_build.mk`).
+  That makefile pulls in `vendor_maruos` and turns on the Maru-specific
   build flags. A standard `lineage_<device>` lunch would build the same
   device without the Maru layer.
 
 ### 65.14.14 What MaruOS Teaches the Custom ROM Author
 
 Reading MaruOS as an exemplar rather than a one-off, three lessons
-generalise beyond this specific project:
+generalize beyond this specific project:
 
 1. **The overlay model is very flexible.** Sections 65.3–65.5 talked
    about overlays as a way to change resource values and ship a few
-   APKs. MaruOS shows the *upper bound*: you can add an entire second
+   APKs. MaruOS shows the *upper bound*. You can add an entire second
    operating system through vendor overlay + sepolicy + init.rc + a
    sibling build system, without forking the AOSP source tree itself.
-   If your customization can be expressed as files that land in
-   `/system/`, `/vendor/`, `/product/`, or `/system_ext/` plus init
-   rules plus SELinux policy, you do not need to patch AOSP.
+   Your customization can be expressed as files that land in `/system/`,
+   `/vendor/`, `/product/`, or `/system_ext/`, plus init rules and
+   SELinux policy. In that case, you do not need to patch AOSP.
 2. **Delegate hardware enablement.** Maru forks LineageOS device trees
    rather than maintaining its own per-device HAL forks. The result is
    that a Maru maintainer can focus on the convergence layer, and
@@ -5438,11 +5451,13 @@ generalise beyond this specific project:
 3. **Separate the foreign world from Soong.** The Debian container's
    build pipeline is shell-based and lives in a separate repo. Soong
    never has to know what `debootstrap` is. The two systems meet at a
-   single tarball artefact. Any time your custom ROM needs to ship
-   something that is *not* an Android system image — a container
-   rootfs, a separately-licensed firmware blob, a Buildroot image for a
-   companion microcontroller — model that artefact as a sibling build
-   that hands off a file.
+   single tarball artifact.
+
+    Sometimes your custom ROM needs to ship
+    something that is *not* an Android system image. In that case, model that artifact
+    as a sibling build that hands off a file. Examples are a container
+    rootfs, a separately-licensed firmware blob, or a Buildroot image for
+    a companion microcontroller.
 
 ### 65.14.15 Limitations and Trade-Offs
 
@@ -5452,7 +5467,7 @@ honest read of the trade-offs:
 - **Device support is narrow.** Maintaining the convergence layer across
   many devices means tracking each LineageOS device branch, validating
   the LXC kernel feature set on each, and re-testing display routing.
-  Real Maru releases ship for a handful of devices at a time, which is
+  Real Maru releases ship for a handful of devices at a time. This is
   about right for a small team but well short of any "works on every
   Android phone" promise.
 - **Shared kernel, shared exposure.** LXC is much cheaper than a VM but
@@ -5462,24 +5477,24 @@ honest read of the trade-offs:
 - **No isolation from Android's filesystem.** By default, an LXC
   container can be configured to expose much of the host's filesystem.
   Maru's container/perspective bridge has to decide carefully which
-  host paths it bind-mounts and which it withholds; getting that wrong
+  host paths it bind-mounts and which it withholds. A wrong decision
   exposes Android user data to Debian apps.
 - **Maintenance debt.** Two build systems, two userspace stacks, and a
   custom bridge layer is a lot to keep running across an AOSP version
-  bump. Each yearly Android letter release ships behavioural changes in
+  bump. Each yearly Android letter release ships behavioral changes in
   `DisplayManager`, input dispatching, and SELinux that the perspective
   daemon has to adapt to.
 - **Upstream uncertainty.** Maru's design predates the Android Computer
-  Control framework (section 51.3) and the formalisation of desktop-
+  Control framework (section 51.3) and the formalization of desktop-
   mode in stock Android. Convergent UIs are now closer to a first-class
-  upstream concern, which could either obsolete Maru's approach or
-  raise the floor under it. The case study above is best read as a
-  *snapshot* of where one production custom ROM landed under the AOSP
-  primitives available to it through Android 12-era releases.
+  upstream concern. This could either obsolete Maru's approach or
+  raise the floor under it. Read the case study above as a
+  *snapshot*. It shows where one production custom ROM landed under the
+  AOSP primitives available to it through Android 12-era releases.
 
-The lesson here is symmetrical to the one in 65.14.14: the same overlay-
-mechanism flexibility that lets a single small team ship a phone-to-desktop
-convergence ROM also distributes the cost. Every layer of additional
+The lesson here is symmetrical to the one in 65.14.14. The same overlay-
+mechanism flexibility lets a single small team ship a phone-to-desktop
+convergence ROM. It also distributes the cost. Every layer of additional
 ambition adds a layer of maintenance. Custom ROM authors weighing how far
 to push the model should plan a realistic device list and a realistic
 release cadence first.
@@ -5490,7 +5505,7 @@ release cadence first.
 
 Work these on an Android 17 (`android17-release`) checkout. They walk the full
 arc of the chapter from a registered product to a signed, page-size-correct
-image, so the early ones are prerequisites for the later ones.
+image. The early ones are prerequisites for the later ones.
 
 1. **Register and lunch your own product.** Create
    `device/AospBook/bookphone/` with the four files from Section 65.3
@@ -5512,11 +5527,11 @@ image, so the early ones are prerequisites for the later ones.
    and `RELEASE_PLATFORM_VERSION_LAST_STABLE.textproto`.
 
 4. **Build a 16 KB page-size image.** Build
-   `sdk_phone16k_x86_64-trunk_staging-userdebug`, launch the emulator, and run
-   `adb shell getconf PAGE_SIZE` (expect `16384`; note that
+   `sdk_phone16k_x86_64-trunk_staging-userdebug` and launch the emulator.
+   Run `adb shell getconf PAGE_SIZE` (expect `16384`). Note that
    `ro.product.build.16k_page.enabled` reads `false` here because this product
-   does not set `PRODUCT_16K_DEVELOPER_OPTION`). Then add a 4 KB-aligned prebuilt
-   `.so` and observe it fail to load on the 16 KB target; rebuild it from source
+   does not set `PRODUCT_16K_DEVELOPER_OPTION`. Then add a 4 KB-aligned prebuilt
+   `.so` and observe it fail to load on the 16 KB target. Rebuild it from source
    and watch it succeed.
 
 5. **Sign and package a release build.** Generate keys with
@@ -5533,9 +5548,9 @@ image, so the early ones are prerequisites for the later ones.
    `adb logcat -b kernel`.
 
 7. **Add and discover a custom AIDL HAL.** Implement the `IBookLight` HAL from
-   Section 65.12 with its VINTF fragment and SELinux policy, then verify the
-   framework can see it with `adb shell lshal | grep booklight` and that there
-   are no `avc: denied` lines for it in logcat.
+   Section 65.12 with its VINTF fragment and SELinux policy. Then verify that the
+   framework can see it with `adb shell lshal | grep booklight`. Also verify that
+   there are no `avc: denied` lines for it in logcat.
 
 If you want to go deeper, the source map below points at the subsystem that
 backs each step.
@@ -5603,8 +5618,8 @@ ROM from the ground up:
    customizations on the emulator before ever touching real hardware.
 
 The techniques in this chapter form the foundation used by every major custom
-ROM project. Whether you are building a privacy-focused ROM, an enterprise
-management solution, or simply learning how Android works from the inside out,
+ROM project. You can build a privacy-focused ROM, an enterprise management
+solution, or simply learn how Android works from the inside out. In each case,
 the ability to build, customize, sign, and distribute a complete Android
 system image is the ultimate expression of AOSP mastery.
 
@@ -5612,30 +5627,35 @@ system image is the ultimate expression of AOSP mastery.
 <!-- chapter:66-windows-games -->
 # Chapter 66: Running Windows Games on Android
 
-A modern Android phone carries an ARM64 GPU powerful enough to run desktop
-PC games, yet the games themselves are x86-64 Windows binaries that expect the
-Win32 API, a glibc-flavoured Linux kernel ABI underneath Wine, and a desktop
+A modern Android phone carries an ARM64 GPU powerful enough to run desktop PC
+games. But the games themselves are x86-64 Windows binaries. They expect the
+Win32 API, a glibc-flavored Linux kernel ABI underneath Wine, and a desktop
 graphics driver. None of that exists on a stock, unrooted Android device.
+
 Projects like **GameNative**, and the **Winlator** runtime it builds on, bridge
 that gap entirely in userspace: no root, no kernel patches, no custom ROM. They
-stack a chain of translation layers, each solving one slice of the
-impedance mismatch, on top of the same AOSP internals the rest of this book has
-dissected.
+stack a chain of translation layers on top of the same AOSP internals that the
+rest of this book dissects. Each layer solves one slice of the impedance
+mismatch.
 
 This chapter takes GameNative as a worked example and walks the whole stack from
-the top down: the Android app, the glibc root filesystem it ships inside an APK,
-the `bionic`/glibc boundary and the redirections that cross it, the x86-64 to
-AArch64 translators (**FEX** and **Box64**), **Wine** as the Windows API layer,
-the Direct3D to Vulkan graphics chain that reaches the real Adreno GPU, and the
-audio path that ends at **AAudio**. Every layer is a self-contained piece of
-technology, so each gets its own architecture, its own rationale, and its own
-map of where it plugs into the Android internals covered earlier.
+the top down. It starts with the Android app and the glibc root filesystem that
+it ships inside an APK. Then it covers the `bionic`/glibc boundary and the
+redirections that cross it. Next come the x86-64 to AArch64 translators (**FEX**
+and **Box64**) and **Wine** as the Windows API layer. The last parts cover the
+Direct3D to Vulkan graphics chain that reaches the real Adreno GPU, and the
+audio path that ends at **AAudio**.
+
+Every layer is a self-contained piece of technology. So each layer gets its own
+architecture, its own rationale, and its own map of where it plugs into the
+Android internals covered earlier.
 
 A note on source references. The Android touchpoints are cited against the AOSP
 tree with file path and line number, exactly as elsewhere in this book. The
 translation-stack projects (GameNative, Winlator, Wine, FEX, Box64) are external
-repositories that move quickly, so they are cited by repository-relative file
-path only, without line numbers, which would be stale before the ink dried.
+repositories that move quickly. So they are cited by repository-relative file
+path only, without line numbers. Line numbers would be stale before the ink
+dried.
 
 ---
 
@@ -5649,22 +5669,22 @@ problems that are easy to confuse:
 1. **Instruction-set translation.** The game is a stream of x86-64 machine
    instructions. An ARM64 CPU cannot execute them. Something must translate
    x86-64 to AArch64, either ahead of time or just-in-time. This is the job of
-   **FEX** or **Box64**, and it is *pure CPU emulation*: it knows nothing about
+   **FEX** or **Box64**. It is *pure CPU emulation*: it knows nothing about
    windows, files, or sockets, only about opcodes, registers, and flags.
 
 2. **API and ABI translation.** The game calls the Windows API: `CreateFileW`,
    `NtUserCreateWindowEx`, `D3D11CreateDevice`. Those functions do not exist on
    Linux. Something must implement the Windows API on top of the POSIX/Linux
-   kernel. This is the job of **Wine**, and it is *not* an emulator: it contains
+   kernel. This is the job of **Wine**. It is *not* an emulator: it contains
    no instruction translation at all, only reimplementations of Windows
-   behaviour in native code.
+   behavior in native code.
 
 Keeping these two jobs separate is the single most important architectural idea
 in the whole stack. The performance of the entire system depends on emulating as
-little as possible, ideally only the game's own code, while letting Wine, the
-graphics driver, and the audio server run as native ARM64. We will return to
-this theme repeatedly, because the newest designs (ARM64EC, covered in 66.5.8)
-exist precisely to shrink the "emulated" box down to just the game.
+little as possible, ideally only the game's own code. Wine, the graphics driver,
+and the audio server can then run as native ARM64. We will return to this theme
+repeatedly. This is because the newest designs (ARM64EC, covered in 66.5.8)
+exist precisely to shrink the "emulated" box to just the game.
 
 ### 66.1.2 The Full Stack at a Glance
 
@@ -5707,16 +5727,16 @@ graph TD
 
 Read it as three bands. The **guest** band is a Linux x86-64 world running
 inside a normal Android app's private storage. The **app** band is native ARM64
-Android code: the in-app X server that receives the game's frames, the
-PulseAudio server that receives its audio, and the storefront client that
-downloaded the game. The **platform** band is plain AOSP: the Vulkan loader and
+Android code. It holds the in-app X server for the game's frames, the PulseAudio
+server for its audio, and the storefront client that downloaded the game. The
+**platform** band is plain AOSP: the Vulkan loader and
 `ANativeWindow` from Chapter 13, AAudio from Chapter 15, and the SurfaceFlinger
 compositor from Chapter 24.
 
 Crucially, the dotted Direct3D and audio arrows *leave* the emulator early. The
-game's D3D calls are handed to DXVK, which (in the fast configurations) runs as
-native ARM64 code and emits Vulkan, so the heavy graphics translation is not
-itself emulated. The same is true of audio. Only the solid arrow from the game
+game's D3D calls go to DXVK. In the fast configurations, DXVK runs as native
+ARM64 code and emits Vulkan. So the heavy graphics translation is not itself
+emulated. The same is true of audio. Only the solid arrow from the game
 into Wine, and from Wine into the emulator, represents x86-64 code that the JIT
 must actually translate.
 
@@ -5724,9 +5744,9 @@ must actually translate.
 
 Everything in the guest band runs with the privileges of an ordinary
 installed app. There is no `su`, no `insmod`, no SELinux policy change, no
-modification to the system image. That constraint is what makes these apps
-installable from a store on a locked bootloader, and it is also what forces most
-of the engineering cleverness in this chapter. A desktop Wine setup can `chroot`
+modification to the system image. That constraint makes these apps installable
+from a store on a locked bootloader, and it forces most of the engineering
+cleverness in this chapter. A desktop Wine setup can `chroot`
 into a rootfs, mount filesystems, and `dlopen` the system's glibc GPU driver
 directly. An Android app can do none of those things. Each missing capability is
 replaced by a userspace stand-in:
@@ -5747,35 +5767,38 @@ introduced in earlier chapters.
 **Linker namespaces (Chapter 7).** An app's native libraries are loaded in an
 isolated linker namespace so they cannot see arbitrary system libraries. The
 `android_dlopen_ext` flags that govern this live in
-`bionic/libc/include/android/dlext.h`; `ANDROID_DLEXT_USE_NAMESPACE`
-(`bionic/libc/include/android/dlext.h:115`) lets a caller pick the namespace a
-library loads into — the header marks it internal-use-only, since there is no
-NDK API for namespaces — while the public `ANDROID_DLEXT_USE_LIBRARY_FD`
-(`bionic/libc/include/android/dlext.h:80`) lets it load a library straight from
-a file descriptor, for example a `.so` stored uncompressed inside the APK. The
+`bionic/libc/include/android/dlext.h`. `ANDROID_DLEXT_USE_NAMESPACE`
+(`bionic/libc/include/android/dlext.h:115`) lets a caller choose the target
+namespace for a library, but the header marks it internal-use-only. This is because there is no
+NDK API for namespaces.
+
+The public `ANDROID_DLEXT_USE_LIBRARY_FD`
+(`bionic/libc/include/android/dlext.h:80`) lets a caller load a library straight
+from a file descriptor, for example a `.so` stored uncompressed inside the APK.
+The
 Vulkan loader itself uses the namespace flag when it opens the device driver, as
 we will see in 66.7.4.
 
 **W^X enforcement (Chapter 7).** A JIT must write machine code and then execute
-it. For apps targeting API 26 and later, the dynamic linker refuses to load any
-ELF *load segment* that is simultaneously writable and executable;
+it. For apps that target API 26 and later, the dynamic linker refuses to load
+any ELF *load segment* that is both writable and executable.
 `bionic/linker/linker_phdr.cpp:1057` emits the
-`"has load segments that are both writable and executable"` diagnostic and
+`"has load segments that are both writable and executable"` diagnostic, and
 `bionic/linker/linker_phdr.cpp:1061` records the `W+E load segments` warning. A
 translator like FEX or Box64 therefore cannot ship prebuilt `.so` files with RWX
-segments. That check only covers ELF files the linker maps, though: anonymous
-JIT mappings are untouched by it, and SELinux even grants app processes
-`execmem` (`system/sepolicy/private/app.te:213`), so an app may map anonymous
-`PROT_WRITE | PROT_EXEC` memory. The translators nevertheless follow the
-hardening convention of mapping JIT pages writable, filling them, then flipping
-them to executable with `mprotect`, keeping every page write-xor-execute at any
-instant.
+segments.
+
+That check only covers ELF files that the linker maps. Anonymous JIT mappings
+are untouched by it. SELinux even grants app processes `execmem`
+(`system/sepolicy/private/app.te:213`), so an app may map anonymous `PROT_WRITE | PROT_EXEC` memory. The translators nevertheless follow the
+hardening convention. They map JIT pages writable, fill them, then flip them to
+executable with `mprotect`. So every page is write-xor-execute at any instant.
 
 **App-data execution limits.** On recent Android, executing binaries from an
 app's writable data directory is increasingly restricted. The translation stack
 must run the guest's executables through a loader it controls (PRoot, or a
-redirection library) rather than handing the kernel a path under the app's data
-dir and calling `execve` directly. This is one of the jobs of GameNative's
+redirection library). It must not hand the kernel a path under the app's data
+dir and call `execve` directly. This is one of the jobs of GameNative's
 proprietary `libredirect.so`, discussed in 66.4.4.
 
 ---
@@ -5808,10 +5831,10 @@ single fork:
 
 So in code-provenance terms GameNative is **Pluvia (the storefront app) plus
 Winlator (the Wine and emulation runtime)**, unified under GameNative's GPL-3.0
-Kotlin layer. Popular write-ups that call it simply "a fork of Winlator" are
-collapsing this two-source structure; the accurate statement is the one above,
-and the rest of the chapter relies on the Winlator half, which is the part that
-actually runs the game.
+Kotlin layer. Popular write-ups that call it simply "a fork of Winlator"
+collapse this two-source structure. The accurate statement is the one above. The
+rest of the chapter relies on the Winlator half, which is the part that actually
+runs the game.
 
 ### 66.2.2 The App Architecture
 
@@ -5846,9 +5869,9 @@ public static final String DEFAULT_DXWRAPPER       = "dxvk";
 The pinned component versions live alongside, in
 `app/src/main/java/com/winlator/core/DefaultVersion.java`: Box64, Box86, the
 FEXCore build number, Turnip (the Mesa Adreno Vulkan driver), DXVK, VKD3D, and
-the rest. The default Wine is recorded in `WineInfo.java`. Reading these two
-files tells you the entire default pipeline at a glance, which is why a "Try It"
-exercise at the end of the chapter is simply to read them.
+the rest. The default Wine is recorded in `WineInfo.java`. These two files show
+the entire default pipeline at a glance. This is why a "Try It" exercise at the
+end of the chapter is simply to read them.
 
 ### 66.2.4 The Default Stack
 
@@ -5856,8 +5879,8 @@ Putting the container defaults together, a freshly created GameNative container
 runs:
 
 - **Wine / Proton** in an **ARM64EC** configuration as the Windows API layer
-  (66.6), with **FEXCore** translating the game's x86-64 code and a WoW64
-  helper translating any 32-bit code (66.5.8).
+  (66.6). **FEXCore** translates the game's x86-64 code. A WoW64   helper
+  translates any 32-bit code (66.5.8).
 - **DXVK** translating Direct3D 9/10/11 to Vulkan, with **VKD3D-Proton** for
   Direct3D 12 (66.7.2).
 - **Vortek** as the Vulkan path that reaches the device's Adreno driver (66.7.3),
@@ -5865,8 +5888,8 @@ runs:
 - **PulseAudio** as the audio server (66.8).
 
 Box64 with a classic glibc launch path is also bundled as the alternative
-route for Wine builds that are not ARM64EC; that path is selected by a different
-launcher component (66.5.6).
+route for Wine builds that are not ARM64EC. A different launcher component
+selects that path (66.5.6).
 
 ### 66.2.5 Packaging: How the Pieces Reach the Device
 
@@ -5875,10 +5898,10 @@ through three distinct delivery mechanisms.
 
 1. **Android-process native libraries** ship in `jniLibs/arm64-v8a/` and are
    unpacked by the platform's package manager into the app's
-   `nativeLibraryDir`. These are the libraries that load into the *Android*
-   (bionic) process: the PulseAudio server libraries (`libpulse.so` and
+   `nativeLibraryDir`. These libraries load into the *Android*    (bionic)
+   process. They are the PulseAudio server libraries (`libpulse.so` and
    friends), the native graphics renderers (`libvortekrenderer.so`,
-   `libvirglrenderer.so`) and the in-app X server (`libwinlator.so`), and the
+   `libvirglrenderer.so`), the in-app X server (`libwinlator.so`), and the
    proprietary `libsteambootstrap.so`.
 
 2. **Guest components** ship as compressed tar archives in `assets/` (Zstandard
@@ -5890,7 +5913,7 @@ through three distinct delivery mechanisms.
 
 3. **Large or optional payloads** are downloaded on demand. The Ubuntu rootfs is
    delivered as a separate Android **dynamic feature module** (`ubuntufs/`,
-   `dist:on-demand`), and the graphics drivers, extra DXVK builds, and Proton
+   `dist:on-demand`). The graphics drivers, extra DXVK builds, and Proton
    container patterns are fetched from GameNative's download server per the
    `assets/*_download.json` manifests. This keeps the base APK installable while
    the multi-gigabyte Linux userland arrives only when a game is first run.
@@ -5924,18 +5947,20 @@ sequenceDiagram
     GPU-->>U: Composited to the app Surface
 ```
 
-The `XEnvironment` object holds an ordered list of **components**, each a small
-class in `com.winlator.xenvironment.components` that starts one subsystem: the X
-server, `PulseAudioComponent`, the graphics renderer (`VortekRendererComponent`
-or a VirGL renderer), a System V shared-memory component, and finally a
-program-launcher component that spawns Wine under the emulator. The launcher is
+The `XEnvironment` object holds an ordered list of **components**. Each
+component is a small class in `com.winlator.xenvironment.components` that starts
+one subsystem. The first components start the X server and
+`PulseAudioComponent`. The next ones start the graphics renderer
+(`VortekRendererComponent` or a VirGL renderer) and a System V shared-memory
+component. The last component is a program launcher that spawns Wine under the
+emulator. The launcher is
 either `BionicProgramLauncherComponent` (the default ARM64EC/FEX path) or
 `GuestProgramLauncherComponent` (the classic glibc/Box64 path).
 
 ### 66.2.7 Licensing and the GPL Aggregation Question
 
 GameNative is GPL-3.0, as is the vendored Winlator code. Most of the bundled
-runtime carries its own upstream, mostly permissive or LGPL licences: Wine and
+runtime carries its own upstream licenses, mostly permissive or LGPL. Wine and
 PulseAudio are LGPL-2.1, Mesa (Turnip, Zink) is largely MIT, DXVK is
 zlib-licensed, and Box64 and FEX are MIT/BSD-style. The project's
 `THIRD_PARTY_NOTICES` file makes a blanket written offer of source for the
@@ -5952,11 +5977,12 @@ interesting part:
   client for achievements, cloud saves, and the overlay.
 
 The maintainer's stated position is that these run as separate
-programs/subprocesses communicating only through OS interfaces, and so are mere
-aggregation under GPL-3.0 section 5 rather than derivative works of the GPL app.
-That is the project's argument, not an adjudicated fact; whether shipping closed
-`LD_PRELOAD` and JNI shims alongside a GPL-3.0 app withstands scrutiny is a
-genuine, unsettled GPL question. The app builds and runs without either library,
+programs/subprocesses that communicate only through OS interfaces. So they are
+mere aggregation under GPL-3.0 section 5, not derivative works of the GPL app.
+That is the project's argument, not an adjudicated fact. Whether closed
+`LD_PRELOAD` and JNI shims withstand scrutiny when they ship alongside a GPL-3.0
+app is a genuine, unsettled GPL question. The app builds and runs without either
+library,
 with reduced compatibility, which is part of the maintainer's separability
 argument.
 
@@ -5967,7 +5993,7 @@ argument.
 ### 66.3.1 What Is in the rootfs
 
 Wine, the emulator's guest libraries, and the game all expect a Linux
-filesystem laid out the normal way, with `/usr/lib`, `/bin`, an `ld-linux`
+filesystem laid out the normal way. It has `/usr/lib`, `/bin`, an `ld-linux`
 dynamic loader, and above all a **glibc** C library. Android provides none of
 that to an app; it provides `bionic` and an app-private data directory. So the
 stack ships an entire small Linux distribution, historically called the
@@ -5981,15 +6007,15 @@ defined in `com.winlator.xenvironment.ImageFs`.
 ### 66.3.2 Shipping and Extraction
 
 The userland is shipped compressed and unpacked on first use, never mounted (an
-app cannot mount). The relevant code is `ImageFsInstaller`, which extracts the
-Wine tarball into `<rootfs>/opt/<version>`, and `TarCompressorUtils`, which
-handles both the Zstandard `.tzst` and xz `.txz` formats GameNative uses. Once
-extracted, ELF binaries are fixed up with `patchelf` so their interpreter and
-library search paths point inside the rootfs rather than at a system that does
-not exist.
+app cannot mount). The relevant code is in two classes. `ImageFsInstaller`
+extracts the Wine tarball into `<rootfs>/opt/<version>`. `TarCompressorUtils`
+handles both the Zstandard `.tzst` and xz `.txz` formats that GameNative uses.
+Once extracted, ELF binaries are fixed up with `patchelf`. This makes their
+interpreter and library search paths point inside the rootfs rather than at a
+system that does not exist.
 
 The size is the reason the rootfs is delivered as an on-demand dynamic-feature
-module (66.2.5): a full Ubuntu-plus-Wine userland is hundreds of megabytes
+module (66.2.5). A full Ubuntu-plus-Wine userland is hundreds of megabytes
 to gigabytes, far too large to sit in a base APK.
 
 ### 66.3.3 Entering the rootfs: PRoot
@@ -5999,11 +6025,11 @@ classic Winlator answer is **PRoot**, a userspace re-implementation of `chroot`
 and bind-mounts built entirely on the Linux `ptrace` system call.
 
 PRoot launches the guest program as a traced child. Every time the child makes a
-system call that names a path, PRoot intercepts it at the kernel boundary,
+system call that names a path, PRoot intercepts it at the kernel boundary. PRoot
 *rewrites the path string in the tracee's memory* so that, say, `/usr/lib/...`
 becomes `<app data>/imagefs/usr/lib/...`, and then lets the kernel proceed. The
-guest believes it lives at `/`; in reality every path is being remapped on the
-fly. The same trick is reapplied across `execve` so that child processes stay
+guest believes it lives at `/`, but PRoot remaps every path on the fly. The same
+trick is reapplied across `execve` so that child processes stay
 confined. Bind-mounts like `--bind=/dev` and `--bind=/proc` are implemented the
 same way, by remapping the relevant prefixes.
 
@@ -6030,7 +6056,7 @@ eliminate PRoot entirely.
 ### 66.3.4 glibc Versus bionic: the Central Mismatch
 
 The rootfs gives Wine a glibc world, which is exactly what Wine wants. But it
-creates the defining problem of the whole stack: **the process now contains
+creates the defining problem of the whole stack. **The process now contains
 glibc, while every native Android library, including the GPU driver, is built
 against `bionic`.** You cannot simply `dlopen` a `bionic` `.so` into a glibc
 process. The two C libraries disagree about thread-local storage layout, about
@@ -6040,10 +6066,11 @@ corrupts state and crashes.
 
 This is the problem that "bionic redirections" exist to solve, and it is
 important enough to get its own section (66.4). For now, note the shape of the
-two answers: either keep the glibc world and reach Android services through
-**inter-process communication** rather than linking (the PulseAudio server, the
-Vortek renderer, and the SysV-SHM server are all separate endpoints reached over
-sockets), or abandon glibc and run Wine directly on `bionic` (the newer forks).
+two answers. The first answer is to keep the glibc world and reach Android
+services through **inter-process communication** rather than linking. The
+PulseAudio server, the Vortek renderer, and the SysV-SHM server are all separate
+endpoints reached over sockets. The second answer is to abandon glibc and run
+Wine directly on `bionic` (the newer forks).
 
 ### 66.3.5 System V Shared Memory over ashmem
 
@@ -6053,8 +6080,8 @@ between processes. Android's kernel restricts the System V SHM API. Winlator's
 glibc rootfs therefore ships a small **shim library**, `libandroid-sysvshm.so`,
 which the launcher components inject into guest processes with `LD_PRELOAD`. It
 interposes the `shmget`/`shmat`/`shmdt` family and reimplements it on top of
-Android's anonymous shared memory, brokered by a small server on the Android
-side (`com.winlator.sysvshm`).
+Android's anonymous shared memory. A small server on the Android side
+(`com.winlator.sysvshm`) brokers this.
 
 On the Android side, the natural primitive is `ASharedMemory_create`
 (`frameworks/native/include/android/sharedmem.h:78`), the NDK entry point that
@@ -6072,32 +6099,34 @@ The newest Winlator forks, and GameNative's default path, take the other route:
 build Wine for **`bionic`** and drop PRoot. If Wine itself runs on `bionic`,
 there is no libc mismatch with the Android GPU driver, and there is no per-syscall
 `ptrace` tax. The price is that everything Wine relied on glibc for must now be
-provided on `bionic`, which is why this path leans on ARM64EC Wine builds
-(66.5.8) and a set of redirection libraries that fix up path and behaviour
-differences in place of PRoot. We turn to those next.
+provided on `bionic`. This is why this path relies on ARM64EC Wine builds
+(66.5.8) and a set of redirection libraries. These libraries fix up path and
+behavior differences in place of PRoot. We turn to those next.
 
 ---
 
 ## 66.4 Bionic Redirections and the libc Boundary
 
-"Bionic redirections" is the umbrella term for the techniques that let a stack
-built around glibc-flavoured Linux software cooperate with an Android system
+"Bionic redirections" is the umbrella term for the techniques. They let a stack
+built around glibc-flavored Linux software cooperate with an Android system
 built around `bionic`. There are several distinct problems hiding under that
 phrase, and they have different solutions.
 
 ### 66.4.1 Why Two libcs Cannot Share a Process
 
-Restating the core constraint precisely, because everything else follows from
-it: a single Linux process has exactly one dynamic loader and one C library
-providing the loader's internal state, the TLS block, `malloc`, and the syscall
-wrappers. glibc and `bionic` are different implementations with incompatible
-internal layouts. A glibc process's threads have glibc `pthread` structures and a
-glibc TLS model; a `bionic` `.so` compiled to find its thread-control-block at a
-`bionic` offset will read garbage. There is no flag that makes the two coexist.
+Here is the core constraint, stated precisely, because everything else follows
+from it. A single Linux process has exactly one dynamic loader and one C
+library. That library provides the loader's internal state, the TLS block,
+`malloc`, and the syscall wrappers. glibc and `bionic` are different
+implementations with incompatible internal layouts.
+
+A glibc process's threads have glibc `pthread` structures and a glibc TLS model.
+A `bionic` `.so` compiled to find its thread-control-block at a `bionic` offset
+will read garbage. There is no flag that makes the two coexist.
 The boundary between them must be crossed by *some* mechanism that does not
-require linking, and there are exactly three such mechanisms in this stack:
-inter-process communication, ABI thunking, or choosing one libc for the whole
-process.
+require linking. There are exactly three such mechanisms in this stack:
+inter-process communication, ABI thunking, or the choice of one libc for the
+whole process.
 
 ### 66.4.2 Linker Namespaces and dlext
 
@@ -6105,42 +6134,47 @@ Even when the stack does run native `bionic` code, it is subject to the linker
 namespace isolation from Chapter 7. App native libraries load into a restricted
 namespace that cannot see most system libraries. The driver-loading path uses
 `android_dlopen_ext` with `ANDROID_DLEXT_USE_NAMESPACE`
-(`bionic/libc/include/android/dlext.h:115`) to target a specific namespace, and
-custom-driver loaders such as **adrenotools** (used to side-load a newer Turnip
-build than the device ships) rely on exactly this machinery to get a chosen
-`.so` loaded into a namespace that can reach the GPU kernel interfaces. The
+(`bionic/libc/include/android/dlext.h:115`) to target a specific namespace.
+Custom-driver loaders such as **adrenotools** (used to side-load a newer Turnip
+build than the device ships) rely on exactly this machinery. They use it to get
+a chosen `.so` loaded into a namespace that can reach the GPU kernel interfaces.
+The
 `ANDROID_DLEXT_USE_LIBRARY_FD` flag
 (`bionic/libc/include/android/dlext.h:80`) is the companion that loads a driver
 straight from a file descriptor.
 
 ### 66.4.3 W^X and the JIT
 
-The translators are JITs, and the JIT discipline from 66.1.4 applies. The
-pattern every translator on Android follows is: map a code buffer
-`PROT_READ | PROT_WRITE`, emit AArch64 instructions into it, clear the
-instruction cache for that range, then `mprotect` it to `PROT_READ | PROT_EXEC`
-before jumping in. A page is never both writable and executable at once. That is
-the translator's own hardening pattern, not compliance with the linker's W+E
-rejection (`bionic/linker/linker_phdr.cpp:1057`), which applies to ELF load
-segments and never sees these anonymous code buffers. On devices and Android versions that
-further restrict executing memory from app data, the translator must allocate
-its code pages as anonymous memory it owns rather than mapping a file from the
-data directory.
+The translators are JITs, and the JIT discipline from 66.1.4 applies. Every
+translator on Android follows the same pattern. It maps a code buffer
+`PROT_READ | PROT_WRITE` and emits AArch64 instructions into it. It then clears
+the instruction cache for that range. Last, it calls `mprotect` on the buffer to
+make it `PROT_READ | PROT_EXEC` before it jumps in. A page is never both
+writable and executable at once.
+
+That is the translator's own hardening pattern, not compliance with the linker's
+W+E rejection (`bionic/linker/linker_phdr.cpp:1057`). That rejection applies to
+ELF load segments and never sees these anonymous code buffers. Some devices and
+Android versions further restrict execution of memory from app data. There, the
+translator must allocate its code pages as anonymous memory that it owns. It
+must not map a file from the data directory.
 
 ### 66.4.4 Path Redirection: PRoot Versus libredirect
 
 PRoot (66.3.3) is one form of path redirection: rewrite paths in the kernel ABI
 using `ptrace`. It is general but slow. The bionic path replaces it with a
 preloaded library, GameNative's `libredirect.so`, injected into Wine
-subprocesses with `LD_PRELOAD`. Instead of trapping every syscall through
-`ptrace`, the library interposes the libc functions that take paths and rewrites
-their arguments in-process, with no tracer round trip. It also adapts process
-launches to recent-Android restrictions on executing from the app data
-directory, standing in for the kernel mechanism that an unrooted app is not
-allowed to use. The trade-off is generality for speed: a preload library only
-catches calls that go through the functions it interposes, whereas PRoot catches
-everything at the kernel boundary, but the preload approach avoids the
-per-syscall `ptrace` cost that dominates PRoot's overhead.
+subprocesses with `LD_PRELOAD`. The library does not trap every syscall through
+`ptrace`. It interposes the libc functions that take paths and rewrites their
+arguments in-process, with no tracer round trip.
+
+The library also adapts process launches to recent-Android restrictions on
+executing from the app data directory. This stands in for the kernel mechanism
+that an unrooted app is not allowed to use. The trade-off is generality for
+speed. A preload library only catches calls that go through the functions it
+interposes, whereas PRoot catches everything at the kernel boundary. But the
+preload approach avoids the per-syscall `ptrace` cost that dominates PRoot's
+overhead.
 
 ### 66.4.5 The IPC Escape Hatch
 
@@ -6150,17 +6184,17 @@ endpoints and are reached from the guest over Unix-domain sockets:
 
 - the **PulseAudio server**, which the guest's Wine audio backend connects to as
   an ordinary PulseAudio client (66.8);
-- the **Vortek Vulkan renderer**, where the guest holds only a thin Vulkan ICD
-  that serialises commands over a socket to the native renderer (66.7.3);
+- the **Vortek Vulkan renderer**, where the guest holds only a thin Vulkan ICD.
+  The ICD serializes commands over a socket to the native renderer (66.7.3);
 - the **System V SHM server** (66.3.5).
 
 Because the boundary is a socket, the two sides can use different C libraries,
-different instruction sets, and different memory models without any of it
-mattering: the only contract is the wire protocol. This is the same reason
+different instruction sets, and different memory models. None of that matters:
+the only contract is the wire protocol. This is the same reason
 Binder works across processes with different runtimes (Chapter 9). It costs a
-serialisation step and a copy, but it sidesteps the libc problem entirely, which
+serialization step and a copy, but it sidesteps the libc problem entirely. This
 is why the performance-critical-but-not-hottest paths (audio, command
-submission) are built this way while the truly hot path (CPU translation) is
+submission) are built this way, while the truly hot path (CPU translation) is
 not.
 
 ---
@@ -6171,39 +6205,47 @@ This is the layer that does the actual instruction-set emulation from 66.1.1.
 Two projects dominate, and GameNative ships both: **FEX** (the default, via its
 FEXCore engine) and **Box64**. They solve the same problem with opposite
 philosophies, and understanding the difference explains most of the
-compatibility-versus-speed trade-offs users encounter. This chapter complements
-Chapter 19, which covered Android's *own* in-process binary translators that plug
-into the Native Bridge: **Berberis**, the AOSP translator that runs riscv64 app
-code on x86_64 devices (its CPU-emulation core was consolidated under
-`frameworks/libs/binary_translation/cpu_emulation/` in Android 17), and the
-historical, closed-source **Houdini**, which ran ARM app code on Intel x86. Both
+compatibility-versus-speed trade-offs users encounter.
+
+This chapter complements Chapter 19. That chapter covered Android's *own*
+in-process binary translators that plug into the Native Bridge. One is
+**Berberis**, the AOSP translator that runs riscv64 app code on x86_64 devices
+(its CPU-emulation core was consolidated under
+`frameworks/libs/binary_translation/cpu_emulation/` in Android 17). The other is
+the historical, closed-source **Houdini**, which ran ARM app code on Intel x86.
+Both
 run *guest Android APK* native code under ART, in the opposite direction to the
-x86-64-on-AArch64 problem here, and neither is involved in this stack. FEX and
-Box64 are the same dynarec idea applied to whole Linux/Windows x86-64 *programs*:
-they run inside an ordinary app process, not as Native Bridge plugins, and they
-translate x86-64 to AArch64, which is a direction no AOSP-shipped translator
-covers.
+x86-64-on-AArch64 problem here, and neither is involved in this stack.
+
+FEX and Box64 are the same dynarec idea applied to whole Linux/Windows x86-64
+*programs*. They run inside an ordinary app process, not as Native Bridge
+plugins. They translate x86-64 to AArch64, which is a direction no AOSP-shipped
+translator covers.
 
 ### 66.5.1 What a Dynamic Recompiler Does
 
 A dynamic recompiler, or dynarec, is a JIT for foreign machine code. It reads a
-block of x86-64 instructions, translates them once into AArch64 instructions,
-caches the result, and jumps to the cached translation every time the guest
+block of x86-64 instructions and translates them once into AArch64 instructions.
+It caches the result and jumps to the cached translation every time the guest
 reaches that address again. The translated code keeps the guest's registers in
-host registers, keeps the guest's memory as ordinary host memory, and falls back
-to a dispatcher only at block boundaries to decide what to run next. A dynarec is
-typically five to ten times faster than an interpreter because the per-instruction
-decode cost is paid once, at translation time, instead of on every execution.
+host registers and keeps the guest's memory as ordinary host memory. and falls
+back
+to a dispatcher only at block boundaries, to decide what to run next.
+
+A dynarec is typically five to ten times faster than an interpreter. This is because the
+per-instruction decode cost is paid once, at translation time, instead of on
+every execution.
 
 Three things make x86-to-ARM specifically hard, and each one is a place where
 FEX and Box64 spend their engineering effort:
 
 1. **Flags.** Almost every x86 arithmetic instruction updates the EFLAGS
-   register. Computing those flag bits on ARM after every operation is
-   ruinously expensive, so a good dynarec defers and elides flag computation,
-   only materialising flags when something actually reads them.
+   register. It is    ruinously expensive to compute those flag bits on ARM
+   after every operation.    So a good dynarec defers and elides flag
+   computation. It materializes flags    only when something actually reads
+   them.
 2. **Vector instructions.** SSE, AVX, and x87 floating point have to map onto
-   ARM's NEON vector registers (and SVE where the host supports it), with
+   ARM's NEON vector registers (and SVE where the host supports it). This needs
    careful attention to NaN handling and rounding.
 3. **The memory model.** x86 has a strong memory model (Total Store Ordering);
    ARM has a weaker one. Preserving correctness here is subtle and costly enough
@@ -6230,7 +6272,7 @@ graph LR
 Walking the stages against the FEX source tree:
 
 - **The frontend decoder** reads the raw byte stream and finds instruction
-  boundaries, handling x86's legacy prefixes, REX prefixes, and the VEX/EVEX
+  boundaries. It handles x86's legacy prefixes, REX prefixes, and the VEX/EVEX
   encodings used by AVX.
 - **The `OpcodeDispatcher`** (`FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp`,
   with vector and x87 handling split into `OpcodeDispatcher/Vector.cpp` and
@@ -6238,19 +6280,19 @@ Walking the stages against the FEX source tree:
   SSA-form intermediate representation. The IR opcodes themselves are defined in
   `FEXCore/Source/Interface/IR/IR.json`.
 - **The `PassManager`** (`FEXCore/Source/Interface/IR/PassManager.cpp`) runs
-  optimisation passes over the IR. The most important for performance are
-  register allocation (mapping IR values to ARM registers), redundant-flag
-  elimination (dropping EFLAGS updates that are never read), and an x87 stack
-  optimisation pass.
+  optimization passes over the IR. The most important for performance are
+  register allocation, redundant-flag elimination, and an x87 stack optimization
+  pass. Register allocation maps IR values to ARM registers. Redundant-flag
+  elimination drops EFLAGS updates that are never read.
 - **The JIT backend** (`FEXCore/Source/Interface/Core/JIT/JIT.cpp`) emits native
-  AArch64 instructions from the optimised IR into the code cache. FEX uses a
+  AArch64 instructions from the optimized IR into the code cache. FEX uses a
   custom ARM64 emitter rather than an off-the-shelf assembler to keep code
   generation fast and compact.
 
-FEX supports MMX, SSE through SSE4, x87, and AVX/AVX2, and it translates
-multi-block regions rather than single basic blocks, dispatching between cached
-translations through a lookup cache. Self-modifying code is handled by detecting
-guest writes to pages that contain translated code and invalidating the affected
+FEX supports MMX, SSE through SSE4, x87, and AVX/AVX2. It translates multi-block
+regions rather than single basic blocks, and it dispatches between cached
+translations through a lookup cache. FEX handles self-modifying code. It detects
+guest writes to pages that contain translated code and invalidates the affected
 cached blocks.
 
 ### 66.5.3 The TSO Memory-Model Problem
@@ -6262,19 +6304,21 @@ unless you insert barriers or use acquire/release instructions. A multithreaded
 game written for x86's strong ordering will race and crash if its memory
 operations are naively translated to plain ARM loads and stores.
 
-FEX's correct-by-default answer is to emulate TSO, using ARM's acquire/release
+FEX's correct-by-default answer is to emulate TSO. It uses ARM's acquire/release
 load and store instructions (the `FEAT_LRCPC` extensions) and atomics
 (`FEAT_LSE2` for the unaligned atomics x86 permits but ARM normally forbids).
-This emulation is expensive: faithfully reproducing x86 ordering on a weak model
-can cost on the order of a 10x slowdown on the affected memory traffic, felt most
-in vector-heavy game code.
+This emulation is expensive. Faithful reproduction of x86 ordering on a weak
+model can cost on the order of a 10x slowdown on the affected memory traffic.
+The cost is felt most in vector-heavy game code.
 
 The escape valve is **hardware TSO**. Some ARM cores can be switched into a
-hardware total-store-ordering mode; Apple Silicon does this (it is how Rosetta 2
-is fast), and where the host CPU exposes it, FEX requests it and relaxes its
+hardware total-store-ordering mode. Apple Silicon does this (it is how Rosetta 2
+is fast). Where the host CPU exposes this mode, FEX requests it and relaxes its
 software emulation for a large win. FEX also offers tunables to disable TSO
 emulation for vector accesses or for stack memory (which is thread-private and
-safe), trading a little stability for speed. The practical upshot for a phone is
+safe). These tunables trade a little stability for speed.
+
+The practical upshot for a phone is
 that a Snapdragon's specific memory-ordering capabilities materially affect how
 fast emulation runs, independent of raw clock speed.
 
@@ -6283,13 +6327,12 @@ fast emulation runs, independent of raw clock speed.
 If FEX translated *every* instruction the game's process executed, including the
 entire Vulkan driver, performance would be hopeless. The lever that avoids this
 is **thunking**, also called library forwarding. A thunk lets emulated x86 guest
-code call a **native AArch64** host library directly, so heavy libraries like
-the GPU driver run as native code rather than being translated instruction by
-instruction.
+code call a **native AArch64** host library directly. So heavy libraries like
+the GPU driver run as native code, not as translated code.
 
 The design is two-sided. On the guest side, FEX provides a small x86 stub
-library that presents the normal guest ABI (for example a guest `libvulkan.so`)
-but, instead of containing the driver, forwards each call across the boundary. On
+library that presents the normal guest ABI (for example a guest `libvulkan.so`).
+It does not contain the driver but forwards each call across the boundary. On
 the host side, a native ARM64 thunk library receives the forwarded call and
 invokes the real host library. The FEX source carries both halves for the key
 graphics libraries: `ThunkLibs/libvulkan/Guest.cpp` and
@@ -6308,57 +6351,58 @@ graph LR
     GTHUNK -->|"marshal args,<br/>cross ABI"| HTHUNK
 ```
 
-The hard part is marshalling: the guest and host disagree on pointer size in the
-32-bit case, on structure layout, and on calling convention, and callbacks (a
+The hard part is marshalling. The guest and host disagree on pointer size in the
+32-bit case, on structure layout, and on calling convention. Callbacks (a
 function pointer the host library will call back into) must be trampolined back
 across the boundary in the other direction. FEX's thunking handles function
-pointers in both directions and converts data-structure layouts at the boundary,
-configured by a `ThunksDB.json` that maps each guest library to its host overlay.
+pointers in both directions and converts data-structure layouts at the boundary.
+A `ThunksDB.json` configures this: it maps each guest library to its host
+overlay.
 Thunking is the single biggest reason FEX-based graphics can approach native
 speed: only the game's draw-call *setup* is emulated, while the driver work runs
 native.
 
 ### 66.5.5 The FEX RootFS Requirement
 
-When FEX runs as a standalone Linux emulator, emulating a complete x86-64
-*process*, it needs an x86-64 root filesystem to supply the guest glibc and base
-libraries; on desktop Linux the `FEXRootFSFetcher` downloads a SquashFS or EroFS
-image for exactly that. This is the everything-emulated model, and it is the
-main axis on which Box64 differs, since Box64 wraps host libraries instead of
-emulating a full guest userland.
+When FEX runs as a standalone Linux emulator, it emulates a complete x86-64
+*process*. It then needs an x86-64 root filesystem to supply the guest glibc and
+base libraries. On desktop Linux the `FEXRootFSFetcher` downloads a SquashFS or
+EroFS image for exactly that. This is the everything-emulated model. It is the
+main axis on which Box64 differs, since Box64 wraps host libraries and does not
+emulate a full guest userland.
 
 In GameNative's default ARM64EC configuration, however, FEX does not run as a
-Linux emulator at all. It plugs into Wine as a CPU-only module (66.5.8): the
-Windows system calls are serviced by Wine rather than by a guest glibc, so the
-separate x86 rootfs is no longer needed. The FEX rootfs requirement is therefore
-a property of the everything-emulated path, not of the ARM64EC default, and
-shedding it is one of ARM64EC's concrete wins.
+Linux emulator at all. It plugs into Wine as a CPU-only module (66.5.8). Wine
+services the Windows system calls, not a guest glibc. So the separate x86 rootfs
+is no longer needed. The FEX rootfs requirement is therefore a property of the
+everything-emulated path, not of the ARM64EC default. ARM64EC sheds this
+requirement, and that is one of its concrete wins.
 
 ### 66.5.6 Box64: Wrapped Native Libraries
 
 Box64, by ptitSeb, is a dynarec with the same core job but a different
-philosophy about system libraries. Instead of emulating the x86-64 glibc, GL,
-and Vulkan from a rootfs, Box64 detects when the guest is about to call into one
-of those well-known libraries and **substitutes the host's native ARM64
-implementation**, wrapping each call to translate the calling convention. The
+philosophy about system libraries. Box64 does not emulate the x86-64 glibc, GL,
+and Vulkan from a rootfs. Instead, Box64 detects when the guest is about to call
+into one of those well-known libraries and **substitutes the host's native ARM64
+implementation**. It wraps each call to translate the calling convention. The
 hand-written wrappers live in the Box64 source under `src/wrapped/`, for example
 `src/wrapped/wrappedvulkan.c` for Vulkan and `src/wrapped/wrappedlibc.c` for the
 C library.
 
 The consequence is that Box64 does not need a full x86 rootfs for the libraries
-it wraps; it borrows the host's. That makes it lighter than FEX, and it is the
+it wraps; it borrows the host's. That makes it lighter than FEX. It is the
 historical default of classic Winlator, where the launch chain is literally
 `proot` then `box64` then `wine`. GameNative's `GuestProgramLauncherComponent`
-builds exactly that `box64 <guest exe>` command for the glibc path. The trade-off
-is that wrapping is only as correct as the wrappers: when a wrapped library's
-behaviour diverges from what the guest expected, it can break in ways a
-full-emulation approach would not.
+builds exactly that `box64 <guest exe>` command for the glibc path. The
+trade-off is that wrapping is only as correct as the wrappers. When a wrapped
+library's behavior diverges from what the guest expected, it can break in ways
+that a full-emulation approach would not.
 
-The 32-bit story is symmetric. Box64 handles x86-64; its sibling **Box86**
-handles 32-bit x86, and for hosts with no 32-bit ARM environment Box64 has an
+The 32-bit story is symmetric. Box64 handles x86-64, and its sibling **Box86**
+handles 32-bit x86. For hosts with no 32-bit ARM environment, Box64 has an
 experimental `BOX32` mode that emulates a 32-bit environment within the 64-bit
 one. Box64's own `docs/WINE.md` lays out the matrix of Wine variants (x86, x86-64,
-x86-64 WoW64, ARM64 WoW64) and which Box combination each requires; it is the
+x86-64 WoW64, ARM64 WoW64) and which Box combination each requires. It is the
 single best primary reference for how the emulator and Wine fit together.
 
 ### 66.5.7 FEX Versus Box64
@@ -6396,19 +6440,21 @@ container pick.
 The most important recent shift is architectural, not incremental: stop running
 Wine itself through the emulator. In the "everything emulated" model, the JIT
 translates the game *and* all of Wine *and* the x86 Linux libraries underneath
-Wine; the emulator is on the hot path for every instruction. The **ARM64EC**
+Wine. The emulator is on the hot path for every instruction. The **ARM64EC**
 model instead builds Wine natively for ARM64 and emulates only the game's x86-64
 code.
 
 ARM64EC ("Emulation Compatible") is a Microsoft ABI, reimplemented in Wine, in
 which native ARM64 code is laid out to be call-compatible with emulated x86-64
-code. Wine's system DLLs are compiled in this ABI, so when the emulated game
-calls a Windows API, execution transitions into *native* ARM64 Wine code instead
-of continuing to emulate. The emulator is reduced to a CPU core that plugs into
-Wine as a loadable module at the ABI boundary. In this configuration the
-emulator ships as a Windows DLL that Wine loads: FEX as `libarm64ecfex.dll` for
-64-bit code, and either `libwow64fex.dll` (FEX) or `wowbox64.dll` (Box64) for the
-32-bit WoW64 path. GameNative selects between these in its
+code. Wine's system DLLs are compiled in this ABI. So when the emulated game
+calls a Windows API, execution transitions into *native* ARM64 Wine code, not
+into more emulation. The emulator is reduced to a CPU core that plugs into
+Wine as a loadable module at the ABI boundary.
+
+In this configuration the emulator ships as a Windows DLL that Wine loads. FEX
+ships as `libarm64ecfex.dll` for 64-bit code. For the 32-bit WoW64 path, the DLL
+is either `libwow64fex.dll` (FEX) or `wowbox64.dll` (Box64). GameNative selects
+between these in its
 `BionicProgramLauncherComponent` based on whether the configured Wine build is
 ARM64EC.
 
@@ -6429,9 +6475,10 @@ graph TB
     Everything -->|"only the game stays emulated"| EC
 ```
 
-The payoff is large: the Windows API work, the graphics translation, and the
-audio path all run as native ARM64, and only the game's own instruction stream is
-translated. This is the design GameNative defaults to, and it is why the stack is
+The payoff is large. The Windows API work, the graphics translation, and the
+audio path all run as native ARM64. Only the game's own instruction stream is
+translated. This is the design GameNative defaults to, and it is why the stack
+is
 fast enough to be usable on a phone at all.
 
 ---
@@ -6439,41 +6486,43 @@ fast enough to be usable on a phone at all.
 ## 66.6 Wine: Implementing the Windows API
 
 Wine is the layer that makes the game think it is running on Windows. Where the
-emulator handles instructions, Wine handles meaning: every call the game makes to
-the Windows API is serviced by Wine's reimplementation of that API on top of the
-Linux kernel.
+emulator handles instructions, Wine handles meaning. Wine's reimplementation of
+the Windows API, on top of the Linux kernel, services every call that the game
+makes to that API.
 
 ### 66.6.1 Not an Emulator
 
 The name is a recursive acronym, "Wine Is Not an Emulator," and on ARM Android
 the distinction is not pedantry, it is the architecture. Wine contains no
-instruction translation whatsoever. It takes a Windows PE binary, loads it into a
-Linux process, and answers its Windows API and NT system calls with native code
-that talks to Linux. On x86-64 Linux that native code runs directly. On ARM
+instruction translation whatsoever. It takes a Windows PE binary and loads it
+into a Linux process. It answers the binary's Windows API and NT system calls
+with native code that talks to Linux.
+
+On x86-64 Linux that native code runs directly. On ARM
 Android, Wine is *itself* either emulated (the everything-emulated model) or
-compiled native as ARM64EC (the hybrid model) but in neither case does Wine do
-the x86-to-ARM translation; that is always FEX or Box64. The two layers are
+compiled native as ARM64EC (the hybrid model). In neither case does Wine do the
+x86-to-ARM translation. That is always FEX or Box64. The two layers are
 orthogonal, exactly as 66.1.1 set out.
 
 ### 66.6.2 The PE/Unix Split
 
-Modern Wine is organised around a hard boundary between Windows PE code and a
+Modern Wine is organized around a hard boundary between Windows PE code and a
 Unix backend. Wine's builtin DLLs (`ntdll`, `kernel32`, `kernelbase`, `user32`,
-`gdi32`) are compiled as real PE files, so from the game's point of view it is
-calling ordinary Windows DLLs. The subset of DLLs that must touch the host OS are
+`gdi32`) are compiled as real PE files. So, from the game's point of view, it
+calls ordinary Windows DLLs. The subset of DLLs that must touch the host OS are
 split into a PE part and a Unix part.
 
 The canonical example is `ntdll`. The PE side (`dlls/ntdll/`) builds
-`ntdll.dll`; the Unix side (`dlls/ntdll/unix/`) builds `ntdll.so`, an ELF
+`ntdll.dll`. The Unix side (`dlls/ntdll/unix/`) builds `ntdll.so`, an ELF
 library `dlopen`'d at startup whose key files are `dlls/ntdll/unix/loader.c`,
 `dlls/ntdll/unix/virtual.c`, and `dlls/ntdll/unix/signal_x86_64.c`. The contract
 between the two halves is declared in `dlls/ntdll/unixlib.h`.
 
-Process startup begins as a perfectly ordinary Linux process: a small loader
-`dlopen`s `ntdll.so`, which builds the Windows process control structures (the
-PEB and TEB), maps the PE `ntdll.dll` and the initial executable, connects to
-wineserver, and finally jumps into PE-side initialization, after which control
-runs "as if it were Windows."
+Process startup begins as a perfectly ordinary Linux process. A small loader
+`dlopen`s `ntdll.so`. This library builds the Windows process control structures
+(the PEB and TEB), maps the PE `ntdll.dll` and the initial executable, and
+connects to wineserver. Finally, it jumps into PE-side initialization. After
+that, control runs "as if it were Windows."
 
 #### Diagram: Wine's PE and Unix halves and the syscall boundary
 
@@ -6497,46 +6546,50 @@ graph TD
 
 Two mechanisms cross the boundary. NT system calls (`NtCreateFile`,
 `NtUserCreateWindowEx`) funnel through a `__wine_syscall_dispatcher` set up in
-`dlls/ntdll/unix/signal_x86_64.c`, which saves CPU state, switches to a Unix
-stack, indexes a syscall table, and calls the Unix implementation. DLLs with a
-Unix backend that bypass the NT table instead use `WINE_UNIX_CALL`. The fact that
-Wine routes Windows API calls through an explicit, NT-like syscall boundary is
-exactly what makes the ARM64EC and WoW64 transitions of 66.5.8 possible: the
-boundary is already there to hook.
+`dlls/ntdll/unix/signal_x86_64.c`. The dispatcher saves CPU state, switches to a
+Unix stack, indexes a syscall table, and calls the Unix implementation. DLLs
+with a
+Unix backend that bypass the NT table instead use `WINE_UNIX_CALL`. Wine routes
+Windows API calls through an explicit, NT-like syscall boundary. This is exactly
+what makes the ARM64EC and WoW64 transitions of 66.5.8 possible: the boundary is
+already there to hook.
 
 ### 66.6.3 wineserver
 
 wineserver is a separate daemon that provides Wine roughly the services the
-Windows kernel provides on Windows. Every Wine process sharing a prefix shares,
-through wineserver, the things NT keeps in kernel space: handles and the object
+Windows kernel provides on Windows. Every Wine process that uses the same prefix
+shares, through wineserver, the things NT keeps in kernel space. These are
+handles and the object
 namespace, synchronization objects (events, mutexes, semaphores), processes and
 threads, window-management state, and the registry.
 
-Clients talk to it over an `AF_UNIX` socket, marshalling requests through
-`wine_server_call`; the server's request handlers live in `server/request.c`.
+Clients talk to it over an `AF_UNIX` socket. They marshal requests through
+`wine_server_call`. The server's request handlers live in `server/request.c`.
 The socket lives in a per-prefix directory keyed off the prefix's device and
 inode, so each prefix gets its own server. A particularly important detail is
-that the socket passes **file descriptors** between processes using the standard
-`SCM_RIGHTS` ancillary-data technique, so a Windows `HANDLE` can be backed by a
+that the socket passes **file descriptors** between processes with the standard
+`SCM_RIGHTS` ancillary-data technique. So a Windows `HANDLE` can be backed by a
 real Linux fd handed over from the server.
 
 The performance caveat matters on a phone. Games synchronize threads constantly,
 and the classic "ask wineserver every time" model makes each synchronization a
 socket round trip. Wine has progressively moved synchronization out of the
 server: **esync** (eventfd-based), **fsync** (futex-based), and most recently
-**ntsync**, a Linux kernel driver exposing `/dev/ntsync` that models NT
-synchronization primitives in-kernel. Whether the faster paths are available
-depends on the host kernel: an Android kernel may not expose `/dev/ntsync` at
-all, in which case the stack falls back to fsync on futexes, which Android does
-have.
+**ntsync**. **ntsync** is a Linux kernel driver that exposes `/dev/ntsync` and
+models NT synchronization primitives in-kernel.
+
+Whether the faster paths are available depends on the host kernel. An Android
+kernel may not expose `/dev/ntsync` at all. In that case, the stack falls back
+to fsync on futexes, which Android does have.
 
 ### 66.6.4 The Prefix, the C: Drive, and the Registry
 
 A **Wine prefix** (the `WINEPREFIX`, here `/home/xuser/.wine` inside the rootfs)
-is one self-contained virtual Windows installation: its own C: drive, its own
-registry, and its own wineserver. Inside, `drive_c/windows/system32` holds the
-64-bit system DLLs, `drive_c/windows/syswow64` holds the 32-bit ones (the
-Windows naming inversion is preserved), and `dosdevices/` holds the symlinks that
+is one self-contained virtual Windows installation. It has its own C: drive, its
+own registry, and its own wineserver. Inside, `drive_c/windows/system32` holds
+the 64-bit system DLLs, and `drive_c/windows/syswow64` holds the 32-bit ones
+(the Windows naming inversion is preserved). `dosdevices/` holds the symlinks
+that
 map drive letters to host paths. The registry is stored as text `.reg` files at
 the prefix root (`system.reg` for HKLM, `user.reg` for HKCU) and served live by
 wineserver.
@@ -6550,32 +6603,36 @@ how two games with conflicting DLL or registry needs stay isolated.
 Wine decides, per DLL, whether to use its own builtin implementation or a
 **native** DLL placed in the prefix. The choice is driven by the
 `WINEDLLOVERRIDES` environment variable and by registry entries under
-`HKCU\Software\Wine\DllOverrides`. This single mechanism is how the entire
-graphics fast path gets installed: DXVK and VKD3D-Proton ship PE DLLs named
-exactly like Wine's builtin Direct3D DLLs (`d3d9.dll`, `d3d11.dll`, `dxgi.dll`,
-`d3d12.dll`), the installer copies them into the prefix's `system32`/`syswow64`,
-and sets those names to `native`. The next time the game calls
+`HKCU\Software\Wine\DllOverrides`.
+
+This single mechanism is how the entire graphics fast path gets installed. DXVK
+and VKD3D-Proton ship PE DLLs named exactly like Wine's builtin Direct3D DLLs
+(`d3d9.dll`, `d3d11.dll`, `dxgi.dll`, `d3d12.dll`). The installer copies them
+into the prefix's `system32`/`syswow64` and sets those names to `native`. The
+next time the game calls
 `D3D11CreateDevice`, Wine's loader resolves `d3d11.dll` to the DXVK file instead
-of its own `wined3d`-backed builtin, and Direct3D is now translated to Vulkan
+of its own `wined3d`-backed builtin. Direct3D is now translated to Vulkan
 (66.7) rather than to OpenGL.
 
 ### 66.6.6 Where Wine Meets the Emulator
 
-Tying 66.5 and 66.6 together: in the ARM64EC configuration, Wine is native
-ARM64EC, its DLLs transition to native code at the syscall boundary, and the
-emulator (`libarm64ecfex.dll` or the WoW64 helper) is invoked only to run the
-game's x86-64 instruction stream. In the everything-emulated configuration, all
-of Wine is x86-64 and runs on top of Box64 or FEX against the rootfs glibc. Both
-configurations present the game an identical Windows; they differ only in how
-much of the process below the game is emulated versus native, which is the single
-biggest determinant of frame rate.
+This section ties 66.5 and 66.6 together. In the ARM64EC configuration, Wine is
+native ARM64EC and its DLLs transition to native code at the syscall boundary.
+The emulator (`libarm64ecfex.dll` or the WoW64 helper) is invoked only to run
+the game's x86-64 instruction stream. In the everything-emulated configuration,
+all
+of Wine is x86-64 and runs on top of Box64 or FEX against the rootfs glibc.
+
+Both configurations present the game an identical Windows. They differ only in
+how much of the process below the game is emulated versus native. This is the
+single biggest determinant of frame rate.
 
 ---
 
 ## 66.7 Graphics: Direct3D to the Adreno GPU
 
-Graphics is where the stack either succeeds or visibly fails, and it is the
-longest translation chain in the book: a Direct3D call made by an x86-64 game
+Graphics is where the stack either succeeds or visibly fails. It is the longest
+translation chain in the book. A Direct3D call made by an x86-64 game
 ends up as a Vulkan command executed by the phone's Adreno driver and composited
 by SurfaceFlinger. Every link in that chain is a separate technology.
 
@@ -6611,7 +6668,7 @@ overrides (66.6.5):
   `d3d11.dll`, `dxgi.dll` and related DLLs. It is the default `DEFAULT_DXWRAPPER`
   in GameNative containers.
 - **VKD3D-Proton** translates Direct3D 12 to Vulkan, shipping `d3d12.dll` and
-  `d3d12core.dll`. It is the Valve-tuned fork of WineHQ's own vkd3d, optimised
+  `d3d12core.dll`. It is the Valve-tuned fork of WineHQ's own vkd3d, optimized
   for game performance.
 - **D8VK** extends DXVK down to Direct3D 8.
 - **wined3d** is Wine's builtin fallback, translating Direct3D to OpenGL rather
@@ -6619,37 +6676,43 @@ overrides (66.6.5):
 - **cnc-ddraw** handles legacy DirectDraw titles.
 
 The key architectural point is that on ARM64EC these translators are native
-ARM64 code (66.5.8). Only the game's D3D *calls* originate from emulated code;
-the heavy work of turning a frame's worth of draw calls into Vulkan command
-buffers runs native. This is why DXVK on a phone is far faster than the alternative
+ARM64 code (66.5.8). Only the game's D3D *calls* originate from emulated code.
+The heavy work, which turns a frame's worth of draw calls into Vulkan command
+buffers, runs native. This is why DXVK on a phone is far faster than the
+alternative
 of translating Direct3D inside a fully-emulated x86 Wine.
 
 ### 66.7.3 Reaching the Real GPU: Turnip and Vortek
 
-Vulkan commands now have to reach the actual Adreno GPU, and there are two
-strategies, which is the most important fork in the graphics design.
+Vulkan commands must now reach the actual Adreno GPU. There are two strategies
+for this, and the choice is the most important fork in the graphics design.
 
 **Turnip** is Mesa's open-source Vulkan driver for Adreno GPUs. The stack ships a
-Turnip build (and can side-load a newer one via adrenotools, 66.4.2) so the guest
-has a real, complete Vulkan implementation that talks to the Adreno kernel
-interface directly. Turnip exists because the Vulkan driver a phone ships is often
-incomplete or buggy for the unusual workloads Wine and DXVK generate; a known-good
-Mesa driver sidesteps that. In the FEX world, the guest reaches Turnip through the
+Turnip build. It can also side-load a newer build through adrenotools (66.4.2).
+As a result, the guest has a real, complete Vulkan implementation that talks to the
+Adreno kernel interface directly.
+
+Turnip exists because the Vulkan driver that ships on a
+phone is often incomplete or buggy for the unusual workloads that Wine and DXVK
+generate. A known-good Mesa driver sidesteps that problem. In the FEX world, the guest reaches Turnip through the
 **thunk** mechanism (66.5.4): a guest `libvulkan` stub forwards to the native
 Turnip.
 
-**Vortek** is Winlator's own Vulkan compatibility layer, and it takes the IPC
-route from 66.4.5 instead of thunking. It is a client/server design: the guest
-links a thin Vortek Vulkan **ICD** (shipped into the rootfs from an
-`assets/.../vortek-*` archive) that serialises every Vulkan call into a command
-stream and ships it over a Unix socket to a **native Android server**, the
-prebuilt `libvortekrenderer.so`, driven by `VortekRendererComponent`. The server
-replays the commands against the device's real Vulkan driver, and along the way
-it can patch SPIR-V shaders, decode texture formats the host driver lacks, and
-emulate features. Vortek is GameNative's
-default graphics driver precisely because the socket boundary makes it robust to
-the glibc/`bionic` mismatch: the guest and the host driver never share an address
-space.
+**Vortek** is Winlator's own Vulkan compatibility layer. It takes the IPC
+route from 66.4.5 and does not use thunks. It is a client/server design. The
+guest links a thin Vortek Vulkan **ICD**, which is shipped into the rootfs from
+an `assets/.../vortek-*` archive.
+
+The ICD serializes every Vulkan call into a
+command stream. It ships the stream over a Unix socket to a **native Android
+server**. The server is the prebuilt `libvortekrenderer.so`, driven by
+`VortekRendererComponent`. The server replays the commands against the real
+Vulkan driver of the device. It can also patch SPIR-V shaders, decode texture
+formats that the host driver lacks, and emulate features along the way.
+
+Vortek is the default graphics driver of GameNative precisely because the socket
+boundary makes it robust to the glibc/`bionic` mismatch. The guest and the host
+driver never share an address space.
 
 #### Diagram: Turnip (thunk) versus Vortek (IPC) to the GPU
 
@@ -6666,89 +6729,95 @@ graph TB
     end
 ```
 
-A handful of other paths exist for non-Vulkan or low-end cases: **Zink** (Mesa's
-OpenGL-on-Vulkan), **VirGL** (a virtio-gpu virtual 3D renderer with its own
-client/server), and **llvmpipe** (a pure-CPU software rasteriser of last resort).
-Zink is worth a moment because it is the guest-side mirror of an AOSP component:
-where a guest needs OpenGL and the host only has a good Vulkan driver, Zink
-re-expresses GL as Vulkan, which is exactly what Android's own **ANGLE**
-(`external/angle/`) does for native apps that call OpenGL ES (Chapter 13). ANGLE
-is not the platform's default GLES driver on most devices, as the EGL loader
-itself notes (`frameworks/native/opengl/libs/EGL/Loader.cpp:555`); it is selected
-per-app or system-wide. The Windows-game stack does not route through ANGLE,
-because the guest runs its own GL-to-Vulkan translation (Zink, or `wined3d`'s GL
-output) inside the rootfs and reaches the device through the Vulkan loader; the
+A handful of other paths exist for non-Vulkan or low-end cases. **Zink** is
+Mesa's OpenGL-on-Vulkan. **VirGL** is a virtio-gpu virtual 3D renderer with its
+own client/server. **llvmpipe** is a pure-CPU software rasterizer of last resort.
+
+Zink is worth a moment because it is the guest-side mirror of an AOSP component.
+A guest can need OpenGL while the host only has a good Vulkan driver. Then Zink
+re-expresses GL as Vulkan. Android's own **ANGLE** (`external/angle/`) does
+exactly this for native apps that call OpenGL ES (Chapter 13).
+
+ANGLE is not the default GLES driver of the platform on most devices, as the EGL
+loader itself notes (`frameworks/native/opengl/libs/EGL/Loader.cpp:555`). It is
+selected per-app or system-wide. The Windows-game stack does not route through
+ANGLE. This is because the guest runs its own GL-to-Vulkan translation (Zink, or `wined3d`'s GL
+output) inside the rootfs. It reaches the device through the Vulkan loader. The
 parallel is conceptual, not a shared code path.
 
 ### 66.7.4 The Android Vulkan Loader
 
 Whichever guest path is used, the bottom of the chain is the same AOSP Vulkan
 loader from Chapter 13. The loader discovers and loads the device's Vulkan driver
-in `frameworks/native/vulkan/libvulkan/driver.cpp`; the `LoadDriver` routine
+in `frameworks/native/vulkan/libvulkan/driver.cpp`. The `LoadDriver` routine
 (`frameworks/native/vulkan/libvulkan/driver.cpp:153`) opens the HAL driver
 (`vulkan.<board>.so`) through one of two branches. When a driver namespace is
-supplied — the updatable, Play-delivered driver path — it uses
+supplied (the updatable, Play-delivered driver path), it uses
 `android_dlopen_ext` with `ANDROID_DLEXT_USE_NAMESPACE`
-(`frameworks/native/vulkan/libvulkan/driver.cpp:171`), the namespace flag from
-66.4.2; the ordinary built-in driver is instead opened with
+(`frameworks/native/vulkan/libvulkan/driver.cpp:171`). This is the namespace flag
+from 66.4.2. The ordinary built-in driver is instead opened with
 `android_load_sphal_library`
-(`frameworks/native/vulkan/libvulkan/driver.cpp:178`) from the sphal namespace. A native renderer such as Vortek's server, or a thunked Turnip, is in
-the end just another client of this loader and this driver, which is why the
-whole edifice works without any platform modification: the GPU is reached through
-the same public Vulkan interface any Android game uses.
+(`frameworks/native/vulkan/libvulkan/driver.cpp:178`) from the sphal namespace.
+
+A native renderer such as Vortek's server, or a thunked Turnip, is in the end
+just another client of this loader and this driver. This is why the whole edifice
+works without any platform modification. The GPU is reached through the same
+public Vulkan interface that any Android game uses.
 
 ### 66.7.5 Presentation: the In-App Surface
 
 Rendered frames must become pixels on screen. The game does not get a real X
-display or a real window system; it gets GameNative's **in-app X server**, a
-small X11 server implemented inside the app (`com.winlator.xserver`, native code
-under `app/src/main/cpp/winlator/`) that receives the game's output and the
-window it draws into. The X server's contents are drawn with Vulkan and presented
-to an Android **Surface**.
+display or a real window system. It gets GameNative's **in-app X server**. This
+is a small X11 server implemented inside the app (`com.winlator.xserver`, native
+code under `app/src/main/cpp/winlator/`). It receives the game's output and the
+window that the game draws into. The X server's contents are drawn with Vulkan
+and presented to an Android **Surface**.
 
 That final step uses the native window APIs from Chapter 13. Frames reach the
-compositor through `ANativeWindow`; for the CPU-access path the functions are
+compositor through `ANativeWindow`. For the CPU-access path, the functions are
 `ANativeWindow_lock`
 (`frameworks/native/libs/nativewindow/include/android/native_window.h:179`) and
 `ANativeWindow_unlockAndPost`
-(`frameworks/native/libs/nativewindow/include/android/native_window.h:188`), while
-the zero-copy GPU path binds an `AHardwareBuffer`
+(`frameworks/native/libs/nativewindow/include/android/native_window.h:188`). The
+zero-copy GPU path binds an `AHardwareBuffer`
 (`frameworks/native/libs/nativewindow/include/android/hardware_buffer.h:479`, via
-`AHardwareBuffer_allocate`) as the Vulkan swapchain image so the GPU renders
-straight into a buffer SurfaceFlinger can scan out. From SurfaceFlinger onward
+`AHardwareBuffer_allocate`) as the Vulkan swapchain image. The GPU then renders
+straight into a buffer that SurfaceFlinger can scan out. From SurfaceFlinger onward
 (Chapter 24) the game's frame is just another layer composited to the display.
 
 ### 66.7.6 Frame Generation
 
 As an optional final touch, GameNative can insert a Vulkan implicit layer that
-performs frame generation, interpolating synthetic frames between rendered ones by
-intercepting `vkQueuePresentKHR`. It is a layer in the Vulkan sense, slotting into
-the loader's layer chain, and it illustrates how much of the graphics stack is
-built out of standard Vulkan extension points rather than bespoke hooks.
+performs frame generation. The layer intercepts `vkQueuePresentKHR` and
+interpolates synthetic frames between rendered ones. It is a layer in the Vulkan
+sense and fits into the loader's layer chain. It shows that much of the graphics
+stack is built from standard Vulkan extension points and not from bespoke hooks.
 
 ---
 
 ## 66.8 Audio: from WASAPI to AAudio
 
-Audio is a shorter chain than graphics but crosses the same libc boundary, and it
-is solved with the IPC pattern from 66.4.5: a real audio server runs on the
-Android side and the guest connects to it as a client.
+Audio is a shorter chain than graphics, but it crosses the same libc boundary.
+The IPC pattern from 66.4.5 solves it. A real audio server runs on the Android
+side, and the guest connects to it as a client.
 
 ### 66.8.1 Wine's Audio Backends
 
 A Windows game emits audio through one of several front-end APIs (the modern
 WASAPI via `mmdevapi`, legacy DirectSound, or the old `winmm`/`waveOut`). Wine
 layers all of them onto a single backend driver chosen at runtime. The backend
-that matters here is `winepulse.drv`, which targets **PulseAudio**; the
-alternatives are `winealsa.drv` (ALSA) and `wineoss.drv` (OSS). In modern Wine
-each backend is a Unix-only library — `winepulse.so`, built from
-`dlls/winepulse.drv/pulse.c`, calls the host PulseAudio client library — while
-the PE half lives in `mmdevapi` itself, which loads the backend with
+that matters here is `winepulse.drv`, which targets **PulseAudio**. The
+alternatives are `winealsa.drv` (ALSA) and `wineoss.drv` (OSS). In modern Wine,
+each backend is a Unix-only library. For example, `winepulse.so`, built from
+`dlls/winepulse.drv/pulse.c`, calls the host PulseAudio client library.
+
+The PE half lives in `mmdevapi` itself. It loads the backend with
 `__wine_load_unix_lib` and calls into it through `__wine_unix_call`
 (`dlls/mmdevapi/main.c`).
-In the ARM64EC configuration the backend and its client library are native ARM64,
-so audio mixing and transport are not emulated; only the game's calls into the
-front-end API cross the emulator.
+
+In the ARM64EC configuration, the backend and its client library are native
+ARM64. So audio mixing and transport are not emulated. Only the game's calls into
+the front-end API cross the emulator.
 
 ### 66.8.2 A PulseAudio Server Inside the App
 
@@ -6757,9 +6826,9 @@ ships one. GameNative's `PulseAudioComponent` starts a PulseAudio server from th
 bundled native libraries (`libpulse.so` and the `libpulsecommon`/`libpulsecore`
 PulseAudio 13 libraries in `jniLibs/`). Wine's `winepulse.drv` connects to this
 server exactly as it would to a desktop PulseAudio, over PulseAudio's normal
-socket protocol. Because the contract is the PulseAudio wire protocol, the guest
+socket protocol. The contract is the PulseAudio wire protocol. So the guest
 side (glibc, possibly emulated) and the server side (`bionic`, native) interoperate
-across the libc boundary without sharing an address space.
+across the libc boundary. They do not share an address space.
 
 #### Diagram: the audio path from game to speaker
 
@@ -6775,8 +6844,8 @@ graph LR
 
 Winlator also provides a lower-level ALSA route. The rootfs carries a custom ALSA
 PCM plugin (Winlator's `android_alsa`, `module_pcm_android_aserver.c`) that
-exposes an "android aserver" PCM device; on the Android side
-`com.winlator.alsaserver` implements the server endpoint, and a native client
+exposes an "android aserver" PCM device. On the Android side,
+`com.winlator.alsaserver` implements the server endpoint. A native client
 (`app/src/main/cpp/winlator/` audio code) ships the PCM frames to the app. Whether
 audio takes the PulseAudio route or the ALSA route, the structure is identical: a
 guest audio API, a socket, and a native Android endpoint.
@@ -6784,32 +6853,35 @@ guest audio API, a socket, and a native Android endpoint.
 ### 66.8.4 Reaching the Speaker via AAudio
 
 The Android endpoint ultimately writes the decoded PCM into an Android audio
-stream. The natural API is **AAudio** from Chapter 15: a stream is created with
+stream. The natural API is **AAudio** from Chapter 15. A stream is created with
 `AAudio_createStreamBuilder`
-(`frameworks/av/media/libaaudio/include/aaudio/AAudio.h:1216`), configured and
-opened, and fed with `AAudioStream_write`, after which the frames flow through the
-audio HAL to the speaker. (Older or `targetSdk`-constrained builds may use
-`AudioTrack` or OpenSL ES instead, but AAudio is the modern low-latency path.) The
-audio chain therefore ends in exactly the same AOSP subsystem any native Android
+(`frameworks/av/media/libaaudio/include/aaudio/AAudio.h:1216`). The stream is then
+configured and opened, and it is fed with `AAudioStream_write`. After that, the
+frames flow through the audio HAL to the speaker. (Older or `targetSdk`-constrained builds may use
+`AudioTrack` or OpenSL ES instead, but AAudio is the modern low-latency path.)
+
+The audio chain therefore ends in exactly the same AOSP subsystem any native Android
 game's audio ends in.
 
 ### 66.8.5 Latency
 
-The cost of routing audio through a guest API, a socket, and a server is latency.
-The stack tunes for it: PulseAudio is configured with a deliberately large buffer
-(the containers set a `PULSE_LATENCY_MSEC` on the order of a hundred-odd
-milliseconds) to trade responsiveness for glitch-free playback under the jitter
-that emulation and IPC introduce. It is a pragmatic choice; perfectly tight audio
-latency is not achievable through this many layers, but for most games steady
-playback matters more than a few tens of milliseconds of lag.
+Audio goes through a guest API, a socket, and a server, and the cost is latency.
+The stack tunes for it. PulseAudio is configured with a deliberately large
+buffer. The containers set a `PULSE_LATENCY_MSEC` on the order of a hundred-odd
+milliseconds. This trades responsiveness for glitch-free playback under the
+jitter that emulation and IPC introduce.
+
+It is a pragmatic choice. Perfectly
+tight audio latency is not achievable through this many layers. For most games,
+steady playback matters more than a few tens of milliseconds of lag.
 
 ---
 
 ## 66.9 Putting It Together: Tracing Three Paths
 
 The clearest way to consolidate the whole chapter is to follow three different
-operations from the game down to the Android platform and notice how each one
-takes a different route through the layers.
+operations from the game down to the Android platform. Notice how each one takes
+a different route through the layers.
 
 #### Diagram: three operations, three routes through the stack
 
@@ -6827,25 +6899,27 @@ graph TD
 
 1. **A Direct3D 11 draw call.** The game's `ID3D11DeviceContext::Draw` is an
    x86-64 call (emulated). It enters DXVK, which on ARM64EC is native and builds
-   a Vulkan command buffer, then crosses the libc boundary by thunk (Turnip) or
-   socket (Vortek) to the Adreno driver, and the result is composited by
-   SurfaceFlinger. Almost none of this is emulated; only the original call site
-   is.
+   a Vulkan command buffer. The call then crosses the libc boundary by thunk
+   (Turnip) or socket (Vortek) to the Adreno driver. SurfaceFlinger composites
+   the result. Almost none of this is emulated; only the original call site is.
 
 2. **A `CreateFile` call.** The game asks to open a file. This is a Windows API
-   call that becomes an NT system call, funnelled through Wine's
-   `__wine_syscall_dispatcher` into `ntdll.so`, which itself translates the NT
-   path to a Unix path (`nt_to_unix_file_name`, `dlls/ntdll/unix/file.c`) and
-   sends that Unix path to wineserver in a `create_file` request; the server
-   opens the file and returns a Windows `HANDLE`, and the underlying Linux fd is
-   fetched from the server over `SCM_RIGHTS` when needed. PRoot or `libredirect`
-   remaps the path into the rootfs along the way, and the Linux `openat` finally
-   lands in the app's private storage. No GPU, no audio, entirely different
-   machinery from path 1.
+   call that becomes an NT system call. The call is funneled through Wine's
+   `__wine_syscall_dispatcher` into `ntdll.so`. That library itself
+   translates the NT path to a Unix path (`nt_to_unix_file_name`,
+   `dlls/ntdll/unix/file.c`). It sends that Unix path to wineserver in a
+   `create_file` request.
+
+    The server opens the file and returns a Windows `HANDLE`. When needed, the
+    underlying Linux fd is fetched from the server over `SCM_RIGHTS`. PRoot or
+    `libredirect` remaps the path into the rootfs along the way. The Linux
+    `openat` finally lands in the app's private storage. No GPU, no audio,
+    entirely different machinery from path 1.
 
 3. **An audio buffer write.** The game's WASAPI write enters `winepulse.drv`
-   (native on ARM64EC), which ships the PCM over the PulseAudio socket to the
-   in-app server, which writes it into an AAudio stream that reaches the speaker.
+   (native on ARM64EC). The driver ships the PCM over the PulseAudio socket to
+   the in-app server. The server writes it into an AAudio stream that reaches
+   the speaker.
 
 Three operations, three completely different paths, and only the parts drawn
 inside the emulated box are actually translated instruction by instruction. The
@@ -6857,56 +6931,67 @@ entire art of the stack is keeping that box small.
 
 None of the translation projects in this chapter ship inside AOSP, so Android 17
 does not "add" a Windows-game runtime. What 17 does is move the *platform floor*
-the stack stands on, and three shifts are worth pinning down because each either
-helps or constrains a layer above.
+that the stack stands on. Three shifts are worth pinning down, because each one
+either helps or constrains a layer above.
 
 ### 66.10.1 The Platform Interfaces the Stack Rides On Are Stable
 
-The whole design works because it only ever touches public, stable AOSP surfaces:
-the Vulkan loader (`frameworks/native/vulkan/libvulkan/driver.cpp`), the native
-window APIs (`frameworks/native/libs/nativewindow/include/android/native_window.h`),
-`AHardwareBuffer`, AAudio
-(`frameworks/av/media/libaaudio/include/aaudio/AAudio.h`), `ASharedMemory`
-(`frameworks/native/include/android/sharedmem.h`), the `android_dlopen_ext`
-extension flags (`bionic/libc/include/android/dlext.h` — stable in practice,
-though the namespace flag itself is documented as internal-use-only), and the
-linker's W^X rule (`bionic/linker/linker_phdr.cpp`). In Android 17 all of these
-are present
-with the same contracts the earlier sections rely on, which is exactly why a
-Winlator-class app keeps working across releases without a platform patch: the
-stack invents nothing at the bottom, so it inherits whatever the release's public
-Vulkan, audio, and linker surfaces provide.
+The whole design works because it only ever touches public, stable AOSP surfaces.
+These surfaces are:
+
+- the Vulkan loader (`frameworks/native/vulkan/libvulkan/driver.cpp`)
+- the native window APIs
+  (`frameworks/native/libs/nativewindow/include/android/native_window.h`)
+- `AHardwareBuffer`
+- AAudio (`frameworks/av/media/libaaudio/include/aaudio/AAudio.h`)
+- `ASharedMemory` (`frameworks/native/include/android/sharedmem.h`)
+- the `android_dlopen_ext` extension flags (`bionic/libc/include/android/dlext.h`
+  — stable in practice, though the namespace flag itself is documented as
+  internal-use-only)
+- the linker's W^X rule (`bionic/linker/linker_phdr.cpp`)
+
+In Android 17, all of these are present with the same contracts that the earlier
+sections rely on. This is exactly why a Winlator-class app keeps working across
+releases without a platform patch. The stack invents nothing at the bottom, so it
+inherits whatever the public Vulkan, audio, and linker surfaces of the release
+provide.
 
 ### 66.10.2 Berberis Is Not This Stack, and 17 Reorganized It
 
 It is easy to assume Android's own binary translator must be involved here. It is
-not. Android 17 reorganized **Berberis** (Chapter 19): every module of its
+not. Android 17 reorganized **Berberis** (Chapter 19). Every module of its
 CPU-emulation core was consolidated under a new
-`frameworks/libs/binary_translation/cpu_emulation/` directory, with the
+`frameworks/libs/binary_translation/cpu_emulation/` directory. The
 three-tier engine (`cpu_emulation/interpreter/`, `cpu_emulation/lite_translator/`,
 `cpu_emulation/heavy_optimizer/`) and the tier dispatcher
-(`cpu_emulation/translator/`) now siblings under it. But Berberis translates
+(`cpu_emulation/translator/`) are now siblings under it.
+
+But Berberis translates
 **riscv64 guest code to x86_64 hosts** (`frameworks/libs/binary_translation/README.md`)
 and plugs into ART through the Native Bridge
 (`frameworks/libs/binary_translation/native_bridge/`). That is the wrong direction
-(riscv64 to x86_64, not x86-64 to AArch64) and the wrong integration point
-(in-ART APK code, not a whole Windows process) for running PC games. The 17 reorg
-is real and relevant to Chapter 19, but it changes nothing in this chapter: the
-x86-64-to-AArch64 translation here is still done entirely by FEX and Box64, which
-no AOSP-shipped translator competes with.
+for PC games (riscv64 to x86_64, not x86-64 to AArch64). It is also the wrong
+integration point (in-ART APK code, not a whole Windows process).
+
+The 17 reorg
+is real and relevant to Chapter 19. But it changes nothing in this chapter. FEX
+and Box64 still do the x86-64-to-AArch64 translation here entirely, and no
+AOSP-shipped translator competes with them.
 
 ### 66.10.3 Where ANGLE Fits, and Where It Does Not
 
 Android's GLES-on-Vulkan translator **ANGLE** (`external/angle/`, Chapter 13) is
-the platform's own answer to "express OpenGL ES on a Vulkan-only driver," and it
+the platform's own answer to "express OpenGL ES on a Vulkan-only driver." It
 overlaps conceptually with the Zink and `wined3d`-to-GL paths inside the guest. It
-is tempting to call ANGLE "the default" on Android 17, but the EGL loader's own
+is tempting to call ANGLE "the default" on Android 17. But the EGL loader's own
 comment is explicit that it is not the default GLES driver on most devices
-(`frameworks/native/opengl/libs/EGL/Loader.cpp:555`); it is opt-in per app or via
-system configuration. For this stack the practical point is unchanged: the guest
+(`frameworks/native/opengl/libs/EGL/Loader.cpp:555`). It is opt-in per app or via
+system configuration.
+
+For this stack, the practical point is unchanged. The guest
 performs its own GL or D3D translation to Vulkan and reaches the GPU through the
-Vulkan loader, so the device's ANGLE setting neither helps nor hinders a Windows
-game. The two are parallel solutions to the same shape of problem on opposite
+Vulkan loader. So the ANGLE setting of the device neither helps nor hinders a
+Windows game. The two are parallel solutions to the same shape of problem on opposite
 sides of the libc boundary, not a shared path.
 
 ---
@@ -6915,57 +7000,57 @@ sides of the libc boundary, not a shared path.
 
 These exercises use a checkout of the GameNative source and a device or emulator
 with a Winlator-class app installed. The source reading requires nothing but a
-clone; the on-device steps assume you have legally installed such an app and a
-game you own.
+clone. The on-device steps assume that you have legally installed such an app and
+a game that you own.
 
 1. **Read the stack off the defaults.** Clone GameNative and open
    `app/src/main/java/com/winlator/container/Container.java` and
    `app/src/main/java/com/winlator/core/DefaultVersion.java`. Write down the
-   default emulator, graphics driver, audio driver, DX wrapper, and the pinned
-   versions of Wine, DXVK, VKD3D, and Turnip. You have just reconstructed the
-   entire default pipeline from two files.
+   default emulator, graphics driver, audio driver, and DX wrapper. Write down the
+   pinned versions of Wine, DXVK, VKD3D, and Turnip. You have just reconstructed
+   the entire default pipeline from two files.
 
 2. **Find the launch command.** Read
-   `app/src/main/java/com/winlator/xenvironment/components/GuestProgramLauncherComponent.java`
-   and locate where it assembles the `box64 <guest exe>` command, then read
-   `BionicProgramLauncherComponent.java` and find where it branches on whether the
+   `app/src/main/java/com/winlator/xenvironment/components/GuestProgramLauncherComponent.java`.
+   Locate where it assembles the `box64 <guest exe>` command. Then read
+   `BionicProgramLauncherComponent.java`. Find where it branches on whether the
    Wine build is ARM64EC. Compare the two launch paths.
 
-3. **Inspect the bundled components.** List `app/src/main/assets/` and identify
-   the `.tzst`/`.txz` archives for FEX, Box64, DXVK, and the Vulkan drivers, and
-   the `*_download.json` manifests that fetch the rest on demand. Note which
-   pieces are in the APK and which are downloaded.
+3. **Inspect the bundled components.** List `app/src/main/assets/`. Identify
+   the `.tzst`/`.txz` archives for FEX, Box64, DXVK, and the Vulkan drivers.
+   Identify the `*_download.json` manifests that fetch the rest on demand. Note
+   which pieces are in the APK and which are downloaded.
 
-4. **Watch the processes on device.** With the app running a game, use
+4. **Watch the processes on device.** Run a game in the app. Use
    `adb shell ps -A` and look for the Wine, wineserver, PulseAudio, and X server
-   processes living under the app's UID. Then `adb shell cat /proc/<pid>/maps`
-   for the Wine process and observe both the JIT's anonymous executable mappings
+   processes that run under the app's UID. Then run `adb shell cat /proc/<pid>/maps`
+   for the Wine process. Observe both the JIT's anonymous executable mappings
    and the rootfs libraries.
 
-5. **See the sockets.** Run `adb shell ls -l /proc/<pid>/fd` on the Wine process
-   and find the Unix-domain sockets connecting it to wineserver, the Vulkan
+5. **See the sockets.** Run `adb shell ls -l /proc/<pid>/fd` on the Wine process.
+   Find the Unix-domain sockets that connect it to wineserver, the Vulkan
    renderer, and PulseAudio. These are the boundary crossings of 66.4.5 made
    visible.
 
 6. **Explore the prefix.** Locate the container's Wine prefix under the app's
-   data directory and examine `drive_c/windows/system32` for the DXVK DLLs that
-   overrode Wine's builtin Direct3D, and `user.reg` for the
+   data directory. Examine `drive_c/windows/system32` for the DXVK DLLs that
+   overrode Wine's builtin Direct3D. Examine `user.reg` for the
    `Software\Wine\DllOverrides` entries that put them there.
 
 7. **Confirm the AOSP touchpoints.** In an AOSP checkout, open
    `frameworks/native/vulkan/libvulkan/driver.cpp` at the `LoadDriver` function
-   (line 153) and find both of its branches: `android_dlopen_ext` with
-   `ANDROID_DLEXT_USE_NAMESPACE` for an updated driver, and
-   `android_load_sphal_library` for the built-in one. This is the loader the
+   (line 153). Find both of its branches. The branch with `android_dlopen_ext` and
+   `ANDROID_DLEXT_USE_NAMESPACE` is for an updated driver. The branch with
+   `android_load_sphal_library` is for the built-in one. This is the loader the
    whole graphics stack ultimately funnels into.
 
 ---
 
 ## 66.12 Summary
 
-Running a Windows game on an unrooted ARM Android phone is a stack of
-single-purpose translation layers, each bridging one gap between a Windows x86-64
-game and the AOSP internals covered in the rest of this book.
+A Windows game runs on an unrooted ARM Android phone through a stack of
+single-purpose translation layers. Each layer bridges one gap between a Windows
+x86-64 game and the AOSP internals that the rest of this book covers.
 
 | Layer | Problem it solves | Key technology |
 |-------|-------------------|----------------|
@@ -6982,22 +7067,22 @@ game and the AOSP internals covered in the rest of this book.
 The recurring lessons:
 
 1. **Two orthogonal translations.** Instruction-set translation (FEX/Box64) and
-   Windows-API translation (Wine) are entirely separate problems; conflating them
-   is the most common misunderstanding of how these apps work.
+   Windows-API translation (Wine) are entirely separate problems. To conflate
+   them is the most common misunderstanding of how these apps work.
 
 2. **Emulate as little as possible.** Every performance gain in the stack comes
-   from moving work out of the emulated box: thunks and wrappers for the GPU
-   driver, native ARM64 DXVK, and above all ARM64EC, which leaves only the game's
-   own code emulated.
+   from work that leaves the emulated box. The main cases are thunks and wrappers
+   for the GPU driver, native ARM64 DXVK, and above all ARM64EC. ARM64EC leaves
+   only the game's own code emulated.
 
 3. **The libc boundary is the hard part.** glibc and `bionic` cannot share a
-   process, and the three ways across it (IPC, ABI thunking, or running native on
-   `bionic`) shape every design decision in the stack.
+   process. The three ways across the boundary (IPC, ABI thunking, or native
+   execution on `bionic`) shape every design decision in the stack.
 
 4. **It is all standard AOSP underneath.** The Vulkan loader, `ANativeWindow`,
    `AHardwareBuffer`, AAudio, linker namespaces, `ASharedMemory`, and the W^X
    rules are the same platform interfaces any Android app uses. The translation
-   stack invents nothing at the bottom; its genius is reaching those public
+   stack invents nothing at the bottom. Its genius is to reach those public
    interfaces from a Windows game many layers above.
 
 ### Key Source Files Reference

@@ -1,22 +1,24 @@
 # Chapter 60: Emulator Architecture
 
 The Android Emulator is one of the most critical developer tools in the AOSP
-ecosystem. Far more than a simple simulator, it is a full system-level virtual
-machine that runs production Android system images inside a modified QEMU
-hypervisor, with hardware acceleration via KVM on Linux and HAXM/Hypervisor
-Framework on other platforms. This chapter dissects the emulator from the
-inside out -- the QEMU execution engine, the Goldfish and Ranchu virtual
-hardware platforms, the guest-side HAL implementations that bridge virtual
-devices to the emulator host, the Cuttlefish cloud-oriented alternative, and
-the rich set of developer-facing features (snapshots, multi-display, foldable
+ecosystem. It is far more than a simple simulator. It is a full system-level
+virtual machine that runs production Android system images inside a modified
+QEMU hypervisor. It has hardware acceleration via KVM on Linux and
+HAXM/Hypervisor Framework on other platforms.
+
+This chapter dissects the emulator from the inside out. It covers the QEMU
+execution engine and the Goldfish and Ranchu virtual hardware platforms. It
+covers the guest-side HAL implementations that bridge virtual devices to the
+emulator host. It also covers the Cuttlefish cloud-oriented alternative and the
+rich set of developer-facing features (snapshots, multi-display, foldable
 simulation) that make the emulator indispensable.
 
 The device tree that underpins the emulator lives under
 `device/generic/goldfish/` in the AOSP source. A second virtual device
 platform, Cuttlefish, lives under `device/google/cuttlefish/`. Together these
 two directories contain hundreds of thousands of lines of C++, shell scripts,
-SELinux policy, and Makefile configuration that define what "an Android device"
-means when there is no physical hardware.
+SELinux policy, and Makefile configuration. These files define what "an Android
+device" means when there is no physical hardware.
 
 ---
 
@@ -59,7 +61,7 @@ The emulator supports two fundamental execution modes:
 
 1. **KVM-accelerated mode** (Linux): The guest code runs natively on the host
    CPU through the Kernel-based Virtual Machine (KVM) module. This is the
-   fastest mode and is always preferred when the guest and host architectures
+   fastest mode. It is always preferred when the guest and host architectures
    match (x86 guest on x86 host, or ARM guest on ARM host). With KVM, most
    guest instructions execute at near-native speed. Only privileged operations
    (I/O, page table manipulation) trap to the emulator for handling.
@@ -159,9 +161,9 @@ specialized form factors (phone, tablet, slim) and graphics backends
 "Goldfish" is the original virtual hardware platform for the Android Emulator.
 The name refers to the collection of virtual devices (timers, interrupt
 controllers, I/O buses, etc.) that QEMU presents to the guest kernel. Over
-time, Goldfish has evolved significantly -- most of the original custom
-Goldfish devices have been replaced by standard virtio devices in the modern
-"Ranchu" platform, but the name persists in the AOSP source tree.
+time, Goldfish has evolved significantly. In the modern "Ranchu" platform,
+standard virtio devices replace most of the original custom Goldfish devices.
+However, the name persists in the AOSP source tree.
 
 ### 60.2.1 Product Configuration Hierarchy
 
@@ -363,9 +365,9 @@ PRODUCT_VENDOR_PROPERTIES += \
     ro.hardware.audio.tinyalsa.host_latency_ms=80 \
 ```
 
-The 80ms host latency is higher than a physical device (which targets 5-20ms)
-because audio data must transit through QEMU's virtual sound card and the
-host's audio subsystem.
+The 80ms host latency is higher than a physical device (which targets 5-20ms).
+The reason is that audio data must transit through QEMU's virtual sound card and
+the host's audio subsystem.
 
 #### 60.2.3.2 Camera HAL
 
@@ -593,10 +595,11 @@ GnssHwConn::GnssHwConn(IDataSink& sink) {
 ```
 
 The worker thread uses `epoll` to multiplex between the QEMU device fd (for
-GPS data arriving from the host) and a command fd (for shutdown signals).
+GPS data from the host) and a command fd (for shutdown signals).
 When the emulator's Extended Controls window sends a GPS fix, it flows
-through QEMU's GPS service, through the pipe, into `GnssHwListener` which
-parses NMEA sentences, and finally into Android's `LocationManager`.
+through QEMU's GPS service and through the pipe. It then goes into
+`GnssHwListener`, which parses NMEA sentences, and finally into Android's
+`LocationManager`.
 
 The GNSS device node is created via a symlink in the init script:
 
@@ -785,8 +788,8 @@ std::array<std::int8_t, 16> ToLibyuvColorMatrix(
 ```
 
 The HWC3 implementation supports DRM-based display management with proper
-plane, CRTC, and connector abstractions -- visible in the extensive list of
-DRM-related source files: `Drm.cpp`, `DrmClient.cpp`, `DrmConnector.cpp`,
+plane, CRTC, and connector abstractions.
+The extensive list of DRM-related source files shows this: `Drm.cpp`, `DrmClient.cpp`, `DrmConnector.cpp`,
 `DrmCrtc.cpp`, `DrmDisplay.cpp`, `DrmPlane.cpp`, `DrmSwapchain.cpp`,
 `DrmAtomicRequest.cpp`, `DrmBuffer.cpp`, `DrmEventListener.cpp`,
 `DrmMode.cpp`.
@@ -823,9 +826,10 @@ struct GoldfishAllocator : public BnAllocator {
 };
 ```
 
-The key design decision is the split between **CPU buffers** (allocated in
-guest memory via `GoldfishAddressSpaceBlock`) and **GPU buffers** (represented
-as color buffers on the host). When a buffer needs GPU access, the allocator
+The key design decision is the split between **CPU buffers** and **GPU
+buffers**. CPU buffers are allocated in guest memory via
+`GoldfishAddressSpaceBlock`. GPU buffers are represented as color buffers on
+the host. When a buffer needs GPU access, the allocator
 creates a host-side color buffer through the render control encoder:
 
 ```cpp
@@ -958,8 +962,9 @@ allow qemu_props sysfs:file open;
 ```
 
 The `qemu_props` domain is granted permission to set specific property
-categories and to communicate over vsock (VirtIO socket) -- the primary
-communication channel between the guest kernel and the QEMU host.
+categories. It is also granted permission to communicate over vsock (VirtIO
+socket). Vsock is the primary communication channel between the guest kernel
+and the QEMU host.
 
 ### 60.2.6 Detailed Package Inventory
 
@@ -1109,9 +1114,9 @@ provides functions like:
 - `qemu_pipe_write_fully(fd, data, size)` -- writes data to the pipe
 - `qemu_pipe_read_fully(fd, data, size)` -- reads data from the pipe
 
-Under the hood, non-graphics pipes now travel over a vsock socket; only
-graphics pipes still fall back to the deprecated character device, whose
-node is `/dev/goldfish_pipe_dprctd`.
+Under the hood, non-graphics pipes now travel over a vsock socket. Only
+graphics pipes still fall back to the deprecated character device. Its node
+is `/dev/goldfish_pipe_dprctd`.
 
 The `qemud` layer adds multiplexing on top of the raw pipe. Multiple logical
 channels can be opened through a single pipe connection. From
@@ -1536,9 +1541,9 @@ int main(const int argc, const char* argv[]) {
 ### 60.3.7 Virtual Sensors
 
 The virtual sensors (covered in detail in section 60.2.3.3) are driven by the
-emulator's Extended Controls UI. When a user interacts with the sensor controls
-(tilting the virtual device, changing proximity, adjusting light level), the
-emulator host sends text-based sensor events through the QEMU pipe.
+emulator's Extended Controls UI. When a user interacts with the sensor controls,
+the emulator host sends text-based sensor events through the QEMU pipe. Examples
+are tilting the virtual device, changing proximity, and adjusting the light level.
 
 The sensor data flow:
 
@@ -1703,12 +1708,12 @@ stream. This stream is sent to the host through the goldfish-pipe. On the
 host side, the emulator decodes these commands and replays them against the
 host's actual GPU driver.
 
-When the host GPU is not available (e.g., on a headless CI server or a remote
-SSH session), SwiftShader provides a software implementation of Vulkan that
-runs entirely on the CPU.
+The host GPU is sometimes not available (e.g., on a headless CI server or a
+remote SSH session). In that case, SwiftShader provides a software
+implementation of Vulkan that runs entirely on the CPU.
 
 ANGLE (Almost Native Graphics Layer Engine) provides an OpenGL ES
-implementation on top of Vulkan, which is useful for hosts that have Vulkan
+implementation on top of Vulkan. This is useful for hosts that have Vulkan
 but not native OpenGL drivers (common on newer macOS systems).
 
 The graphics rendering mode is selected via boot properties:
@@ -1858,9 +1863,9 @@ case "$my_ip" in
 esac
 ```
 
-When multiple emulator instances need to communicate with each other (e.g.,
-for testing multi-device scenarios), they can be configured with a shared
-network where each instance gets a unique IP on the `eth1` interface.
+Multiple emulator instances sometimes need to communicate with each other (e.g.,
+for testing multi-device scenarios). In that case, they can be configured with
+a shared network. Each instance gets a unique IP on the `eth1` interface.
 
 ### 60.4.6 Bluetooth Networking
 
@@ -1881,8 +1886,8 @@ service bt_vhci_forwarder \
 ```
 
 The `bt_vhci_forwarder` service bridges between the VirtIO console device and
-the Bluetooth VHCI (Virtual Host Controller Interface) driver, enabling the
-guest to use the emulator's Bluetooth stack.
+the Bluetooth VHCI (Virtual Host Controller Interface) driver. This lets the
+guest use the emulator's Bluetooth stack.
 
 ---
 
@@ -1944,17 +1949,17 @@ graph TB
 ```
 
 The goldfish-pipe device was retained because it serves a unique role that
-VirtIO does not directly address: a high-bandwidth, low-latency channel for
-serialized GPU commands and other bulk data transfers between guest HALs and
-host services.
+VirtIO does not directly address. It is a high-bandwidth, low-latency channel
+for serialized GPU commands and other bulk data transfers between guest HALs
+and host services.
 
 ### 60.5.3 Kernel Module Configuration
 
 The modern Ranchu kernel uses loadable kernel modules for VirtIO devices.
-Goldfish keeps its own kernel board config with a short first-stage list
-(`device/generic/goldfish/board/kernel/arm64.mk` names just
+Goldfish keeps its own kernel board config with a short first-stage list.
+In `device/generic/goldfish/board/kernel/arm64.mk` it names just
 `virtio_dma_buf.ko`, `virtio_mmio.ko`, and `virtio-rng.ko`, plus a
-`RAMDISK_SYSTEM_KERNEL_MODULES` set, sourced from `prebuilts/qemu-kernel/`).
+`RAMDISK_SYSTEM_KERNEL_MODULES` set, sourced from `prebuilts/qemu-kernel/`.
 The Cuttlefish board configuration -- which uses a separate prebuilt kernel
 tree under `kernel/prebuilts/` -- shows a fuller set of required ramdisk
 modules:
@@ -2014,11 +2019,13 @@ endif
 
 The default for a generic phone target is 6.12. Older form factors are pinned
 to long-term kernels (Wear OS on 6.6, the clockwork emulator and x86 TV on 6.1).
-The most interesting case is the **desktop** target: it reads its version and
-directory from `RELEASE_KERNEL_CUTTLEFISH_*` release-config variables and then
+The most interesting case is the **desktop** target. It reads its version and
+directory from `RELEASE_KERNEL_CUTTLEFISH_*` release-config variables. Then it
 sources its kernel and modules from a separate desktop-specific tree rather
-than the shared prebuilts. Note that the `filter` guards below match the
-non-AOSP product names `cf_x86_64_desktop` / `cf_arm64_desktop` exactly, so
+than the shared prebuilts.
+
+Note that the `filter` guards below match the
+non-AOSP product names `cf_x86_64_desktop` / `cf_arm64_desktop` exactly. So
 the AOSP `aosp_cf_x86_64_desktop` product falls through to the shared
 `kernel/prebuilts/` branch:
 
@@ -2060,7 +2067,7 @@ on sys-boot-completed-set && property:persist.sys.zram_enabled=1
 
 The zram compression uses LZ4 for fast compression/decompression. The
 `page-cluster 0` setting tells the kernel to read one page at a time from
-swap, which is optimal for zram since there is no seek penalty.
+swap. This is optimal for zram because there is no seek penalty.
 
 ---
 
@@ -2070,9 +2077,9 @@ swap, which is optimal for zram since there is no seek penalty.
 
 Cuttlefish is a configurable virtual Android device that runs in cloud
 environments without requiring a physical display, audio device, or any
-hardware-specific infrastructure. While Goldfish/Ranchu is designed primarily
-for the Android Studio emulator (a desktop application with a GUI),
-Cuttlefish is designed for server-side use cases: CI/CD, automated testing,
+hardware-specific infrastructure. Goldfish/Ranchu is designed primarily
+for the Android Studio emulator (a desktop application with a GUI).
+In contrast, Cuttlefish is designed for server-side use cases: CI/CD, automated testing,
 cloud gaming, and development on remote machines.
 
 **Location:** `device/google/cuttlefish/`
@@ -2147,7 +2154,7 @@ the Android 17 tree are:
 | `vsoc_riscv64_minidroid/` | Minimal RISC-V |
 
 The form factors fan out from those directories. In Android 17 the catalog has
-grown well past the phone/tablet pair, and the `aosp_cf_*` product list now
+grown well past the phone/tablet pair. The `aosp_cf_*` product list now
 spans phone, foldable, tablet (`pc`), TV, Wear, Automotive (several `auto_*`
 layouts), and the new **desktop** target:
 
@@ -2185,9 +2192,9 @@ UNCOMPRESS_CHROME_WEBVIEW = true
 ```
 
 The kernel override in `shared/BoardConfig.mk` (see section 60.5.4) applies
-to the non-AOSP `cf_x86_64_desktop` / `cf_arm64_desktop` product names, which
-the desktop Android effort pairs with its own kernel branch; the AOSP
-`aosp_cf_x86_64_desktop` product does not match that filter and still uses
+to the non-AOSP `cf_x86_64_desktop` / `cf_arm64_desktop` product names. The
+desktop Android effort pairs these names with its own kernel branch. The AOSP
+`aosp_cf_x86_64_desktop` product does not match that filter. It still uses
 the shared `kernel/prebuilts/` path.
 
 ### 60.6.4 Host Tooling
@@ -2241,8 +2248,8 @@ https://github.com/google/android-cuttlefish/blob/main/docs/HostToolsMigration.m
 ```
 
 The older `acloud` launcher that earlier guides referenced is no longer part
-of the `device/google/cuttlefish` tree (it lives separately under
-`tools/acloud/` and is not the recommended local-launch path) — local launches
+of the `device/google/cuttlefish` tree. It lives separately under
+`tools/acloud/` and is not the recommended local-launch path. Local launches
 go directly through `launch_cvd` (from the host package) or through `cvd` from
 the external repository.
 
@@ -2376,8 +2383,8 @@ BOARD_VENDOR_RAMDISK_KERNEL_MODULES += \
     $(SYSTEM_VIRTIO_PREBUILTS_PATH)/vmw_vsock_virtio_transport.ko
 ```
 
-The VirtIO PCI transport module is the base for all VirtIO devices when
-running on a PCI bus (which is the case for QEMU on x86). On ARM, VirtIO
+The VirtIO PCI transport module is the base for all VirtIO devices on a
+PCI bus. This is the case for QEMU on x86. On ARM, VirtIO
 MMIO transport (`virtio_mmio.ko`) may be used instead.
 
 **WiFi modules (mac80211 stack):**
@@ -2432,8 +2439,8 @@ graph TB
 ```
 
 Key architectural difference: Goldfish is a monolithic QEMU process that
-handles everything (VM, display, device emulation), while Cuttlefish uses a
-microservice architecture where each function (VM management, display,
+handles everything (VM, display, device emulation). Cuttlefish uses a
+microservice architecture. In it, each function (VM management, display,
 modem, GNSS, logging) runs as a separate process. This makes Cuttlefish more
 modular and easier to debug, but also more complex to set up.
 
@@ -2453,7 +2460,7 @@ modular and easier to debug, but also more complex to set up.
 | Automotive / TV / Wear | Cuttlefish (more form factors) |
 
 Cuttlefish is increasingly becoming the primary virtual reference device in
-AOSP. Google uses it internally for continuous testing, and it is the
+AOSP. Google uses it internally for continuous testing. It is the
 recommended target for platform developers who do not need the interactive
 GUI features of the Android Studio emulator.
 
@@ -2522,9 +2529,9 @@ Network interfaces are assigned sub-addresses on PCI slot 1:
 ### 60.6.11 Vhost-User Device Model
 
 Cuttlefish uses the **vhost-user** protocol to run device backends as separate
-host processes, rather than inside the crosvm process. This provides better
-isolation, independent restartability, and allows device backends to be written
-in different languages (the input device is in Rust, the audio server in C++).
+host processes, rather than inside the crosvm process. This gives better
+isolation and independent restartability. It also lets device backends be
+written in different languages (the input device is in Rust, the audio server in C++).
 
 ```mermaid
 graph LR
@@ -2563,7 +2570,7 @@ Cuttlefish uses **Hypervisor Virtual Console** (HVC) ports to tunnel
 communication between guest HALs and host-side daemons. Each HVC port appears
 as `/dev/hvcN` in the guest. In Android 17 the map grew to 20 ports
 (`/dev/hvc0` through `/dev/hvc19`). The ports are allocated in a fixed order in
-`crosvm_manager.cpp`; even ports whose feature is disabled get a sink port so
+`crosvm_manager.cpp`. Even ports whose feature is disabled get a sink port, so
 the PCI device IDs stay stable:
 
 ```cpp
@@ -2593,9 +2600,9 @@ the PCI device IDs stay stable:
 | `/dev/hvc18` | Sensors control | `sensors_simulator` | Sensor enable/config commands |
 | `/dev/hvc19` | Sensors data | `sensors_simulator` | Sensor sample stream |
 
-Two changes stand out versus earlier releases: the single sensors port that
+Two changes stand out versus earlier releases. The single sensors port that
 used to sit at `/dev/hvc13` has been split into a **control** channel
-(`/dev/hvc18`) and a **data** channel (`/dev/hvc19`), and `/dev/hvc13` is now
+(`/dev/hvc18`) and a **data** channel (`/dev/hvc19`). Also, `/dev/hvc13` is now
 explicitly left vacant (a comment in the source marks it "feel free to use").
 
 Each HVC port is backed by either a pipe or a Unix socket on the host side. The
@@ -2757,13 +2764,14 @@ device/google/cuttlefish/guest/hals/
 └── vulkan/          # Graphics support
 ```
 
-One entry is newly gone in this release: the dedicated `ril/` HAL directory
-was removed when Cuttlefish switched to goldfish's shared radio HAL, which
+One entry is newly gone in this release. The dedicated `ril/` HAL directory
+was removed when Cuttlefish switched to goldfish's shared radio HAL. That HAL
 reaches the host `modem_simulator` over the TCP/vsock ports advertised in
-`ro.boot.modem_simulator_ports`. There is also no `sensors/` directory here,
-but that is much older news -- the Cuttlefish guest sensors HAL was deleted
-back in 2019, and the sensors bridge is driven from the host
-`sensors_simulator` over the `/dev/hvc18` and `/dev/hvc19` ports described
+`ro.boot.modem_simulator_ports`.
+
+There is also no `sensors/` directory here,
+but that is much older news. The Cuttlefish guest sensors HAL was deleted
+back in 2019. The sensors bridge is driven from the host `sensors_simulator` over the `/dev/hvc18` and `/dev/hvc19` ports described
 above. The Android 17 additions of note are the **`npu/`** scheduling HAL
 and the **`virtio_media/`** provider.
 
@@ -2775,9 +2783,9 @@ HAL would provide — the virtualization is transparent to higher layers.
 #### Example: NPU scheduling HAL (Android 17, Rust)
 
 The NPU HAL is one of the genuinely new guest HALs. It is written in Rust and
-implements the `android.hardware.npu` scheduling interface, registering an
+implements the `android.hardware.npu` scheduling interface. It registers an
 `IScheduling/default` service so that Cuttlefish exposes an NPU-capable surface
-for testing the NPU framework path:
+to test the NPU framework path:
 
 ```rust
 // Source: device/google/cuttlefish/guest/hals/npu/main.rs
@@ -2822,7 +2830,7 @@ use lights::LightsService;
 
 Cuttlefish runs as a collection of host processes orchestrated by `launch_cvd`
 and `run_cvd`. `device/google/cuttlefish/host/commands/` contains roughly 45
-host-tool directories; a given instance spins up the subset its configuration
+host-tool directories. A given instance spins up the subset its configuration
 requires (the VMM plus the display, modem, GNSS, sensor, security, logging, and
 input daemons):
 
@@ -2910,8 +2918,8 @@ instance. This enables large-scale parallel testing in CI/CD environments.
 ### 60.7.1 Snapshots
 
 Snapshots are one of the most powerful features of the Android Emulator. They
-capture the complete state of the virtual machine -- CPU registers, memory
-contents, device state, and disk state -- and save it to a file that can be
+capture the complete state of the virtual machine: CPU registers, memory
+contents, device state, and disk state. They save this state to a file that can be
 restored later.
 
 ```mermaid
@@ -3227,21 +3235,19 @@ endif
 
 Cuttlefish is where most of the virtual-device churn lands each release, and
 Android 17 is no exception. This section collects the changes that matter for
-platform developers: a new desktop product, a guest-side VKMS display
-controller, a sandboxed host process model, a new NPU HAL, and the migration of
-the host launcher tooling out of the AOSP tree.
+platform developers. They are a new desktop product, a guest-side VKMS display
+controller, a sandboxed host process model, and a new NPU HAL. They also include
+the migration of the host launcher tooling out of the AOSP tree.
 
 ### 60.8.1 The Desktop Product Target
 
-Android 17 adds `aosp_cf_x86_64_desktop` to the Cuttlefish product catalog
-(the board config also carries a kernel branch for a non-AOSP
-`cf_arm64_desktop` product name, but no ARM64 desktop product exists in
-AOSP). Unlike the handheld targets, the desktop product inherits a
+Android 17 adds `aosp_cf_x86_64_desktop` to the Cuttlefish product catalog.
+The board config also carries a kernel branch for a non-AOSP `cf_arm64_desktop`
+product name, but no ARM64 desktop product exists in AOSP. Unlike the handheld targets, the desktop product inherits a
 desktop-specific vendor stack (covered in sections 60.5.4 and 60.6.3). It is
-the virtual reference for
-the desktop Android form factor, exercising large-screen window management,
-binary translation in `ndk_translation_only` mode, and an uncompressed Chrome
-WebView. The product is registered in `device/google/cuttlefish/AndroidProducts.mk`
+the virtual reference for the desktop Android form factor. It exercises
+large-screen window management, binary translation in `ndk_translation_only`
+mode, and an uncompressed Chrome WebView. The product is registered in `device/google/cuttlefish/AndroidProducts.mk`
 alongside the long-standing phone, foldable, TV, Wear, and the expanded set of
 automotive (`auto`, `auto_md`, `auto_mdnd`, `auto_dd`, `auto_portrait`) targets.
 
@@ -3275,12 +3281,15 @@ Commands:
 ```
 
 The binary owns the work of correlating virtual hardware (the VKMS ConfigFS
-connector indices) to Android's SurfaceFlinger display IDs, persisting its state
-under `/data/vendor/vkms`. It supports defining displays with specific EDIDs and
-planes (`setup`), hot-plugging a connector on or off (`hotplug`), enumerating
-the monitor presets baked into the guest (`list-presets`), and resolving the
-current display topology (`list-displays`). It is installed via
-`device/google/cuttlefish/shared/device.mk`:
+connector indices) to Android's SurfaceFlinger display IDs. It keeps its state
+under `/data/vendor/vkms`. It supports four commands:
+
+- `setup` defines displays with specific EDIDs and planes.
+- `hotplug` plugs a connector in or out.
+- `list-presets` enumerates the monitor presets baked into the guest.
+- `list-displays` resolves the current display topology.
+
+It is installed via `device/google/cuttlefish/shared/device.mk`:
 
 ```makefile
 # Source: device/google/cuttlefish/shared/device.mk
@@ -3313,10 +3322,10 @@ sequenceDiagram
 ### 60.8.3 process_sandboxer: Sandboxing the Host Daemons
 
 A recurring concern with Cuttlefish is that the host runs a fleet of helper
-daemons (the VMM, modem simulator, GNSS proxy, secure_env, and so on) with
-broad host privileges. The answer is
-`device/google/cuttlefish/host/commands/process_sandboxer/` (introduced in
-early 2024, with per-executable policy coverage expanded since), which wraps
+daemons with broad host privileges. These daemons include the VMM, modem
+simulator, GNSS proxy, secure_env, and so on. The answer is
+`device/google/cuttlefish/host/commands/process_sandboxer/`. It was introduced
+in early 2024, and per-executable policy coverage has expanded since. It wraps
 those host processes in seccomp-based sandboxes built on Google's
 sandboxed-api / sandbox2 library.
 
@@ -3330,26 +3339,28 @@ namespace cuttlefish::process_sandboxer {
 absl::Status ProcessSandboxerMain(int argc, char** argv) {
 ```
 
-The sandboxer carries a per-executable policy: the `policies/` directory holds a
-dedicated source file for each host tool that runs under the sandbox
-(`run_cvd.cpp`, `assemble_cvd.cpp`, `gnss_grpc_proxy.cpp`, `secure_env.cpp`,
-`logcat_receiver.cpp`, `modem_simulator.cpp`, `socket_vsock_proxy.cpp`, and so
-on), plus a `baseline.cpp` shared policy and a `no_policy.cpp` escape hatch.
-Each policy declares the syscalls and file paths a given daemon may use, so a
-compromised helper cannot reach beyond its declared footprint. A
+The sandboxer carries a per-executable policy. The `policies/` directory holds
+a dedicated source file for each host tool that runs under the sandbox. These
+files are `run_cvd.cpp`, `assemble_cvd.cpp`, `gnss_grpc_proxy.cpp`,
+`secure_env.cpp`, `logcat_receiver.cpp`, `modem_simulator.cpp`,
+`socket_vsock_proxy.cpp`, and so on. It also holds a `baseline.cpp` shared policy and a `no_policy.cpp` escape
+hatch.
+
+Each policy declares the syscalls and file paths a given daemon may use.
+A compromised helper therefore cannot reach beyond its declared footprint. A
 `sandboxer_proxy` companion lets a sandboxed process request privileged
 operations from the manager.
 
-This is the host-side analogue of the in-process isolation work happening
-elsewhere in the platform: rather than trusting every Cuttlefish helper with
-the launcher's full privileges, each one runs behind a least-privilege policy.
+This is the host-side analog of the in-process isolation work in other parts
+of the platform. Not every Cuttlefish helper is trusted with the launcher's
+full privileges. Each helper runs behind a least-privilege policy.
 
 ### 60.8.4 The NPU Scheduling HAL
 
 Android 17's Cuttlefish gains a guest NPU (Neural Processing Unit) HAL under
 `device/google/cuttlefish/guest/hals/npu/`, written in Rust. It registers an
-`android.hardware.npu` scheduling service so the framework's NPU path has a
-virtual surface to exercise (see section 60.6.15 for the source excerpt). The
+`android.hardware.npu` scheduling service. This gives the framework's NPU path
+a virtual surface to exercise (see section 60.6.15 for the source excerpt). The
 HAL ships as its own APEX-packaged service with a VINTF fragment declaring
 `IScheduling/default`. It joins `virtio_media/` as the two notable new guest
 HAL directories this release.
@@ -3369,10 +3380,10 @@ https://github.com/google/android-cuttlefish/blob/main/docs/HostToolsMigration.m
 ```
 
 In practice this means a local launch follows two tracks. The host package
-built from this tree still provides `launch_cvd` and `stop_cvd` (the
+built from this tree still provides `launch_cvd` and `stop_cvd`. The
 `launch_cvd` symlink resolves to `cvd_internal_start`, built from
-`device/google/cuttlefish/host/commands/start/`), which is what the README's
-getting-started flow uses:
+`device/google/cuttlefish/host/commands/start/`. The README's getting-started
+flow uses these tools:
 
 ```bash
 # Source: device/google/cuttlefish/README.md (paraphrased flow)
@@ -3387,8 +3398,8 @@ HOME=$PWD ./bin/stop_cvd
 The richer `cvd` lifecycle manager and the installable Debian packages
 (`cuttlefish-base`, `cuttlefish-user`) come from the external repository. The
 older `acloud` launcher referenced by pre-17 guides no longer lives in the
-`device/google/cuttlefish` tree; it survives separately under `tools/acloud/`
-but is not the recommended local-launch path.
+`device/google/cuttlefish` tree. It survives separately under `tools/acloud/`,
+but it is not the recommended local-launch path.
 
 ---
 
@@ -3671,9 +3682,9 @@ Each level adds specific functionality:
 5. **`base_phone.mk`** -- Phone-specific overlays
 6. **`phone.mk`** -- Ties it all together, adds config.ini
 
-This layered design means that adding a new emulator product (e.g., a new
-form factor) requires only creating a thin top-level makefile that inherits
-from the appropriate base.
+This layered design means that a new emulator product (e.g., a new form
+factor) needs only a thin top-level makefile. The makefile inherits from the
+appropriate base.
 
 ### 60.9.10 Testing HAL Implementations
 
@@ -3862,7 +3873,7 @@ architecture:
    goldfish-pipe for high-bandwidth host-guest communication.
 
 3. **HAL implementations** -- Nine HAL modules (audio, camera, sensors, GNSS,
-   radio, fingerprint, HWC3, gralloc, plus supporting libraries) that bridge
+   radio, fingerprint, HWC3, gralloc, plus supporting libraries). They bridge
    Android's hardware interfaces to the emulator's virtual devices.
 
 4. **GPU emulation** -- A command-stream architecture where guest GLES/Vulkan
@@ -3873,24 +3884,24 @@ architecture:
    inter-emulator networking.
 
 6. **Cuttlefish** -- A cloud-oriented alternative that uses the same kernel
-   and VirtIO devices but runs without a desktop GUI, making it ideal for
+   and VirtIO devices but runs without a desktop GUI. This makes it ideal for
    CI/CD and server-side testing.
 
 7. **Developer features** -- Snapshots for instant restore, multi-display
    support, foldable simulation, location/battery/telephony simulation, and
    rich console commands.
 
-8. **Android 17 Cuttlefish changes** -- A new `aosp_cf_x86_64_desktop` product,
-   the guest-side `vkms_controller` display utility, expanded per-executable
-   seccomp sandboxing of host daemons via `process_sandboxer`, a new Rust NPU
-   scheduling HAL, a 20-port HVC map (sensors split into control/data), and the
-   migration of the `cvd` launcher and Debian packaging to the external
-   `github.com/google/android-cuttlefish` repository.
+8. **Android 17 Cuttlefish changes** -- A new `aosp_cf_x86_64_desktop` product
+   and the guest-side `vkms_controller` display utility. The release also adds
+   expanded per-executable seccomp sandboxing of host daemons via
+   `process_sandboxer`. It adds a new Rust NPU scheduling HAL and a 20-port HVC
+   map (sensors split into control/data). The `cvd` launcher and Debian packaging also moved to the
+   external `github.com/google/android-cuttlefish` repository.
 
 The key architectural principle throughout is that the emulator runs _real_
 Android -- the same kernel, the same framework, the same system image format.
 The virtual hardware layer is designed to be transparent to the software above
-it, so that apps and platform code behave identically whether running on a
+it. This lets apps and platform code behave identically, whether they run on a
 physical device or in the emulator.
 
 ### Key Source Files Reference

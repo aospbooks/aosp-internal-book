@@ -2,13 +2,13 @@
 
 Android's printing framework provides a complete system for discovering printers,
 rendering documents, spooling print jobs, and delivering them to physical or
-virtual printers. The framework uses a layered architecture: a system service
+virtual printers. The framework uses a layered architecture. A system service
 (`PrintManagerService`) manages per-user state and coordinates between
-applications, a print spooler process manages the print queue, and pluggable
-print services handle communication with specific printers or protocols.
+applications. A print spooler process manages the print queue. Pluggable print
+services handle communication with specific printers or protocols.
 
 This chapter examines the printing framework from the public API through the
-system service internals, covering the print job lifecycle, document rendering,
+system service internals. It covers the print job lifecycle, document rendering,
 printer discovery, and the spooler architecture.
 
 ---
@@ -119,9 +119,9 @@ The `print()` method:
 The Android 17 implementation hardens this path. `print()` builds an
 `ActivityOptions` with
 `MODE_BACKGROUND_ACTIVITY_START_ALLOWED` so the spooler dialog is allowed to
-launch from the print request, and it now catches `ActivityNotFoundException`
-when the dialog activity cannot be resolved, returning `null` (the documented
-failure mode) instead of leaking the exception to the caller:
+launch from the print request. It now catches `ActivityNotFoundException` when
+the dialog activity cannot be resolved. In that case it returns `null` (the
+documented failure mode) instead of leaking the exception to the caller:
 
 ```java
 // frameworks/base/core/java/android/print/PrintManager.java
@@ -354,7 +354,7 @@ The system uses aggregate state constants for filtering:
 | `STATE_ANY_SCHEDULED` | `QUEUED`, `STARTED`, `BLOCKED` | Delivered to print service |
 
 The `STATE_ANY_VISIBLE_TO_CLIENTS` filter is consumed in a single place,
-`PrintSpoolerService.isStateVisibleToUser()`, which requires
+`PrintSpoolerService.isStateVisibleToUser()`. That method requires
 `isActiveState(state)` (`CREATED`, `QUEUED`, `STARTED`, or `BLOCKED`) *and* one
 of `FAILED`, `COMPLETED`, `CANCELED`, or `BLOCKED`. The intersection of those
 two conditions is just `STATE_BLOCKED` -- not "all states except `CREATED`" as
@@ -600,17 +600,17 @@ private boolean isPrintingEnabled() {
 ```
 
 When printing is disabled, `print()` fetches the human-readable reason through
-`DevicePolicyManagerInternal.getPrintingDisabledReasonForUser()`, shows it in a
-toast, drives the adapter through `start()`/`finish()` so the app's resources
-are released, and returns `null` without creating a job.
+`DevicePolicyManagerInternal.getPrintingDisabledReasonForUser()` and shows it in
+a toast. It drives the adapter through `start()`/`finish()` so the app's
+resources are released. Then it returns `null` without creating a job.
 
 ### 63.7.3 Content Observers and Broadcast Receivers
 
 `PrintManagerImpl` registers:
 
 - **Content observers** on `Settings.Secure.DISABLED_PRINT_SERVICES` to track
-  which print services the user has *disabled* in Settings (see Section 63.8.2 for
-  why Android tracks the disabled set rather than the enabled set)
+  which print services the user has *disabled* in Settings. Section 63.8.2
+  explains why Android tracks the disabled set rather than the enabled set.
 
 - **Package monitors** to detect installation, removal, or updates of print
   service packages
@@ -665,13 +665,13 @@ private final Intent mQueryIntent =
 ```
 
 Since Android N, the system persists the *disabled* set rather than the enabled
-set: every installed print service is considered enabled unless its
+set. Every installed print service is considered enabled unless its
 `ComponentName` appears in `Settings.Secure.DISABLED_PRINT_SERVICES` (a
 colon-separated list). `readDisabledPrintServicesLocked()` parses that setting
 into `mDisabledServices`, and `writeDisabledPrintServicesLocked()` persists it.
 `Settings.Secure.ENABLED_PRINT_SERVICES` survives only as a one-time migration
-input: `upgradePersistentStateIfNeeded()` reads any legacy enabled list,
-converts it into the equivalent disabled set, and then clears
+input. `upgradePersistentStateIfNeeded()` reads any legacy enabled list and
+converts it into the equivalent disabled set. Then it clears
 `ENABLED_PRINT_SERVICES` to `null` so the upgrade never runs again:
 
 ```java
@@ -933,9 +933,9 @@ final class RemotePrintSpooler {
 
 ### 63.11.2 Timed Remote Calls
 
-Spooler calls that need a return value -- getting or setting print job info,
-state, and tags, plus the custom printer icon operations -- go through
-`TimedRemoteCaller` instances to enforce timeouts:
+Spooler calls that need a return value go through `TimedRemoteCaller`
+instances to enforce timeouts. These calls get or set print job info, state,
+and tags, and they include the custom printer icon operations:
 
 ```java
 // Individual timed callers for each operation
@@ -1173,7 +1173,7 @@ Key implementation details:
 2. **PendingIntent**: The print dialog is launched through a `PendingIntent`
    wrapped in a Bundle under `EXTRA_PRINT_DIALOG_INTENT`. The client
    (`PrintManager.print()` in Section 63.2.1) reads that `IntentSender` and starts
-   it, so the dialog runs with the correct security context across process
+   it. This way the dialog runs with the correct security context across process
    boundaries
 
 3. **Background activity restriction**: The `PendingIntent` is built with
@@ -1265,8 +1265,8 @@ public void onPrintJobQueued(PrintJobInfo printJob) {
 }
 ```
 
-If the targeted print service has been disabled between when the user selected
-the printer and when the job was queued, the job immediately fails with
+The targeted print service can be disabled after the user selects the printer
+and before the job is queued. In that case the job immediately fails with
 "service unavailable."
 
 ---
@@ -1505,8 +1505,8 @@ private final PrintJobForAppCache mPrintJobForAppCache = new PrintJobForAppCache
 
 Enterprise management disables printing by setting the
 `UserManager.DISALLOW_PRINTING` user restriction. `isPrintingEnabled()` checks
-that restriction for the calling user; when it is set, `print()` and
-`restartPrintJob()` refuse to proceed, and `print()` surfaces the admin's
+that restriction for the calling user. When it is set, `print()` and
+`restartPrintJob()` refuse to proceed. Also, `print()` surfaces the admin's
 reason string via `DevicePolicyManagerInternal`:
 
 ```java
@@ -1554,17 +1554,17 @@ $ adb shell dumpsys print --proto
 ```
 
 The `dumpsys print` handler in `PrintManagerService` (Section 63.7) snapshots
-the per-user `UserState` list under `mLock`, then renders it through a
-`DualDumpOutputStream` that targets either an `IndentingPrintWriter` (text) or a
-`ProtoOutputStream` (`--proto`).
+the per-user `UserState` list under `mLock`. Then it renders the list through a
+`DualDumpOutputStream`. That stream targets either an `IndentingPrintWriter`
+(text) or a `ProtoOutputStream` (`--proto`).
 
 ### 63.21.2 Logging
 
 The print framework classes do not consult `Log.isLoggable()`, so the usual
 `adb shell setprop log.tag.<TAG> VERBOSE` recipe has no effect on them. Their
-verbose output is gated on compile-time constants instead: `PrintManager`,
+verbose output is gated on compile-time constants instead. `PrintManager`,
 `RemotePrintSpooler`, `RemotePrintService`, and `UserState` each declare a
-`DEBUG` flag that ships as `false`, and `PrintManagerService` has no debug gate
+`DEBUG` flag that ships as `false`. `PrintManagerService` has no debug gate
 at all:
 
 ```java
@@ -1572,10 +1572,11 @@ at all:
 private static final boolean DEBUG = false;
 ```
 
-Getting the extra logging therefore requires rebuilding the framework with
+The extra logging therefore requires a rebuild of the framework with
 `DEBUG = true` in the classes of interest. On a production build, the practical
-alternatives are `dumpsys print` (Section 63.21.1) and filtering logcat for the
-messages the framework emits unconditionally (errors and warnings).
+alternatives are `dumpsys print` (Section 63.21.1) and a logcat filter. The
+filter shows the messages that the framework emits unconditionally (errors and
+warnings).
 
 ### 63.21.3 Proto Dump
 
@@ -1610,8 +1611,8 @@ The print framework supports protobuf-based dumps for structured analysis:
 Android 17 lets a print service publish a *setup* activity for a printer, in
 addition to the long-standing *info* activity. The motivating case is a printer
 that a service can discover but cannot print to until the user finishes a
-one-time setup step (for example, claiming the printer, entering credentials, or
-installing a vendor profile). The feature is guarded by the
+one-time setup step. Examples of such a step are claiming the printer, entering
+credentials, and installing a vendor profile. The feature is guarded by the
 `android.print.flags.enable_setup_activity` aconfig flag:
 
 ```text
@@ -1640,12 +1641,12 @@ public @NonNull Builder setSetupIntent(@NonNull PendingIntent setupIntent) {
 ```
 
 Every field touchpoint -- the constructor, parceling, `hashCode()`, `equals()`,
-and `toString()` -- is wrapped in `if (Flags.enableSetupActivity())`, so the
+and `toString()` -- is wrapped in `if (Flags.enableSetupActivity())`. So the
 extra `PendingIntent` is read from and written to the parcel only when the flag
 is on. This keeps the wire format compatible with services compiled against the
-flag-off build. The accessor `getSetupIntent()` is deliberately marked `@hide`:
-only the framework's own print UI is meant to launch the setup screen, so a
-third-party app that obtains a `PrinterInfo` through other APIs cannot start it.
+flag-off build. The accessor `getSetupIntent()` is deliberately marked `@hide`.
+Only the framework's own print UI is meant to launch the setup screen. A
+third-party app that gets a `PrinterInfo` through other APIs cannot start it.
 
 ### 63.23.2 How the spooler blocks printing until setup completes
 
@@ -1663,9 +1664,9 @@ private static boolean needsSetup(PrinterInfo printer) {
 ```
 
 When the user tries to print, `setupAndPrint()` first checks `needsSetup()`. If
-setup is required it launches the service's setup `PendingIntent` for a result
-(rather than confirming the print job), allowing the activity to launch from the
-spooler via `MODE_BACKGROUND_ACTIVITY_START_ALLOWED`. Only when setup is not
+setup is required, it launches the service's setup `PendingIntent` for a result
+(rather than confirming the print job). This lets the activity launch from the spooler
+via `MODE_BACKGROUND_ACTIVITY_START_ALLOWED`. Only when setup is not
 required (or has completed) does the spooler fall through to `confirmPrint()`:
 
 ```mermaid
@@ -1687,9 +1688,10 @@ flowchart TB
 ```
 
 A successful setup result does not spool the job directly. `onSetupActivityResult()`
-only adopts the printer the setup activity returns -- which may be an alternate
-printer, in case the user picks a different one during setup -- updates the
-print attributes from its capabilities, and returns to the dialog. The user then
+only adopts the printer that the setup activity returns. This may be an
+alternate printer, in case the user picks a different one during setup. The
+method then updates the print attributes from the capabilities of that printer
+and returns to the dialog. The user then
 presses Print again, and with the printer no longer needing setup, the spooler
 falls through to `confirmPrint()`.
 
@@ -1723,12 +1725,17 @@ FrameworkMainPrintUiLaunched   (1073) - print dialog opened
 FrameworkAdvancedOptionsUiLaunched (1074) - advanced options opened
 ```
 
-`FrameworkPrintJob` carries the terminal state (completed / failed / canceled),
-color mode, media size, horizontal/vertical DPI, orientation, duplex mode,
-document type, whether the output was saved to PDF, page count, and the print
-service UID. `FrameworkPrinterDiscovery` records the discovering service UID and
+`FrameworkPrintJob` carries these fields:
+
+- the terminal state (completed / failed / canceled)
+- color mode, media size, and horizontal/vertical DPI
+- orientation, duplex mode, and document type
+- whether the output was saved to PDF
+- the page count and the print service UID
+
+`FrameworkPrinterDiscovery` records the discovering service UID and
 the printer's supported color modes, media sizes, and duplex modes. Four
-additional `Bips*` atoms (1075-1078) come from the built-in print service
+more `Bips*` atoms (1075-1078) come from the built-in print service
 (`builtinprintservice`) rather than the spooler.
 
 ### 63.24.2 Where the events are logged
@@ -1750,10 +1757,10 @@ private void logPrintJobFinalState(PrinterId printerId, PrintJobInfo printJob) {
 }
 ```
 
-The proto comments name the exact source files for each atom: `FrameworkPrintJob`
-is logged from `PrintSpoolerService.java`, `FrameworkPrinterDiscovery` from
-`PrinterDiscoverySession.java`, and the two UI-launch atoms from `PrintActivity.java`.
-To support these atoms, Android 17 added small accessors used by the logger,
+The proto comments name the exact source files for each atom. `FrameworkPrintJob`
+is logged from `PrintSpoolerService.java`. `FrameworkPrinterDiscovery` is logged
+from `PrinterDiscoverySession.java`. The two UI-launch atoms are logged from
+`PrintActivity.java`. To support these atoms, Android 17 added small accessors used by the logger,
 including media-size and document-type lookups read from `PrintAttributes` and
 `PrintDocumentInfo`.
 
@@ -1763,8 +1770,9 @@ including media-size and document-type lookups read from `PrintAttributes` and
 
 Earlier releases assumed `com.android.printspooler` was present on every user.
 Android 17 turns the preinstall into an explicit `install-in-user-type`
-allowlist: the spooler ships only for the listed user types (full users plus the
-clone, managed, and private profiles), not unconditionally for every user.
+allowlist. The spooler ships only for the listed user types (full users plus the
+clone, managed, and private profiles). It does not ship unconditionally for
+every user.
 
 ```xml
 <!-- build/make/target/product/sysconfig/preinstalled-packages-platform-handheld-system.xml -->
@@ -1777,9 +1785,9 @@ clone, managed, and private profiles), not unconditionally for every user.
 ```
 
 Because the spooler can now be absent on a given user, code that talks to it
-must tolerate that. The `dumpsys print` path is the visible example: a stale
-implementation called into `RemotePrintSpooler.dump()` for every user state,
-which failed when the spooler package was not installed. Android 17 adds an
+must tolerate that. The `dumpsys print` path is the visible example. A stale
+implementation called into `RemotePrintSpooler.dump()` for every user state.
+That call failed when the spooler package was not installed. Android 17 adds an
 install check that short-circuits the dump:
 
 ```java
@@ -1827,9 +1835,9 @@ action.
    ```
 
    Note the per-user `UserState` sections, the installed and active print
-   services, and any cached print jobs. On a device with secondary users, confirm
-   the command no longer fails even though the spooler may be absent on some users
-   (Section 63.25).
+   services, and any cached print jobs. On a device with secondary users,
+   confirm that the command does not fail. This is true even though the spooler may be absent on some
+   users (Section 63.25).
 
 2. **Watch the disabled-services model.** List the print services, then toggle
    one in Settings and re-read the secure setting that actually persists the
@@ -1839,15 +1847,15 @@ action.
    adb shell settings get secure disabled_print_services
    ```
 
-   Disable a service in Settings and observe the `ComponentName` appear in the
-   colon-separated list; the *enabled* setting stays empty (Section 63.8.2).
+   Disable a service in Settings. Observe the `ComponentName` in the
+   colon-separated list. The *enabled* setting stays empty (Section 63.8.2).
 
 3. **Trace a print job's lifecycle.** Follow a job from `STATE_CREATED` through
    `STATE_QUEUED` to a terminal state. The framework classes gate verbose
-   logging on compile-time `DEBUG = false` constants (Section 63.21.2), so
-   `setprop log.tag.*` does not help; instead poll `dumpsys print` while the
-   job progresses and watch the cached job's state field change, alongside the
-   messages that reach logcat unconditionally:
+   logging on compile-time `DEBUG = false` constants (Section 63.21.2). So
+   `setprop log.tag.*` does not help. Instead, poll `dumpsys print` while the
+   job progresses. Watch the state field of the cached job change. Also watch
+   the messages that reach logcat unconditionally:
 
    ```bash
    adb shell dumpsys print | grep -A3 "print jobs"
@@ -1865,8 +1873,8 @@ action.
    ```
 
    The `DeviceConfig` keys for aconfig flags are qualified by their aconfig
-   package (`android.print.flags` and `com.android.printspooler.flags`); on
-   recent builds `adb shell aflags list | grep printing` shows both flags with
+   package (`android.print.flags` and `com.android.printspooler.flags`). On
+   recent builds, `adb shell aflags list | grep printing` shows both flags with
    their current state.
 
    With `printing_telemetry` on, complete a print and confirm a `FrameworkPrintJob`
@@ -1875,17 +1883,17 @@ action.
 5. **Implement a minimal print service.** Build a `PrintService` subclass that
    reports a single fake printer in `onCreatePrinterDiscoverySession()` and
    completes jobs in `onPrintJobQueued()`. Attach a setup intent with
-   `PrinterInfo.Builder.setSetupIntent()` and watch the print dialog block on
-   setup before allowing the job (Section 63.23).
+   `PrinterInfo.Builder.setSetupIntent()`. Watch the print dialog block on
+   setup before the job is allowed (Section 63.23).
 
 ---
 
 ## Summary
 
-Android's printing framework is a well-structured system built on four layers:
-the client API (`PrintManager`), the system service (`PrintManagerService` with
-per-user `UserState`), the print spooler process (`com.android.printspooler`),
-and pluggable print services (`PrintService`).
+Android's printing framework is a well-structured system built on four layers.
+These layers are the client API (`PrintManager`), the system service
+(`PrintManagerService` with per-user `UserState`), the print spooler process
+(`com.android.printspooler`), and pluggable print services (`PrintService`).
 
 The `PrintDocumentAdapter` contract between applications and the print framework
 ensures content can be re-laid-out for different print attributes, with the
@@ -1907,12 +1915,14 @@ users while sharing the underlying framework infrastructure.
 
 Android 17 refines several of these layers. Print services can now publish a
 per-printer setup activity (`enable_setup_activity`), which the spooler launches
-to block printing until the user finishes setup. A new telemetry layer
+to block printing until the user finishes setup.
+
+A new telemetry layer
 (`printing_telemetry`) emits structured statsd atoms for job outcomes, printer
 discovery, and print-dialog engagement. The persisted service state continues to
 track the *disabled* set in `Settings.Secure.DISABLED_PRINT_SERVICES`, with the
 legacy enabled-list setting surviving only as a one-time migration input.
-Because the spooler is no longer preinstalled on every user, framework code such
-as `dumpsys print` now guards spooler access with an install check, and
+The spooler is no longer preinstalled on every user. So framework code such
+as `dumpsys print` now guards spooler access with an install check. Also,
 `PrintManager.print()` returns `null` instead of leaking
 `ActivityNotFoundException` when the dialog activity cannot be resolved.

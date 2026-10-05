@@ -1,15 +1,15 @@
 # Chapter 57: Testing Frameworks and Infrastructure
 
 Testing in the Android Open Source Project is not an afterthought bolted onto the
-platform; it is a first-class citizen woven into every layer of the build system,
+platform.  It is a first-class citizen woven into every layer of the build system,
 the continuous integration pipeline, and the compliance certification process.
 Android ships on billions of devices made by hundreds of OEMs, which makes
 correctness verification at scale a survival requirement rather than a luxury.
 
 This chapter provides a comprehensive tour of every major testing subsystem in
-AOSP: from the philosophy that guides where tests live and how they run, through
-the build system module types that compile them, to the harness that executes
-them on hosts and devices.  Every section references real source files in the
+AOSP.  It starts with the philosophy that guides where tests live and how they
+run.  Then it covers the build system module types that compile the tests.  It
+ends with the harness that executes them on hosts and devices.  Every section references real source files in the
 tree so you can follow along in your own checkout.
 
 ---
@@ -18,8 +18,8 @@ tree so you can follow along in your own checkout.
 
 ### 57.1.1  The Android Test Pyramid
 
-Android's testing strategy borrows the classic test pyramid concept and extends
-it to account for the unique challenge of a platform that spans kernel, native
+Android's testing strategy borrows the classic test pyramid concept.  It extends
+the concept to account for the unique challenge of a platform that spans kernel, native
 libraries, a managed-runtime framework, and user-space applications.
 
 ```
@@ -46,7 +46,7 @@ represents execution cost.  Android tooling actively pushes tests downward:
 ### 57.1.2  The Major Test Suites
 
 Android defines several compliance and validation suites.  Each suite is a
-TradeFederation *plan* that selects a set of test modules, and each module
+TradeFederation *plan* that selects a set of test modules.  Each module
 declares its suite membership via the `test_suites` property in its build rule.
 
 | Suite | Full Name | Purpose | Runner |
@@ -329,7 +329,7 @@ public class InstrumentationTest
 ```
 
 Note that the runner is auto-detected from the installed test package when the
-`runner` option is left unset, rather than defaulting to a fixed class name.
+`runner` option is left unset.  It is not defaulted to a fixed class name.
 
 ### 57.2.4  Sharding
 
@@ -412,10 +412,11 @@ examines the outcome of each test run module and decides whether to retry.
 
 TradeFed splits its sources into two roots. The core runner contract
 `IRemoteTest` is an interface under the `invocation_interfaces` root
-(`tools/tradefederation/core/invocation_interfaces/com/android/tradefed/testtype/`),
-and `IDeviceTest` lives under the main `src/` root
-(`tools/tradefederation/core/src/com/android/tradefed/testtype/`, where
-TradeFed-internal runners such as `FakeTest` and `TfTestLauncher` also live).
+(`tools/tradefederation/core/invocation_interfaces/com/android/tradefed/testtype/`).
+`IDeviceTest` lives under the main `src/` root
+(`tools/tradefederation/core/src/com/android/tradefed/testtype/`).
+TradeFed-internal runners such as `FakeTest` and `TfTestLauncher` also live
+under that root.
 Most concrete test-runner implementations live in the separate `test_framework`
 source root at
 `tools/tradefederation/core/test_framework/com/android/tradefed/testtype/`:
@@ -443,9 +444,9 @@ public interface IRemoteTest {
 ### 57.2.7  Target Preparers
 
 Target preparers set up the device before tests run.  Like the runners in
-57.2.6, preparers are split across two source roots: `DeviceSetup`,
+57.2.6, preparers are split across two source roots.  `DeviceSetup`,
 `DeviceFlashPreparer`, and `TestAppInstallSetup` live under
-`tools/tradefederation/core/src/com/android/tradefed/targetprep/`, while
+`tools/tradefederation/core/src/com/android/tradefed/targetprep/`.
 `RootTargetPreparer`, `StopServicesSetup`, and `PushFilePreparer` live under
 `tools/tradefederation/core/test_framework/com/android/tradefed/targetprep/`.
 Key preparers:
@@ -1010,14 +1011,14 @@ The default path above produces an internal `_TestExecutionPlan`
 tests will execute." `_TestExecutionPlan.create()` picks one of two concrete
 plans: `_TestMappingExecutionPlan` for TEST_MAPPING runs and
 `_TestModuleExecutionPlan` for explicit module/class references. Each plan
-exposes `required_build_targets()`, `requires_device_update()`, and `execute()`,
-so the main loop can decide what to build, whether a device flash is needed, and
-how to run -- all without the runner code caring how the tests were selected.
+exposes `required_build_targets()`, `requires_device_update()`, and `execute()`.
+The main loop can use them to decide what to build, whether a device flash is needed, and
+how to run. The runner code does not need to know how the tests were selected.
 
 Android 17 layers a declarative selection model on top of this called **ACME**.
-Instead of naming modules, a developer (or a CI trigger) names *test triggers*
-and *execution plans* defined in protobuf (`test_configs_proto`, imported as
-`test_configs_pb2`), and atest resolves those into the modules to run. The
+A developer (or a CI trigger) does not name modules. The developer names *test
+triggers* and *execution plans* defined in protobuf (`test_configs_proto`,
+imported as `test_configs_pb2`). Then atest resolves those into the modules to run. The
 entry points are registered in `tools/asuite/atest/arg_parser.py` and handled by
 modules under `tools/asuite/atest/acme/`:
 
@@ -1032,8 +1033,8 @@ modules under `tools/asuite/atest/acme/`:
 `get_execution_plans_for_test_triggers()` maps trigger names to the workflows
 and execution plans they reference. The affected-triggers mode reuses the
 `TEST_MAPPING`/`test_mapping` machinery to compute which triggers a diff
-touches, giving developers a way to reproduce locally exactly what presubmit
-will run for their change without hand-listing modules.
+touches. Developers can use it to reproduce locally exactly what presubmit
+will run for their change, without a hand-written list of modules.
 
 On the harness side, 17 adds a matching TradeFed suite runner.
 `ExecutionPlanSuiteRunner`
@@ -1049,9 +1050,9 @@ gated behind a rollout flag (next section) while the feature stabilizes.
 Because atest ships to thousands of developers continuously, risky behavior
 changes are introduced behind a percentage rollout rather than a hard switch.
 `tools/asuite/atest/rollout_control.py` defines `RolloutControlledFeature`
-objects, each with a `rollout_percentage`, an `env_control_flag` to force the
-feature on or off locally, and an optional randomization keyed by run ID so a
-single developer sees consistent behavior within a run. Android 17 ships these
+objects, each with a `rollout_percentage` and an `env_control_flag` to force the
+feature on or off locally. Each object can also have a randomization keyed by
+run ID, so a single developer sees consistent behavior within a run. Android 17 ships these
 controlled features, among others:
 
 | Feature | Env flag | Notes |
@@ -1081,7 +1082,7 @@ They are the glue between code changes and presubmit/postsubmit test selection.
 ### 57.4.2  JSON Structure
 
 A `TEST_MAPPING` file contains a JSON object whose keys are *test groups*
-(typically `presubmit`, `postsubmit`, or custom names) and whose values are
+(typically `presubmit`, `postsubmit`, or custom names). The values are
 arrays of test objects.
 
 **Simple example** from `system/libbase/TEST_MAPPING`:
@@ -1407,25 +1408,26 @@ cc_test {
 
 The `isolated: true` property seen in 57.5.3 swaps the default
 `libgtest_main` for `libgtest_isolated_main`, which is the static-library
-entry point of the process-isolated gtest runner in
+entry point of the process-isolated gtest runner. The runner lives in
 `system/testing/gtest_extras/` (~2.3K LOC of runner code, about 4.8K
-including its own tests). Instead of running every test
-method in one address space, the isolated runner (`gtest_isolated/`) forks a
-fresh child process per test (`fork()` in
-`system/testing/gtest_extras/gtest_isolated/Isolate.cpp`) and waits on it,
-running several at a time according to a configurable job count
+including its own tests). The stock runner runs every test
+method in one address space. The isolated runner (`gtest_isolated/`) instead
+forks a fresh child process per test (`fork()` in
+`system/testing/gtest_extras/gtest_isolated/Isolate.cpp`) and waits on it. It
+runs several children at a time, according to a configurable job count
 (`gtest_isolated/Options.h`).
 
-Process isolation buys two things the stock single-process runner cannot. A
+Process isolation buys two things the stock single-process runner cannot. First, a
 test that crashes or corrupts global state can no longer take down the rest of
-the binary: the failure is confined to its own child, the parent records the
+the binary. The failure is confined to its own child. The parent records the
 terminating signal (`Isolate.cpp` reports `terminated by signal:` via
-`WIFSIGNALED`), and the remaining tests still run. And each child is held to a
-per-test wall-clock deadline (`deadline_threshold_ms` in `Options.h`); a hung
+`WIFSIGNALED`), and the remaining tests still run. Second, each child has a
+per-test wall-clock deadline (`deadline_threshold_ms` in `Options.h`). A hung
 test is killed and reported as a timeout rather than wedging the whole run.
-This is why low-level suites that deliberately exercise faulting and
-signal-handling paths -- bionic, ART's native-bridge tests, and the
-jemalloc/scudo allocator tests -- opt into `isolated: true` and link
+
+Low-level suites deliberately exercise faulting and
+signal-handling paths: bionic, ART's native-bridge tests, and the
+jemalloc/scudo allocator tests. For that reason, they opt into `isolated: true` and link
 `libgtest_isolated`. The runner is otherwise a drop-in: the same
 GoogleTest-authored `cc_test` source from 57.5.3 builds against either entry
 point.
@@ -1981,7 +1983,7 @@ cts-tradefed run cts --dynamic-sharding
 ```
 
 A separate option, `--enable-token-sharding`, makes sharding honor device
-tokens (for example a SIM-card capability), so that tests requiring a
+tokens (for example a SIM-card capability). As a result, tests that require a
 particular token only run on shards whose device provides it.
 
 ### 57.6.9  CTS Result Structure
@@ -2214,8 +2216,8 @@ VTS tests verify:
 
 Ravenwood is Android's solution for running framework tests on the host JVM
 without requiring a device or emulator.  It provides a lightweight environment
-where Android framework classes execute directly on a JDK 21+ host JVM,
-dramatically reducing test execution time from minutes to seconds.
+where Android framework classes execute directly on a JDK 21+ host JVM.
+This dramatically reduces test execution time from minutes to seconds.
 
 Source: `build/soong/java/ravenwood.go`
 
@@ -2365,8 +2367,8 @@ r.Library.ravenizer.enabled = true
 ```
 
 The Ravenizer rewrites bytecode to redirect framework calls to Ravenwood's
-host-compatible implementations, similar to how Robolectric's shadow system
-works but integrated more tightly with the platform build.
+host-compatible implementations. This is similar to how Robolectric's shadow
+system works, but it is integrated more tightly with the platform build.
 
 ### 57.8.7  Manifest Properties
 
@@ -2500,12 +2502,12 @@ if resourceApk != nil {
 ### 57.8.12  Host Graphics Stubs (libhostgraphics)
 
 Ravenwood (and other host-side framework tests) can compile and link against
-classes that internally call into `libhwui`, but `libhwui` was written to talk
+classes that internally call into `libhwui`. But `libhwui` was written to talk
 to a real `SurfaceFlinger`, a real `BufferQueue`, and a real `ANativeWindow`.
 On a host JVM running on a Linux/Mac/Windows workstation, none of those exist.
 `libhostgraphics` is the static C++ shim that lets `libhwui` build and link on
-the host by providing minimal, in-process replacements for the parts of the
-graphics stack it depends on.
+the host. It provides minimal, in-process replacements for the parts of the
+graphics stack that hwui depends on.
 
 Source: `frameworks/base/libs/hostgraphics/` (five C++ files, plus 9 header
 shims in `include/gui/` and `include/ui/`).
@@ -2526,7 +2528,7 @@ host: {
 
 This `static_libs` line is what makes "host hwui" possible. On a device,
 `libhwui` pulls in `libgui`, `libui`, `libnativewindow`, `libnativedisplay`,
-and `libsurfaceflinger`; on the host, those `shared_libs` entries are absent
+and `libsurfaceflinger`. On the host, those `shared_libs` entries are absent,
 and `libhostgraphics` provides the symbols the host build needs.
 
 #### The five stub translation units
@@ -2541,9 +2543,9 @@ and `libhostgraphics` provides the symbols the host build needs.
 
 The interesting case is `HostBufferQueue`. On device, producer (the app/hwui
 side) and consumer (SurfaceFlinger or a `BufferItemConsumer`) live in different
-processes, communicate via Binder, and exchange a ring of slot-indexed buffers
-guarded by fences. On host, there is no producer/consumer separation and no
-double-buffering — `createBufferQueue` hands back the same object as both
+processes. They communicate via Binder and exchange a ring of slot-indexed
+buffers guarded by fences. On host, there is no producer/consumer separation
+and no double-buffering. `createBufferQueue` hands back the same object as both
 endpoints, and every "buffer" is the same `GraphicBuffer`:
 
 ```cpp
@@ -2557,9 +2559,9 @@ void BufferQueue::createBufferQueue(sp<IGraphicBufferProducer>* outProducer,
 }
 ```
 
-That collapse is intentional: host tests only need to verify that hwui *issued
-the right draw calls* against *some* buffer, not that the buffer survived a
-round trip through SurfaceFlinger. Skipping the producer/consumer protocol
+That collapse is intentional. Host tests only need to verify that hwui *issued
+the right draw calls* against *some* buffer. They do not need to verify that
+the buffer survived a round trip through SurfaceFlinger. Skipping the producer/consumer protocol
 also avoids dragging in Binder, `libgui`, and the `libnativedisplay` HWC
 shims, all of which would need their own host stubs.
 
@@ -2629,15 +2631,15 @@ builds of hwui cannot exercise:
   ever exists)
 
 For those, you still need a device or an emulator. `libhostgraphics`'s job
-is only to keep the linker happy and let *unit* tests of hwui's algorithmic
+is only to keep the linker happy. It lets *unit* tests of hwui's algorithmic
 core (paint, canvas, font, hierarchy traversal) run on a developer laptop
 in milliseconds.
 
 ### 57.8.13  In-Process System Server
 
-Early Ravenwood could only host leaf utility classes. By Android 17 it stands up
-a lightweight, in-process **system server** so that code which looks up framework
-services through `Context.getSystemService()` or `ServiceManager` can run on the
+Early Ravenwood could only host leaf utility classes. By Android 17 it starts
+a lightweight, in-process **system server**. This lets code that looks up framework
+services through `Context.getSystemService()` or `ServiceManager` run on the
 host. `RavenwoodSystemServer`
 (`frameworks/base/ravenwood/junit-impl-src/android/platform/test/ravenwood/RavenwoodSystemServer.java`)
 registers fake or proxied implementations into `ServiceManager` and
@@ -2652,14 +2654,15 @@ registers fake or proxied implementations into `ServiceManager` and
 These are not the real services -- most are proxies that either delegate to a
 fake or throw "not implemented" for unsupported calls. Only `PLATFORM_COMPAT_*`
 and `INPUT_SERVICE` register unconditionally; the rest register inside
-`maybeRegisterExperimentalServices()`, gated by `isExperimentalApiEnabled()`. A
-companion `RavenwoodAppDriver`
+`maybeRegisterExperimentalServices()`, gated by `isExperimentalApiEnabled()`.
+
+A companion `RavenwoodAppDriver`
 (`frameworks/base/ravenwood/junit-impl-src/android/app/RavenwoodAppDriver.java`)
-brings up enough of `ActivityThread`/`Application` state that tests can obtain a
-real `Context`, settings provider, and compat configuration on the host. The
-practical effect is that the class of code Ravenwood can cover expands from data
-structures to framework logic that talks to system services -- still without a
-device, but no longer limited to dependency-free leaf classes.
+brings up enough of `ActivityThread`/`Application` state on the host. Tests
+can then get a real `Context`, settings provider, and compat configuration. The
+practical effect is that Ravenwood can now cover more than data structures. It
+covers framework logic that talks to system services. It still needs no device,
+and it is no longer limited to dependency-free leaf classes.
 
 ### 57.8.14  When to Use Ravenwood
 
@@ -2787,7 +2790,7 @@ func (r *robolectricTest) DepsMutator(ctx android.BottomUpMutatorContext) {
 ```
 
 In strict mode, the Robolectric library is added as a runtime-only dependency
-(not compile-time), preventing test code from directly calling Robolectric
+(not compile-time). This stops test code from directly calling Robolectric
 shadow APIs.
 
 ### 57.9.6  Test Config Generation
@@ -3408,9 +3411,9 @@ Flicker tests verify properties like:
 Flicker tests are written in Kotlin against `FlickerBuilder`
 (`platform_testing/libraries/flicker/src/android/tools/flicker/FlickerBuilder.kt`).
 A parameterized runner (`FlickerParametersRunnerFactory`, backed by
-`FlickerJUnit4ClassRunner`) executes them; a `@FlickerBuilderProvider` method
-configures the trace via `setup {}` / `transitions {}` / `teardown {}` blocks,
-and assertions live in `@Test` methods:
+`FlickerJUnit4ClassRunner`) executes them. A `@FlickerBuilderProvider` method
+configures the trace via `setup {}` / `transitions {}` / `teardown {}` blocks.
+Assertions live in `@Test` methods:
 
 ```kotlin
 @RunWith(Parameterized::class)
@@ -3479,8 +3482,8 @@ public void testButtonAppearance() {
 
 The `ScreenshotTestRule.assertBitmapAgainstGolden` entry point takes the
 captured bitmap, a golden identifier, and a `BitmapMatcher` (such as
-`MSSIMMatcher` for perceptual similarity or `PixelPerfectMatcher`); the
-higher-level `ViewScreenshotTestRule.screenshotTest(...)` helper wraps the
+`MSSIMMatcher` for perceptual similarity or `PixelPerfectMatcher`).
+The higher-level `ViewScreenshotTestRule.screenshotTest(...)` helper wraps the
 capture-and-compare flow for a single view.
 
 Golden images are updated with `update_goldens.py` when intentional visual
@@ -3590,9 +3593,10 @@ flicker.assertLayersEnd { layerState ->
 
 ### 57.11.10  Gating UI Tests by Form Factor and Environment
 
-As Android grew its desktop windowing, large-screen, and automotive surfaces,
-UI tests increasingly need to run on some form factors but not others, and to
-skip cleanly when running deviceless (Ravenwood/Robolectric) instead of failing.
+Android grew its desktop windowing, large-screen, and automotive surfaces. As a result, UI
+tests increasingly need to run on some form factors but not others. They
+also need to skip cleanly when they run deviceless (Ravenwood/Robolectric),
+instead of failing.
 `LimitDevicesRule`
 (`platform_testing/libraries/health/rules/src/android/platform/test/rule/LimitDevicesRule.kt`)
 is the JUnit `TestRule` that enforces these constraints with annotations matched
@@ -3610,8 +3614,8 @@ against `Build.PRODUCT`:
 
 The target devices are named by the `DeviceProduct` enum (Cuttlefish products
 such as `CF_PHONE`, `CF_TABLET`, `CF_FOLDABLE`, `CF_DESKTOP`, `CF_AUTO`, plus
-real products), and a free `isDesktop()` helper exposes the same desktop
-detection to test bodies. A test gates itself like this:
+real products). A free `isDesktop()` helper exposes the same desktop detection
+to test bodies. A test gates itself like this:
 
 ```kotlin
 class MyLargeScreenTest {
@@ -3629,9 +3633,9 @@ When the current device does not match the annotation, the rule throws an
 failed. The same module thus participates in phone, tablet, foldable, desktop,
 and deviceless runs without per-configuration test forks. The companion
 `@SkipOnDesktop`/`@SkipOnDeviceless` annotations are the platform-side mechanism
-behind the 17 desktop-windowing and Ravenwood test sweeps: a test that cannot
+behind the 17 desktop-windowing and Ravenwood test sweeps. A test that cannot
 yet pass on a desktop window or off-device is annotated rather than disabled
-globally, keeping its phone coverage intact.
+globally. Its phone coverage stays intact.
 
 ---
 
@@ -3716,9 +3720,9 @@ external/dexmaker/
   dexmaker-mockito-inline-dispatcher/    -- Dispatch mechanism
 ```
 
-Dexmaker solves a fundamental Android challenge: the Dalvik/ART runtime cannot
-use cglib or ByteBuddy (the standard JVM mock generation libraries) because
-they generate JVM bytecode, not DEX bytecode.  Dexmaker generates DEX files
+Dexmaker solves a fundamental Android challenge. The Dalvik/ART runtime cannot
+use cglib or ByteBuddy (the standard JVM mock generation libraries). This is because they
+generate JVM bytecode, not DEX bytecode.  Dexmaker generates DEX files
 at runtime for mock classes.
 
 The inline variant (`dexmaker-mockito-inline`) enables mocking of final classes
@@ -4608,8 +4612,8 @@ platform_testing/libraries/
 
 The Android 17 tree adds `androidbuildinternal/`, `media/`, `sdv/` (Software
 Defined Vehicle, covered in Chapter 62 (Device Form Factors), §62.7), and `uiautomator-accessibility/`
-to the set, reflecting the growth of the automotive/SDV test surface and an
-accessibility-driven UI-helper layer.
+to the set.  These additions show the growth of the automotive/SDV test surface
+and of an accessibility-driven UI-helper layer.
 
 ### 57.15.3  Key Libraries
 
@@ -4908,7 +4912,7 @@ graph TB
 ## 57.17  Try It: Write Tests at Every Level
 
 This hands-on section walks through writing tests at each level of the Android
-test pyramid, using a hypothetical `StringUtils` module as the system under test.
+test pyramid.  The system under test is a hypothetical `StringUtils` module.
 
 ### 57.17.1  Exercise 1: Host-Side Unit Test (cc_test_host)
 
@@ -5339,9 +5343,9 @@ android_test {
 
 **Step 3: Update golden images when designs change**
 
-Run the tests, pull the failure artifacts (the `.textpb` diff protos and
-actual `.png` screenshots) from the device, then point the update script at
-the directory containing them:
+Run the tests. Pull the failure artifacts from the device. These are the
+`.textpb` diff protos and the actual `.png` screenshots. Then point the update
+script at the directory that contains them:
 
 ```bash
 python3 platform_testing/libraries/screenshot/update_goldens.py \
@@ -5610,8 +5614,8 @@ updates the CL status.
 ### 57.17.14  Performance Optimization Tips
 
 1. **Minimize build noise**: Use `--build-output logged` with atest to write
-   build output to a log file instead of streaming it (the only valid values
-   are `streamed` and `logged`)
+   build output to a log file instead of streaming it. The only valid values
+   are `streamed` and `logged`.
 
 2. **Use --host**: Always add `--host` for host-only tests to skip device setup
 3. **Leverage caching**: atest caches test discovery results; avoid `--clear-cache`
@@ -5624,8 +5628,8 @@ updates the CL status.
    relevant to your change
 
 6. **Skip install**: Use `atest -t <module>` to run only the test step when
-   iterating (after an initial build); the `-b`, `-i`, and `-t` flags select
-   the build, install, and test steps respectively
+   iterating (after an initial build). The `-b`, `-i`, and `-t` flags select
+   the build, install, and test steps respectively.
 
 ---
 
@@ -5661,10 +5665,10 @@ of manufacturers.  The key takeaways from this chapter:
    providing a simple CLI that handles building, installing, and running any
    test in the tree.
 
-The best testing strategy for any AOSP module follows the pyramid: maximize
-fast host-side unit tests, add focused device integration tests for behavior
-that requires real hardware, and ensure compliance with the relevant test
-suites for your component.
+The best testing strategy for any AOSP module follows the pyramid. Maximize
+fast host-side unit tests. Add focused device integration tests for behavior
+that requires real hardware. Make sure your component complies with the
+relevant test suites.
 
 ### Test Infrastructure Component Map
 

@@ -4,8 +4,9 @@ The camera subsystem is among the most complex and performance-critical
 pipelines in AOSP.  A single photo capture can involve dozens of metadata
 keys, multiple output surfaces, 3A (auto-exposure, auto-focus,
 auto-white-balance) convergence loops, hardware ISP configuration, and
-multi-frame noise-reduction -- all orchestrated across Java framework code,
-a native C++ `CameraService`, AIDL/HIDL HAL interfaces, and vendor silicon.
+multi-frame noise-reduction.  All of this work is orchestrated across Java
+framework code, a native C++ `CameraService`, AIDL/HIDL HAL interfaces, and
+vendor silicon.
 
 This chapter traces the entire path from the application-facing `CameraManager`
 down through `CameraService`, `Camera3Device`, the camera HAL, and back up
@@ -333,8 +334,8 @@ cameraDevice.createCaptureSession(config);
 ### 64.1.9 Updating Output Surfaces Without Reconfiguring (Android 17)
 
 Before Android 17 the options for changing which `Surface` an output stream
-wrote to were limited: `finalizeOutputConfigurations()` only filled in a
-deferred surface once, and `updateOutputConfiguration()` (single
+wrote to were limited.  `finalizeOutputConfigurations()` only filled in a
+deferred surface once.  `updateOutputConfiguration()` (single
 `OutputConfiguration`, API 26) could add or remove surfaces only on an output
 created with `enableSurfaceSharing()`. Swapping the surface of an ordinary,
 non-sharing output meant tearing the session down and building a new one,
@@ -356,18 +357,19 @@ public void updateOutputConfigurations(@NonNull List<OutputConfiguration> config
 The list size must equal the number of outputs the session was created with;
 this call replaces surfaces, it does not add or remove streams. Each supplied
 `OutputConfiguration` is matched back to an existing stream by its properties
-(size, format, and so on) rather than by identity, so the new configuration can
-carry a fresh surface added with `OutputConfiguration.addSurface()` or be marked
-deferred again with `makeDeferredAndRemoveSurfaces()`. The method is gated by the
-`FLAG_SEAMLESS_TRANSITIONS` flag and is the API behind seamless use-case
-transitions: an app can swap the preview surface, or fill in a deferred capture
-surface, without re-running `createCaptureSession()`.
+(size, format, and so on) rather than by identity.  So the new configuration can
+carry a fresh surface added with `OutputConfiguration.addSurface()`.  It can
+also be marked deferred again with `makeDeferredAndRemoveSurfaces()`.
+
+The method is gated by the `FLAG_SEAMLESS_TRANSITIONS` flag.  It is the API
+behind seamless use-case transitions.  An app can swap the preview surface, or
+fill in a deferred capture surface, without re-running `createCaptureSession()`.
 
 The implementation in `CameraDeviceImpl.updateOutputConfigurations()` builds two
-maps of the currently configured outputs, one keyed by the configuration as-is
-and one keyed by its deferred form, then matches each new configuration to a
-stream id. The matched stream ids and new configurations are forwarded over a
-single binder call:
+maps of the currently configured outputs.  One map is keyed by the configuration
+as-is and one is keyed by its deferred form.  Then it matches each new
+configuration to a stream id.  The matched stream ids and new configurations
+are forwarded over a single binder call:
 
 ```
 Source: frameworks/av/camera/aidl/android/hardware/camera2/ICameraDeviceUser.aidl, line 260
@@ -379,8 +381,8 @@ void updateOutputConfigurations(in int[] streamIds, in OutputConfiguration[] con
 
 Active requests that target a replaced surface are stopped by the call. When a
 surface that has in-flight buffers is replaced, the framework holds a weak
-reference to the old surface (`mReplacedOutputs` in `CameraDeviceImpl`) so that
-outstanding buffers can drain and return before the old producer connection is
+reference to the old surface (`mReplacedOutputs` in `CameraDeviceImpl`).  This
+lets outstanding buffers drain and return before the old producer connection is
 torn down. Stale entries are pruned on the next `updateOutputConfigurations()`
 call.
 
@@ -591,9 +593,9 @@ It has two transport-specific subclasses:
 
 Camera3Device owns two internal threads, `RequestThread` and
 `StatusTracker`.  A third thread, `FrameProcessorBase`, is owned by
-`CameraDeviceClient` rather than Camera3Device: it polls the Camera3Device
-(through the `FrameProducer` interface) for new result metadata and
-dispatches it to registered listeners:
+`CameraDeviceClient` rather than Camera3Device.  It polls the Camera3Device
+(through the `FrameProducer` interface) for new result metadata.  It
+dispatches that metadata to registered listeners:
 
 ```mermaid
 graph LR
@@ -656,9 +658,9 @@ space:
 | `RotateAndCropMapper` | `device3/RotateAndCropMapper.cpp` | Adjusts metadata for rotate-and-crop |
 | `UHRCropAndMeteringRegionMapper` | `device3/UHRCropAndMeteringRegionMapper.cpp` | Ultra-high-resolution crop mapping |
 
-These mappers are applied in order during both request submission (converting
-app coordinates to HAL coordinates) and result delivery (converting HAL
-coordinates back to app coordinates).
+These mappers are applied in order during both request submission and result
+delivery.  On request submission, app coordinates are converted to HAL coordinates.
+On result delivery, HAL coordinates are converted back to app coordinates.
 
 ### 64.2.8 CameraProviderManager -- HAL Discovery
 
@@ -722,9 +724,9 @@ Torch mode is controlled through `CameraManager.setTorchMode()` in the
 framework, which translates to `CameraService::setTorchMode()`.  The torch
 can be enabled without opening the camera device.
 
-When a camera device is opened by an application, any active torch on that
-camera is automatically turned off (since the ISP takes control of the flash
-LED).
+When an application opens a camera device, any active torch on that
+camera is automatically turned off.  The reason is that the ISP takes control
+of the flash LED.
 
 ### 64.2.10 CameraService Watchdog
 
@@ -899,7 +901,7 @@ graph LR
 ### 64.3.5 3A Convergence Loop
 
 One of the most critical aspects of the capture pipeline is the
-**3A convergence loop** -- the process by which auto-exposure (AE),
+**3A convergence loop**.  In this process, the auto-exposure (AE),
 auto-focus (AF), and auto-white-balance (AWB) algorithms reach stable
 settings before a photo is taken.
 
@@ -989,24 +991,24 @@ have been received:
 The camera HAL must satisfy a strict ordering contract:
 
 1. **Shutter notifications** must arrive in frame-number order
-2. **Result metadata** must be returned in frame-number order: the metadata
-   for request 5 must be returned before the metadata for request 6
-   (within a single request, partial results may still arrive before or
-   after the shutter notification)
+2. **Result metadata** must be returned in frame-number order.  The metadata
+   for request 5 must be returned before the metadata for request 6.
+   Within a single request, partial results may still arrive before or
+   after the shutter notification.
 
-3. **Output buffers for a given stream** must be returned in FIFO order --
-   the buffer for request 5 on stream A must precede the buffer for
-   request 6 on stream A -- but different streams are independent of each
-   other, so the buffer for request 5 on stream A may legally arrive after
-   the buffer for request 6 on stream B
+3. **Output buffers for a given stream** must be returned in FIFO order.
+   The buffer for request 5 on stream A must precede the buffer for
+   request 6 on stream A.  But different streams are independent of each
+   other.  So the buffer for request 5 on stream A may legally arrive after
+   the buffer for request 6 on stream B.
 
 4. Only failed buffers (`BufferStatus.ERROR`) are exempt from the strict
    per-stream ordering
 
 5. `REQUEST_PIPELINE_MAX_DEPTH` reports the maximum number of pipeline
-   stages a frame traverses from exposure to result availability; the
-   framework uses it to bound how many requests it keeps in flight, and
-   `processCaptureRequest()` may block when the pipeline is full
+   stages a frame traverses from exposure to result availability.  The
+   framework uses it to bound how many requests it keeps in flight.
+   `processCaptureRequest()` may block when the pipeline is full.
 
 ```
 Source: hardware/interfaces/camera/device/aidl/android/hardware/camera/device/ICameraDeviceCallback.aidl
@@ -1118,8 +1120,8 @@ graph LR
     ENC --> IR
 ```
 
-The JPEG/R file is backward-compatible: devices that don't understand HDR
-display the SDR JPEG, while HDR-capable displays use the gain map to
+The JPEG/R file is backward-compatible. Devices that don't understand HDR
+display the SDR JPEG. HDR-capable displays use the gain map to
 reconstruct the full HDR content.
 
 ### 64.3.11 Flush and Idle
@@ -1390,10 +1392,9 @@ optimize stream configuration:
 
 Two separate mechanisms fall under "buffer management" in the camera
 service.  The first is `Camera3BufferManager`, a service-side graphic-buffer
-pool: it allocates and hands out Gralloc buffers to output streams that
-belong to the same stream set, and can dynamically deallocate buffers so
-that streams sharing the set do not all hold their worst-case buffer count
-at once:
+pool. It allocates and hands out Gralloc buffers to output streams that
+belong to the same stream set. It can also dynamically deallocate buffers. It does this so that the streams that share
+the set do not all hold their worst-case buffer count at once:
 
 ```
 Source: frameworks/av/services/camera/libcameraservice/device3/Camera3BufferManager.h
@@ -1456,7 +1457,7 @@ additional processing on HAL output before delivering to the application:
 | `HeicCompositeStream` | `api2/HeicCompositeStream.cpp` | Encodes HEIC using MediaCodec |
 | `JpegRCompositeStream` | `api2/JpegRCompositeStream.cpp` | Creates JPEG/R (HDR photo with gain map) |
 
-These composite streams are transparent to the application -- the app
+These composite streams are transparent to the application. The app
 requests a normal HEIC or DEPTH_JPEG output, and the camera service
 internally sets up the composite processing pipeline.
 
@@ -1550,17 +1551,17 @@ if (physicalResult != null) {
 }
 ```
 
-The full-result form matters for reprocessing: to reprocess a physical-camera
+The full-result form matters for reprocessing. To reprocess a physical-camera
 frame from a `MultiResolutionImageReader`, the app must hand
-`createReprocessCaptureRequest()` the physical camera's `TotalCaptureResult`,
-which the deprecated map could not provide.
+`createReprocessCaptureRequest()` the physical camera's `TotalCaptureResult`.
+The deprecated map could not provide it.
 
 By default a logical camera returns physical metadata only for physical streams
 the request actually targeted. Android 17 adds the
 `LOGICAL_MULTI_CAMERA_ADDITIONAL_RESULTS` key (a boolean, present on both
-`CaptureRequest` and `CaptureResult`) that asks the device to also include the
-backing physical cameras' metadata in the result even when no physical stream
-was requested; the app then reads it back through
+`CaptureRequest` and `CaptureResult`). The key asks the device to also include
+the backing physical cameras' metadata in the result, even when no physical
+stream was requested. The app then reads it back through
 `getPhysicalCameraTotalResults()`:
 
 ```
@@ -1574,9 +1575,9 @@ builder.set(CaptureRequest.LOGICAL_MULTI_CAMERA_ADDITIONAL_RESULTS, true);
 ```
 
 The key maps to the `ANDROID_LOGICAL_MULTI_CAMERA_ADDITIONAL_RESULTS` metadata
-tag (HAL version 3.12), defined in
-`system/media/camera/docs/metadata_definitions.xml` and surfaced to vendors as
-the `LogicalMultiCameraAdditionalResults` enum (`OFF`/`ON`) in
+tag (HAL version 3.12). The tag is defined in
+`system/media/camera/docs/metadata_definitions.xml`. It is surfaced to vendors
+as the `LogicalMultiCameraAdditionalResults` enum (`OFF`/`ON`) in
 `hardware/interfaces/camera/metadata/aidl/`.
 
 ### 64.5.3 Camera Characteristics for Multi-Camera
@@ -1953,10 +1954,10 @@ Set<CaptureResult.Key> resultKeys =
 
 Android 15 added extension strength control, allowing applications to
 adjust the intensity of extension effects.  Strength is a per-request
-control, `CaptureRequest.EXTENSION_STRENGTH`, a single integer in the range
-`0` to `100` where `0` means "apply no post-processing, return a regular
-frame" and `100` is the maximum effect.  It is only available when the key
-appears in the extension's `getAvailableCaptureRequestKeys()` list, so an
+control, `CaptureRequest.EXTENSION_STRENGTH`. It is a single integer in the
+range `0` to `100`. The value `0` means "apply no post-processing, return a
+regular frame" and `100` is the maximum effect.  It is only available when the
+key appears in the extension's `getAvailableCaptureRequestKeys()` list. For that reason, an
 application must check that list rather than assume the control exists:
 
 ```
@@ -1977,10 +1978,10 @@ if (requestKeys.contains(CaptureRequest.EXTENSION_STRENGTH)) {
 }
 ```
 
-The interpretation depends on the extension: for `EXTENSION_BOKEH` strength
-controls the amount of blur; for `EXTENSION_HDR` and `EXTENSION_NIGHT` it
-controls how many frames are fused and the brightness of the result; for
-`EXTENSION_FACE_RETOUCH` it controls the amount of cosmetic smoothing.  If
+The interpretation depends on the extension. For `EXTENSION_BOKEH`, strength
+controls the amount of blur. For `EXTENSION_HDR` and `EXTENSION_NIGHT`, it
+controls how many frames are fused and the brightness of the result. For
+`EXTENSION_FACE_RETOUCH`, it controls the amount of cosmetic smoothing.  If
 the client omits the value, the extension picks a default and reports it back
 in the corresponding capture result.
 
@@ -1991,9 +1992,9 @@ extension processes the full-resolution output.  The application checks
 `CameraExtensionCharacteristics.isPostviewAvailable()`, picks a size from
 `getPostviewSupportedSizes()`, and registers a dedicated postview output
 surface through
-`ExtensionSessionConfiguration.setPostviewOutputConfiguration()`; the quick
-image is then delivered to that surface, while
-`onCaptureProcessProgressed()` separately reports incremental
+`ExtensionSessionConfiguration.setPostviewOutputConfiguration()`. The quick
+image is then delivered to that surface. Separately,
+`onCaptureProcessProgressed()` reports incremental
 post-processing progress from 0 to 100:
 
 ```mermaid
@@ -2177,9 +2178,9 @@ graph TD
     CDC --> C3D
 ```
 
-The NDK uses the same request templates, the same metadata tag space
-(prefixed with `ACAMERA_` instead of `CaptureRequest.`), and the same
-error codes (mapped to `camera_status_t` enum values).
+The NDK uses the same request templates and the same metadata tag space.
+Its tag names have the prefix `ACAMERA_` instead of `CaptureRequest.`.
+It also uses the same error codes, which map to `camera_status_t` enum values.
 
 ### 64.7.6 NDK Window Targets
 
@@ -2237,8 +2238,8 @@ ACaptureRequest_setEntry_physicalCamera_u8(
 ```
 
 The chapter's earlier Java example used `OutputConfiguration.setPhysicalCameraId()`
-to bind a whole stream to a sensor; the direct NDK equivalent is
-`ACaptureSessionPhysicalOutput_create(window, physicalId, &output)`, which
+to bind a whole stream to a sensor.  The direct NDK equivalent is
+`ACaptureSessionPhysicalOutput_create(window, physicalId, &output)`.  It
 creates a session output routed to one physical camera.  The
 `ACaptureRequest_setEntry_physicalCamera_*` setters shown above are a
 separate mechanism: they carry per-physical-camera request settings, not
@@ -2316,7 +2317,7 @@ Source: frameworks/av/camera/ndk/include/camera/NdkCameraError.h
 ## 64.8 Multi-Client Shared Sessions (Android 17)
 
 Until Android 17 a camera was an exclusive resource: exactly one client held
-a given camera ID, and a higher-priority client could only take it by evicting
+a given camera ID.  A higher-priority client could only take it by evicting
 the current owner (Section 64.2.3).  Android 17 adds an opt-in **shared mode**
 in which several clients can hold the same camera at once, observing a single
 shared stream configuration.  This is aimed at scenarios such as large-screen
@@ -2365,9 +2366,9 @@ new `StateCallback` hooks, `onOpenedInSharedMode()` and
 ### 64.8.2 Primary and Secondary Clients
 
 Among all clients that have opened a camera in shared mode, exactly one is the
-**primary** client and the rest are **secondary**.  Priority is computed from
-the same two signals the eviction policy uses, the process state and the
-out-of-memory score, so a foreground or system client outranks a background
+**primary** client and the rest are **secondary**.  Priority comes from
+the same two signals that the eviction policy uses: the process state and the
+out-of-memory score.  So a foreground or system client outranks a background
 one.  As clients come and go the primary can change, and every client is told
 via `onClientSharedAccessPriorityChanged()`.
 
@@ -2380,7 +2381,7 @@ The capabilities differ sharply between the two roles:
 | `startStreaming` / `stopStreaming` (default params) | Yes | Yes |
 | `captureBurst` / `setRepeatingBurst` / `switchToOffline` / `prepare` | No (unsupported in shared sessions) | No |
 
-Secondary clients cannot author capture requests; they can only ask the
+Secondary clients cannot author capture requests.  They can only ask the
 session to stream frames to their own surfaces with default parameters via
 `startStreaming(List<Surface>)`, and stop with `stopStreaming()`.
 
@@ -2413,18 +2414,18 @@ Source: frameworks/av/services/camera/libcameraservice/config/SharedSessionConfi
         frameworks/av/services/camera/libcameraservice/config/SharedSessionConfigUtils.h
 ```
 
-`SharedSessionConfigReader::SharedSessionConfig` captures one allowed output:
-surface type, width, height, optional physical camera ID, stream use case,
-timestamp base, mirror mode, readout-timestamp flag, format, usage, and
-dataspace, all parsed from the shared-session XML by
-`parseSharedSessionConfig()`.
+`SharedSessionConfigReader::SharedSessionConfig` captures one allowed output.
+The fields are: surface type, width, height, optional physical camera ID,
+stream use case, timestamp base, mirror mode, readout-timestamp flag, format,
+usage, and dataspace.  `parseSharedSessionConfig()` parses all of them from
+the shared-session XML.
 
 ### 64.8.4 Shared Mode Through the Service
 
 The Binder surface gained an explicit `sharedMode` flag.
-`ICameraService.connectDevice()` now takes a trailing `boolean sharedMode`,
-and `ICameraDeviceUser` exposes `isPrimaryClient()` so a client can query its
-role; `ICameraDeviceCallbacks` carries the
+`ICameraService.connectDevice()` now takes a trailing `boolean sharedMode`.
+`ICameraDeviceUser` exposes `isPrimaryClient()` so a client can query its
+role.  `ICameraDeviceCallbacks` carries the
 `onClientSharedAccessPriorityChanged(boolean primaryClient)` notification back
 to the framework.
 
@@ -2438,8 +2439,8 @@ Source: frameworks/av/camera/aidl/android/hardware/ICameraService.aidl
 ```
 
 Inside the camera service, `CameraService` threads the `sharedMode` flag
-through every connect path, tracks the set of PIDs sharing each camera, and
-keeps their relative priorities in sync.  The diagram below shows the full
+through every connect path.  It also tracks the set of PIDs sharing each
+camera and keeps their relative priorities in sync.  The diagram below shows the full
 shared-mode connect with a secondary client joining later:
 
 ```mermaid
@@ -2502,9 +2503,9 @@ Source: frameworks/av/camera/ndk/include/camera/NdkCameraManager.h
 
 ## 64.9 New Camera Metadata Sections (Android 17)
 
-The camera metadata tag space is partitioned into numbered **sections** (one
-per subsystem: control, sensor, lens, scaler, and so on), each occupying a
-16-bit slice of the tag namespace.  Android 17 appends two new sections to the
+The camera metadata tag space is partitioned into numbered **sections**.
+Each section covers one subsystem (control, sensor, lens, scaler, and so on)
+and occupies a 16-bit slice of the tag namespace.  Android 17 appends two new sections to the
 master enumeration in
 `system/media/camera/include/system/camera_metadata_tags.h`, immediately
 before `ANDROID_SECTION_COUNT`:
@@ -2530,8 +2531,8 @@ the device's single allowed shared configuration:
 | `ANDROID_SHARED_SESSION_COLOR_SPACE` | enum | framework-only | Color space all shared outputs use (`UNSPECIFIED`, `SRGB`, `DISPLAY_P3`, `BT2020_HLG`) |
 | `ANDROID_SHARED_SESSION_OUTPUT_CONFIGURATIONS` | int64[] | framework-only | Packed list of allowed shared outputs (surface type, size, format, mirror mode, readout-timestamp flag, timestamp base, dataspace, usage, stream use case, physical ID) |
 
-Neither raw tag is set by the HAL: both are generated by the Android camera
-framework when a camera can be opened in shared mode.  They are then surfaced
+The HAL does not set either raw tag.  The Android camera framework generates
+both when a camera can be opened in shared mode.  They are then surfaced
 to system clients as the synthetic, `@SystemApi` key
 `CameraCharacteristics.SHARED_SESSION_CONFIGURATION`, whose value is a
 `SharedSessionConfiguration` object that enumerates the permitted output
@@ -2573,7 +2574,7 @@ Source: system/media/camera/docs/metadata_definitions.xml
 
 Because these effects run inside the camera device rather than in an
 application-side extension, they are distinct from the Camera Extensions of
-Section 64.6: the same conceptual operations (blur, retouch, relight) here
+Section 64.6.  The same conceptual operations (blur, retouch, relight) here
 become first-class, HAL-reported metadata controls intended for system
 conferencing surfaces.
 
@@ -3241,8 +3242,8 @@ key architectural insights from this chapter:
 
 3. **Camera3Device is the engine** -- It manages the HAL lifecycle,
    request queuing, result routing, and stream management through its
-   RequestThread and StatusTracker threads, with CameraDeviceClient's
-   FrameProcessorBase thread polling it for result metadata.
+   RequestThread and StatusTracker threads.  The FrameProcessorBase thread of
+   CameraDeviceClient polls it for result metadata.
 
 4. **Streams are BufferQueues** -- Every output surface maps to a
    Camera3OutputStream backed by a producer-consumer buffer queue.
@@ -3258,15 +3259,15 @@ key architectural insights from this chapter:
    the Java API through the same underlying service.
 
 8. **Shared mode breaks the single-owner rule** -- Android 17 lets several
-   privileged clients hold one camera at once through `openSharedCamera`, with
-   one primary client driving capture and secondaries streaming with default
+   privileged clients hold one camera at once through `openSharedCamera`.
+   One primary client drives capture.  Secondary clients stream with default
    parameters against a single device-published configuration.
 
 9. **The metadata tag space grew** -- Android 17 appends the `sharedSession`
-   and `desktopEffects` sections, the latter exposing system-side conferencing
-   effects (background blur, face retouch, portrait relight) as HAL-reported
-   controls.
+   and `desktopEffects` sections.
+   The latter exposes system-side conferencing effects (background blur, face
+   retouch, portrait relight) as HAL-reported controls.
 
 The next chapter is the Custom ROM Guide -- the capstone that ties
-together everything in the book by walking through how to build,
-customize, and ship your own Android distribution.
+together everything in the book.  It shows how to build, customize, and ship
+your own Android distribution.

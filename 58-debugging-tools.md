@@ -1,14 +1,17 @@
 # Chapter 58: Debugging and Profiling Tools
 
 Android ships a rich arsenal of debugging and profiling tools, most of them
-built directly into AOSP.  Unlike aftermarket solutions that attach from
-outside, these tools are woven into the platform: logd is an init service,
-debuggerd is a signal handler compiled into every native process, Perfetto
-data-sources live inside SurfaceFlinger, ART, and the kernel, and dumpsys
-talks to every registered Binder service.  This chapter walks through each
-tool layer by layer -- from the source code that implements them in the tree
-to the command-line invocations and analysis workflows that platform engineers
-use every day.
+built directly into AOSP.  Aftermarket solutions attach from outside.  These
+tools are part of the platform itself.
+
+logd is an init service.  debuggerd is a signal handler compiled into every
+native process.  Perfetto data-sources live inside SurfaceFlinger, ART, and the
+kernel.  dumpsys talks to every registered Binder service.
+
+This chapter walks through each tool layer by
+layer.  It starts at the source code that implements the tools in the tree.
+It continues to the command-line invocations and analysis workflows that
+platform engineers use every day.
 
 ---
 
@@ -375,8 +378,8 @@ class LogListener {
 ```
 
 The `ProcessBuffer()` method extracts the sender's credentials (`uid`, `gid`,
-`pid`) from the socket ancillary data (`SCM_CREDENTIALS`), ensuring that
-log messages cannot be spoofed.
+`pid`) from the socket ancillary data (`SCM_CREDENTIALS`).  This makes
+sure that log messages cannot be spoofed.
 
 **LogKlog** (`system/logging/logd/LogKlog.h`) reads kernel messages from
 `/proc/kmsg` (it opens `/dev/kmsg` only write-only, for logd's own dmesg
@@ -586,7 +589,7 @@ flowchart TD
     J -- No --> I
 ```
 
-This design addresses a real problem documented in the source: overly large
+This design addresses a real problem documented in the source.  Overly large
 custom log sizes combined with compressed logging can cause logcat to time
 out during bugreport collection (see comment referencing b/196856709).
 
@@ -1181,7 +1184,7 @@ Key UI features:
   and thread.
 
 - **SQL console**: Run ad-hoc queries against the trace.
-- **Metrics**: Pre-built metric queries for common analyses (startup time,
+- **Metrics**: Pre-built metric queries for common analysis tasks (startup time,
   jank, memory, etc.).
 
 - **Flamegraph**: For CPU profiling and heap profiling data.
@@ -1231,8 +1234,8 @@ database from them, which is then queryable via SQL.
 
 ### 58.3.9 Perfetto Metrics
 
-Perfetto ships with pre-built metrics that can be computed on a trace
-without writing SQL:
+Perfetto ships with pre-built metrics.  Each metric can run on a trace and
+needs no SQL:
 
 ```bash
 # Compute a specific metric
@@ -1672,9 +1675,9 @@ graph TD
 ### 58.4.11 JIT Debug Support
 
 simpleperf handles JIT-compiled code (from ART) through the
-`JITDebugReader` class (`system/extras/simpleperf/JITDebugReader.h`), which
-reads the JIT debug descriptor from the ART runtime to resolve symbols in
-JIT-compiled methods.
+`JITDebugReader` class (`system/extras/simpleperf/JITDebugReader.h`).  This
+class reads the JIT debug descriptor from the ART runtime to resolve symbols
+in JIT-compiled methods.
 
 ```mermaid
 sequenceDiagram
@@ -1758,16 +1761,16 @@ graph TB
    patches the malloc dispatch table at runtime.
 
 2. **Sampling**: Not every allocation is recorded.  heapprofd uses Poisson
-   sampling: each allocation has a probability proportional to its size of
-   being sampled.  The sampling interval is configurable (default: 4096
+   sampling: the probability that an allocation is sampled is proportional
+   to its size.  The sampling interval is configurable (default: 4096
    bytes).
 
 3. **Stack unwinding**: When an allocation is sampled, the client captures
-   the stack (using frame pointers or DWARF) and sends it to the daemon
-   via shared memory.
+   the stack (with frame pointers or DWARF).  Then it sends the stack to the
+   daemon via shared memory.
 
 4. **Bookkeeping**: The daemon deduplicates call stacks and tracks cumulative
-   allocation sizes, producing a compact representation.
+   allocation sizes.  This gives a compact representation.
 
 5. **Output**: Profile data flows into Perfetto's trace format, viewable in
    the Perfetto UI as a flamegraph.
@@ -2348,7 +2351,7 @@ graph TB
 **SurfaceFlinger traces:**
 
 The old binder-code trigger (`service call SurfaceFlinger 1025`) is
-deprecated and now returns `NAME_NOT_FOUND`; layer traces are captured
+deprecated and now returns `NAME_NOT_FOUND`.  Layer traces are captured
 through Perfetto as the `android.surfaceflinger.layers` data source:
 
 ```bash
@@ -2990,11 +2993,14 @@ memory map (165 entries):
 Modern tombstones are also written in protobuf format, defined in
 `system/core/debuggerd/proto/tombstone.proto`.  The protobuf format is
 machine-parseable and can be converted to text.  The top-level `Tombstone`
-message carries the crashing process identity (`pid`, `tid`, `uid`), the
-parent process id (`ppid`, field 29 -- added so triage tooling can attribute a
-crash to its launcher or zygote without re-reading `/proc`), the signal info,
-register sets, threads, memory mappings, and the GWP-ASan/Scudo "cause"
-records.  It can be rendered to the classic text layout shown above:
+message carries the crashing process identity (`pid`, `tid`, `uid`).  It also
+carries the parent process id (`ppid`, field 29).  Field 29 was added so triage
+tooling can attribute a crash to its launcher or zygote without re-reading
+`/proc`.
+
+The message also carries the signal info, register sets, threads,
+memory mappings, and the GWP-ASan/Scudo "cause" records.  It can be rendered to
+the classic text layout shown above:
 
 ```bash
 # View proto tombstone as text
@@ -3608,10 +3614,11 @@ adb shell dumpsys -t 600 meminfo --unreachable <process>
 
 ### 58.13.1 What Causes ANRs
 
-An Application Not Responding (ANR) event occurs when the main thread of an
-application does not respond to an input event within 5 seconds or a
-BroadcastReceiver does not complete within the timeout period (10 seconds
-for foreground, 60 seconds for background).
+An Application Not Responding (ANR) event occurs in two cases. In the first
+case, the main thread of an application does not respond to an input event
+within 5 seconds. In the second case, a BroadcastReceiver does not complete
+within the timeout period (10 seconds for foreground, 60 seconds for
+background).
 
 ```mermaid
 flowchart TD
@@ -4058,18 +4065,20 @@ adb pull /data/anr/ .
 
 Android 15 introduced the **Profiling Mainline Module**
 (`com.android.profiling`), which wraps Perfetto, heapprofd, and simpleperf
-behind a safe, rate-limited API that any app can call without root access
-or special permissions.  This section examines how the module integrates with
+behind a safe, rate-limited API. Any app can call this API without root
+access or special permissions.  This section examines how the module integrates with
 the debugging tools covered earlier in this chapter.
 
 Because it ships as a Mainline module, the Profiling subsystem evolves on its
 own train rather than with the platform dessert.  Android 17 (`CINNAMON_BUN`,
-SDK 37) is a substantial step: it adds the system-side **anomaly detector**
-(Section 58.19), grows the trigger catalogue from two types to twelve
-(Section 58.18.5), and adds result-delivery acknowledgement plus automatic
-cleanup of stale result files.  All of the new behaviour is guarded by aconfig
-flags in `packages/modules/Profiling/flags/flags.aconfig`, so an OTA of the
-module turns features on without a platform release.
+SDK 37) is a substantial step. It adds the system-side **anomaly detector**
+(Section 58.19). It grows the trigger catalog from two types to twelve
+(Section 58.18.5). It also adds result-delivery acknowledgement plus automatic
+cleanup of stale result files.
+
+All of the new behavior is guarded by aconfig
+flags in `packages/modules/Profiling/flags/flags.aconfig`. For that reason, an
+OTA of the module turns features on without a platform release.
 
 ### 58.18.1  Motivation
 
@@ -4290,8 +4299,8 @@ The background trace runs periodically (default ~24 hours, jittered between
 
 The trigger type constants are defined in
 `packages/modules/Profiling/framework/java/android/os/ProfilingTrigger.java`.
-Android 15 shipped two triggers (`APP_FULLY_DRAWN` and `ANR`); Android 17
-expands the set to twelve, with the newer triggers gated behind aconfig flags
+Android 15 shipped two triggers (`APP_FULLY_DRAWN` and `ANR`).  Android 17
+expands the set to twelve.  The newer triggers are gated behind aconfig flags
 in `packages/modules/Profiling/flags/flags.aconfig` (for example
 `profiling_trigger_oom`, `profiling_trigger_cold_start`, and
 `profiling_trigger_kill_excessive_cpu_usage`):
@@ -4366,17 +4375,17 @@ When the app next registers a global listener via
 Android 17 tightens this loop with two refinements, both flag-guarded:
 
 - **Delivery acknowledgement** (`notify_result_delivered`).  After the app's
-  callback has consumed a queued result, `ProfilingManager` calls back into the
+  callback consumes a queued result, `ProfilingManager` calls back into the
   service (`mProfilingService.notifyResultDelivered(...)`, see
-  `packages/modules/Profiling/framework/java/android/os/ProfilingManager.java`)
-  so the service knows the result was actually received and can stop retrying
-  and drop it from the queue, rather than relying solely on the retry/retention
-  ceiling.
+  `packages/modules/Profiling/framework/java/android/os/ProfilingManager.java`).
+  As a result, the service knows that the app actually received the result.  It can
+  stop retrying and drop the result from the queue.  It does not have to rely
+  only on the retry/retention ceiling.
 
-- **Old-file cleanup** (`old_files_cleanup`).  Result files that have already
-  been delivered are garbage-collected on both the service side and the app
-  side, so trigger-driven traces that pile up over days do not leak disk in the
-  app's private storage.
+- **Old-file cleanup** (`old_files_cleanup`).  Delivered result files
+  are garbage-collected on both the service side and the app side.  So
+  trigger-driven traces that pile up over days do not leak disk in the app's
+  private storage.
 
 ### 58.18.8  Practical Usage Patterns
 
@@ -4450,17 +4459,18 @@ The Profiling module complements the tools covered earlier in this chapter:
 | CPU hotspot identification | simpleperf | Exposes stack sampling via `PROFILING_TYPE_STACK_SAMPLING` |
 | Java memory analysis | ART hprof | Exposes heap dumps via `PROFILING_TYPE_JAVA_HEAP_DUMP` |
 
-The key advantage over using the underlying tools directly is that the
+The key advantage over the direct use of the underlying tools is that the
 Profiling module handles:
 
-- **Privacy**: Trace redaction ensures apps see only their own data.
+- **Privacy**: Trace redaction makes sure that apps see only their own data.
 - **Rate limiting**: Prevents runaway profiling from impacting device
   performance.
 
 - **Delivery**: Results are placed in the app's private storage with Binder
   callbacks.
 
-- **Persistence**: System-triggered results are queued and delivered later.
+- **Persistence**: The module queues system-triggered results and delivers
+  them later.
 
 ### 58.18.10  Key Source Paths
 
@@ -4482,25 +4492,29 @@ Profiling module handles:
 ## 58.19 The Anomaly Detector
 
 Android 17 adds a second pillar to the Profiling module: an on-device
-**anomaly detector**.  Where `ProfilingManager` is pull-based (an app asks for
-a trace), the anomaly detector is push-based: a privileged controller installs
-*rules* describing misbehaviour, the system watches continuous signals for
-those conditions, and when a rule matches it raises an `AnomalyReport` that can
-automatically capture a Perfetto trace through the Profiling pipeline.  The code
-lives in its own directory, `packages/modules/Profiling/anomaly-detector/`, and
+**anomaly detector**.  `ProfilingManager` is pull-based: an app asks for a
+trace.  The anomaly detector is push-based.  A privileged controller installs
+*rules* that describe misbehavior.  The system watches continuous signals for
+those conditions.  When a rule matches, the system raises an `AnomalyReport`
+that can automatically capture a Perfetto trace through the Profiling
+pipeline.
+
+The code lives in its own directory, `packages/modules/Profiling/anomaly-detector/`, and
 ships in the same `com.android.profiling` APEX.
 
 ### 58.19.1 Why a Detector in the Platform
 
-The motivating problem is "the app that quietly hurts the device": a
-background process hammering a `system_server` binder interface, leaking
-memory until it trips the runtime limit, or otherwise degrading the system
-without ever crashing.  Catching these after the fact from a bugreport is
-slow, and asking every app to instrument itself does not scale.  The anomaly
-detector lets the platform (or an OEM's privileged system app) declare the
-condition once and have the system both *detect* it and *react* to it -- where
-the canonical reaction is "grab a trace at the moment it happens", using the
-same redacted, rate-limited Profiling plumbing from Section 58.18.
+The motivating problem is "the app that quietly hurts the device".  Such
+an app is a background process.  It hammers a `system_server` binder
+interface, leaks memory until it trips the runtime limit, or otherwise
+degrades the system, but it never crashes.  Catching these after the fact from
+a bugreport is slow, and asking every app to instrument itself does not scale.
+
+With the anomaly detector, the platform (or an OEM's privileged system app)
+declares the condition once.  The system then both *detects* the condition and
+*reacts* to it.  The canonical reaction is "grab a trace at the moment it
+happens".  This reaction uses the same redacted, rate-limited Profiling
+plumbing from Section 58.18.
 
 ### 58.19.2 The Rule API
 
@@ -4519,7 +4533,7 @@ public void setAnomalyDetectorRules(@NonNull Set<Rule> rules);
 Important properties baked into the API contract:
 
 - **One controller per device.** Only a single privileged application may set
-  rules; a second caller is rejected.  This keeps the detector from becoming a
+  rules; a second caller is rejected.  This way, the detector does not become a
   free-for-all of competing policies.
 
 - **Replace, not merge.** Each call replaces the full rule set, and an empty
@@ -4531,10 +4545,10 @@ Important properties baked into the API contract:
 A `Rule`
 (`packages/modules/Profiling/anomaly-detector/framework/java/android/os/profiling/anomaly/Rule.java`)
 is built with a name and a *condition*.  Android 17 ships one condition type,
-`CONDITION_TYPE_BINDER_SPAM`, parameterised through a bundle with keys such as
-`BUNDLE_KEY_CONDITION_BINDER_SPAM_INTERFACE_NAME`,
+`CONDITION_TYPE_BINDER_SPAM`.  It is parameterized through a bundle with keys
+such as `BUNDLE_KEY_CONDITION_BINDER_SPAM_INTERFACE_NAME`,
 `..._METHOD_NAME`, `..._CALL_LIMIT`, and
-`..._BINDER_CALL_INTERVAL_MILLIS` -- in other words "more than N calls to this
+`..._BINDER_CALL_INTERVAL_MILLIS`.  In other words, "more than N calls to this
 interface/method within this interval is an anomaly".  Rules cross the binder
 boundary to the service as `RuleParcel` objects via
 `IAnomalyDetectorService.setRules()`.
@@ -4542,8 +4556,8 @@ boundary to the service as `RuleParcel` objects via
 ### 58.19.3 Detector Architecture
 
 Internally the detector is a small pipeline of three pluggable roles, each
-with its own registry so new signal sources, detectors, and reactions can be
-added without touching the core:
+with its own registry.  New signal sources, detectors, and reactions can be
+added, and the core stays unchanged:
 
 ```mermaid
 graph LR
@@ -4586,36 +4600,38 @@ The three roles, all under
 | Detector | `core/AnomalyDetector.java` | `detector/BinderSpamAnomalyDetector.java` | Evaluates collected data against the active rules and emits an `AnomalyReport` when a condition fires |
 | Handler | `core/AnomalyHandler.java` | `handler/ProfileAnomalyHandler.java`, `handler/LogAnomalyHandler.java` | Reacts to a report -- captures a profiling trace, or writes a structured log entry |
 
-The `BinderSpamAnomalyDetector` supports multiple rules and aggregates call
-data across binder transactions before deciding a process is spamming, so a
-single noisy method does not produce a storm of reports.
+The `BinderSpamAnomalyDetector` supports multiple rules.  It aggregates call
+data across binder transactions before it decides that a process is spamming.
+So a single noisy method does not produce a storm of reports.
 
 ### 58.19.4 From Report to Trace
 
 The link back into the rest of this chapter is `ProfileAnomalyHandler`.  When a
 detector raises an `AnomalyReport`, the handler asks the Profiling pipeline to
-capture a trace tagged with `TRIGGER_TYPE_ANOMALY` (value 8 in
+capture a trace.  The trace has the tag `TRIGGER_TYPE_ANOMALY` (value 8 in
 `ProfilingTrigger`, Section 58.18.5).  That trace flows through the same
-machinery as any other system-triggered profiling: it is collected by
-`traced`, redacted by `trace_redactor` so only the offending process's data
-survives, rate-limited, and delivered to the registered listener.  A
-`ProfilingSessionHelper`
-(`.../anomaly/handler/ProfilingSessionHelper.java`) bridges the detector's
-report to a Profiling session and bundles anomaly-highlighting metadata
-(via the `PerfettoMetadata` utility) into the result so the consuming tool can
-jump straight to the anomalous window.
+machinery as any other system-triggered profiling.  `traced` collects it, and
+`trace_redactor` redacts it so only the offending process's data survives.
+The trace is rate-limited and delivered to the registered listener.
 
-The practical payoff: a privileged monitoring app can install a binder-spam
-rule once, and from then on every offending background app produces a redacted
-Perfetto trace, captured at the moment of misbehaviour, without the monitoring
-app polling, attaching a profiler, or knowing which app would misbehave.
+A `ProfilingSessionHelper`
+(`.../anomaly/handler/ProfilingSessionHelper.java`) bridges the detector's
+report to a Profiling session.  It also bundles metadata that highlights the
+anomaly (via the `PerfettoMetadata` utility) into the result.  As a result, the tool that
+consumes the result can jump straight to the anomalous window.
+
+The practical payoff is clear.  A privileged monitoring app can install a
+binder-spam rule once.  From then on, every offending background app produces
+a redacted Perfetto trace.  The trace is captured at the moment of
+misbehavior.  The monitoring app does not poll, does not attach a profiler,
+and does not need to know which app will misbehave.
 
 ### 58.19.5 Inspecting the Detector
 
 The service ships a shell command handler
 (`packages/modules/Profiling/anomaly-detector/service/java/com/android/os/profiling/anomaly/AnomalyDetectorShellCommandHandler.java`) and a
-dumpsys hook for inspecting the currently active rules, which is the fastest
-way to confirm a controller's rules took effect:
+dumpsys hook to inspect the currently active rules.  This is the fastest
+way to confirm that a controller's rules took effect:
 
 ```bash
 # Show the active anomaly-detection rules
@@ -4636,19 +4652,20 @@ adb shell dumpsys anomaly_detector
 
 The other profiling-adjacent Mainline module that matured in Android 17 is
 **UprobeStats** (`com.android.uprobestats`), in
-`packages/modules/UprobeStats/`.  It provides *dynamic instrumentation*:
-server-configurable probing of userspace processes (notably `system_server`)
-using kernel **uprobes** plus **eBPF**, observing function invocations without
-modifying or recompiling the target binary.  This is how the platform gathers
-fleet-wide statistics on rare or hard-to-instrument code paths, and in 17 it
-grows a binder-transaction probe and an app-facing event-delivery API.
+`packages/modules/UprobeStats/`.  It provides *dynamic instrumentation*.  This
+is server-configurable probing of userspace processes (notably
+`system_server`).  It uses kernel **uprobes** plus **eBPF** to observe function
+invocations, and it does not modify or recompile the target binary.  This is
+how the platform gathers fleet-wide statistics on rare or hard-to-instrument
+code paths.  In 17 it grows a binder-transaction probe and an app-facing
+event-delivery API.
 
 ### 58.20.1 How a Uprobe Becomes a Statistic
 
 A UprobeStats *task* names a target process, one or more **probes** (a BPF
 program plus the function offsets to attach to), and an output sink.  The
-daemon resolves the function offsets in the target binary, attaches the BPF
-program at those addresses via a uprobe, and the BPF program writes a record to
+daemon resolves the function offsets in the target binary.  It attaches the BPF
+program at those addresses via a uprobe.  The BPF program writes a record to
 a ring buffer each time the function is hit.  The daemon drains the ring buffer
 and forwards each record either to **statsd** as an atom, or to a registered
 listener.
@@ -4691,12 +4708,12 @@ graph TB
     DAEMON --> BRIDGE
 ```
 
-The module is split across directories that mirror this flow:
-`config/` defines `UprobestatsConfig` (`config.proto`); `bpf_progs/` holds the
-BPF program sources; `bpfloader/` is `uprobestatsbpfload`, the module's own BPF
-loader (an APEX must ship its own loader); and `daemon/` is the Rust userspace
-daemon (`daemon/uprobestats.rs` and the `daemon/android/` helpers) that holds
-"the majority of the logic for the module" per its README.
+The module is split across directories that mirror this flow.
+`config/` defines `UprobestatsConfig` (`config.proto`).  `bpf_progs/` holds the
+BPF program sources.  `bpfloader/` is `uprobestatsbpfload`, the module's own BPF
+loader (an APEX must ship its own loader).  `daemon/` is the Rust userspace
+daemon (`daemon/uprobestats.rs` and the `daemon/android/` helpers).  Its README
+says that this daemon holds "the majority of the logic for the module".
 
 ### 58.20.2 Android 17 Additions
 
@@ -4705,7 +4722,8 @@ its current API surface:
 
 - **A binder-transaction probe.** `config.proto` gained a
   `BinderTransactionFilter` and the BPF/handler side learned to capture binder
-  interface/method invocations, writing binder-transaction events to statsd.
+  interface/method invocations and to write binder-transaction events to
+  statsd.
   This is the same raw signal the anomaly detector's binder-spam rule consumes
   conceptually, but here it is a configurable, fleet-wide statistic.
 
@@ -4715,7 +4733,7 @@ its current API surface:
   (`packages/modules/UprobeStats/framework/java/android/service/uprobestats/DynamicInstrumentationEventService.java`)
   that privileged apps extend to receive `DynamicInstrumentationEvent`s.
   Event delivery into the service is guarded by the
-  `SEND_DYNAMIC_INSTRUMENTATION_EVENTS` permission, while registering and
+  `SEND_DYNAMIC_INSTRUMENTATION_EVENTS` permission.  Registering and
   configuring instrumentation via `UprobeStatsBridgeService` requires
   `DYNAMIC_INSTRUMENTATION`.  Events are delivered
   through a renamed bridge service,
@@ -4724,15 +4742,15 @@ its current API surface:
   SDK level 37 and above (`@RequiresApi(Build.VERSION_CODES.CINNAMON_BUN)`).
 
 - **Hardened error reporting.** The BPF attach/load path now returns granular
-  error codes (a `UprobeStatsError` type), drains ring buffers before
-  attachment, and persists ring-buffer handles to avoid duplicate events --
-  reliability work that matters once the data feeds production statistics.
+  error codes (a `UprobeStatsError` type).  It also drains ring buffers before
+  attachment.  It persists ring-buffer handles to avoid duplicate events.  This
+  reliability work matters once the data feeds production statistics.
 
 ### 58.20.3 Relationship to the Other Tools
 
-UprobeStats is not a tool a developer points at their own app the way they use
-simpleperf or Perfetto -- it is platform instrumentation, configured by the
-system, feeding statsd (and now privileged event listeners).  It complements
+A developer does not point UprobeStats at their own app the way they use
+simpleperf or Perfetto.  It is platform instrumentation.  The system configures
+it, and it feeds statsd (and now privileged event listeners).  It complements
 this chapter's tools at a different altitude:
 
 | Tool | Granularity | Who drives it | Typical output |
@@ -4756,16 +4774,18 @@ this chapter's tools at a different altitude:
 ## 58.21 dmesgd: Kernel-Log to DropBox Bridge
 
 `dmesgd` (`system/dmesgd/`) is a small native daemon (a few hundred lines of
-C++) that bridges the kernel ring buffer into the same crash-report pipeline as
+C++).  It bridges the kernel ring buffer into the same crash-report pipeline as
 tombstones and ANRs.  On startup it runs `popen("dmesg", "r")` and feeds each
-line into a `DmesgParser` (`system/dmesgd/dmesg_parser.h`), which recognizes
-kernel `WARNING`/`ERROR` stanzas, strips sensitive data such as 64-bit
-addresses, and assembles a per-fault report with a title and a report type.
+line into a `DmesgParser` (`system/dmesgd/dmesg_parser.h`).  The parser
+recognizes kernel `WARNING`/`ERROR` stanzas and strips sensitive data such as
+64-bit addresses.  It also assembles a per-fault report with a title and a
+report type.
+
 When a report is ready, `dmesgd` posts it to `DropBoxManager`
 (`system/dmesgd/dmesgd.cpp` includes `<android/os/DropBoxManager.h>` and calls
-`addText()`) under a tag such as `SYSTEM_<type>_ERROR_REPORT`, which is exactly
-the tag space `dumpstate` scrapes when building a bugreport
-(section 58.8).  To avoid spamming duplicates across boots it remembers report
+`addText()`) under a tag such as `SYSTEM_<type>_ERROR_REPORT`.  This is exactly
+the tag space that `dumpstate` scrapes when it builds a bugreport
+(section 58.8).  To avoid duplicate reports across boots, it remembers report
 titles in `/data/misc/dmesgd/sent_reports.txt` and caps the number of reports
 per run.  The kernel side of this path -- how messages reach the `dmesg` ring
 buffer and persist across reboots via `pstore` -- is covered in Chapter 5.
@@ -4773,12 +4793,12 @@ buffer and persist across reboots via `pstore` -- is covered in Chapter 5.
 ## 58.22 liburingutils: io_uring Socket Helper
 
 `liburingutils` (`system/liburingutils/`) is a thin wrapper around the external
-`liburing` library that exposes a single helper class, `IOUringSocketHandler`
-(`system/liburingutils/include/IOUringSocketHandler/IOUringSocketHandler.h`),
-for receiving datagrams from a socket through io_uring's multishot `recvmsg`.
-This is the class `logd`'s `LogListener` holds in its `uring_listener_` member
-(section 58.2.5) to ingest log records at high throughput; the library is also
-packaged into the statsd APEX (`system/liburingutils/Android.bp`) for the same
+`liburing` library.  It exposes a single helper class, `IOUringSocketHandler`
+(`system/liburingutils/include/IOUringSocketHandler/IOUringSocketHandler.h`).
+The class receives datagrams from a socket through io_uring's multishot
+`recvmsg`.  This is the class `logd`'s `LogListener` holds in its
+`uring_listener_` member (section 58.2.5) to ingest log records at high
+throughput.  The library is also packaged into the statsd APEX (`system/liburingutils/Android.bp`) for the same
 asynchronous, batched socket-receive pattern.
 
 ---
@@ -4789,13 +4809,13 @@ Traceur (`packages/apps/Traceur/`), the system tracing UI, adds two
 toggleable Perfetto categories in Android 17, both defined in
 `packages/apps/Traceur/src_common/com/android/traceur/PerfettoUtils.java` with
 their user-visible labels in `TraceUtils.java`. The `wattson` category
-("Wattson power estimation") feeds the on-device power model: it enables the
-`linux.sys_stats` data source for periodic cpufreq and cpuidle samples plus a
-set of `linux.ftrace` events including `power/cpu_frequency`,
+("Wattson power estimation") feeds the on-device power model. It enables the
+`linux.sys_stats` data source for periodic cpufreq and cpuidle samples. It also
+enables a set of `linux.ftrace` events, such as `power/cpu_frequency`,
 `power/cpu_idle`, `power/suspend_resume`, `sched/sched_switch`, and the
 `cpuhp/*` hotplug tracepoints. The `mq` category ("messagequeue tracing")
-turns on a `track_event` data source scoped to the `mq` category, capturing
-Looper and `MessageQueue` dispatch.
+turns on a `track_event` data source scoped to the `mq` category. This data
+source captures Looper and `MessageQueue` dispatch.
 
 ---
 
@@ -4804,11 +4824,13 @@ Looper and `MessageQueue` dispatch.
 The tools so far in this chapter inspect software state. DeviceDiagnostics
 (`packages/apps/DeviceDiagnostics/`, package `com.android.devicediagnostics`)
 inspects the hardware itself. It is the app behind **System > Reset options >
-Device Diagnostics**: a Settings preference launches its `MainActivity`, and
-from there the user runs component checks and produces a signed report of the
-device's physical condition. The app is aimed at refurbishment and trade-in:
-it answers "is this screen, battery, and storage still good, and is this the
-device it claims to be" rather than "why is this app slow."
+Device Diagnostics**. A Settings preference launches its `MainActivity`. From
+there the user runs component checks and produces a signed report of the
+device's physical condition.
+
+The app is for refurbishment and trade-in. It answers "is this screen, battery,
+and storage still good, and is this the device it claims to be". It does not
+answer "why is this app slow."
 
 ### 58.24.1 Two Entry Paths
 
@@ -4816,24 +4838,25 @@ device it claims to be" rather than "why is this app slow."
 `res/xml/preferences_main.xml`) offers two top-level paths:
 
 - **Component health** (`DiagnosticsActivity`, `diagnostics_landing.xml`) runs
-  on-device checks: a manual **screen test** and **touch test** (the
+  on-device checks.  It has a manual **screen test** and **touch test**.  The
   `evaluated/ScreenTest*` and `TouchTest*` activities walk the user through
-  full-screen patterns and a touch grid), plus read-only **Battery** and
+  full-screen patterns and a touch grid.  It also has read-only **Battery** and
   **Storage** detail screens (`BatteryActivity`, `StorageActivity`).
 - **Evaluation mode** (`EvaluationModeActivity`) is the attested, two-device
-  flow used when grading a device for trade-in. It pairs over Bluetooth and
+  flow used when a device is graded for trade-in. It pairs over Bluetooth and
   exchanges QR codes between the device under test and a trusted verifier
-  device (the `trusted/` activities), and it is only offered when Bluetooth is
+  device (the `trusted/` activities). It is only offered when Bluetooth is
   enabled.
 
 ### 58.24.2 The DeviceReport and Key Attestation
 
-The hardware facts the app collects are gathered by the helpers in
+The app collects the hardware facts.  The helpers in
 `DeviceDiagnosticsLib/src/main/java/com/android/devicediagnostics/evaluated/`
-(battery, storage, camera, hinge, sensor, screen, lock, product) into a single
+(battery, storage, camera, hinge, sensor, screen, lock, product) gather them
+into a single
 `DeviceReport` protobuf defined in
 `DeviceDiagnosticsLib/src/main/proto/diagnostics.proto`. The report carries
-fields a buyer cares about: battery `cycle_count` and `state_of_health`,
+fields a buyer cares about. These are battery `cycle_count` and `state_of_health`,
 storage `useful_lifetime_remaining`, hinge fold counts, moisture-intrusion
 sensor state, factory-reset-protection status, and the screen/touch test
 results.
@@ -4841,7 +4864,7 @@ results.
 To make the report trustworthy, it embeds a **key attestation** certificate
 chain from the device's keystore. `AttestationController` sends the attestation
 record (with a caller-supplied challenge) to a verifier that parses it as a
-`ParsedAttestationRecord` and validates the chain over the network; a
+`ParsedAttestationRecord` and validates the chain over the network. A
 self-check may soft-fail the network step, but a graded device must verify.
 This is what lets a remote party trust that the report came from genuine,
 non-rooted hardware rather than a spoofing app.
@@ -4874,15 +4897,19 @@ returns the assembled `DeviceReport` as a single-row cursor, rendered to JSON by
 `EvaluateContentProvider` and `TradeInModeTestingContentProvider` drive the
 evaluation flow and are guarded by the `ENTER_TRADE_IN_MODE` permission.
 
-Trade-in mode itself lives in the separate `tradeinmode/` component: a
-`tradeinmode` Java command-line tool (a `java_binary` whose `main_class` is
-`com.android.devicediagnostics.commands.Commands`) plus an `AttestationCli`,
-keyed off the `persist.adb.tradeinmode` system property. The shipped
-`tradeinmode.rc` does not launch that command; it gates `adbd` on the
-property, stopping `adbd` when `persist.adb.tradeinmode` is `-1` on a
-non-debuggable build so the device cannot fall back to a normal shell. It lets a device be
-placed into a restricted state where a kiosk or partner can read the
-attested diagnostic report over adb without unlocking the device. The bulk of
+Trade-in mode itself lives in the separate `tradeinmode/` component. The
+component has a `tradeinmode` Java command-line tool (a `java_binary` whose
+`main_class` is `com.android.devicediagnostics.commands.Commands`) plus an
+`AttestationCli`. Both are keyed off the `persist.adb.tradeinmode` system
+property.
+
+The shipped `tradeinmode.rc` does not launch that command. It gates `adbd` on
+the property. It stops `adbd` when `persist.adb.tradeinmode` is `-1` on a
+non-debuggable build, so the device cannot fall back to a normal shell.
+
+This mechanism lets a device be placed into a restricted state. In this state,
+a kiosk or partner can read the attested diagnostic report over adb. The device
+does not need to be unlocked. The bulk of
 the UI and collection logic is built as a reusable `DeviceDiagnosticsLib`
 Android library, with `app/` and `tradeinmode/` as the shipping artifacts.
 
@@ -4901,7 +4928,7 @@ Android library, with `app/` and `tradeinmode/` as the shipping artifacts.
 ## 58.25 Try It: Debug a Real Performance Issue
 
 This section walks through a complete debugging workflow for a realistic
-performance problem: an application that exhibits jank (dropped frames)
+performance problem.  An application exhibits jank (dropped frames)
 during list scrolling.
 
 ### 58.25.1 Problem Statement
@@ -5130,14 +5157,14 @@ Total PSS:         35,678    48,321   +12,643 KB
 ```
 
 The significant growth in both Java and Native heap during scrolling
-confirms that images are being decoded and not properly cached.
+confirms that the app decodes images and does not cache them properly.
 
 ### 58.25.8 Step 7: Root Cause and Fix
 
 The debugging workflow reveals:
 
-1. **Root cause**: Images are being decoded from JPEG on the main thread
-   during `onBindViewHolder`, and no image cache is being used.
+1. **Root cause**: The app decodes images from JPEG on the main thread
+   during `onBindViewHolder`, and it uses no image cache.
 
 2. **Contributing factors**:
    - Each scroll event triggers new decode operations.
@@ -5214,7 +5241,7 @@ integrated with the platform.  The key takeaways from this chapter:
 
 1. **logd** (`system/logging/logd/`) provides the foundational logging
    infrastructure.  Its `LogBuffer` abstraction, per-UID statistics, and
-   pruning algorithms ensure that log data is both available and bounded.
+   pruning algorithms make sure that log data is both available and bounded.
    The `LogListener` class uses io_uring for high-throughput ingestion, while
    `LogReaderThread` provides per-client filtering and tail support.
 
@@ -5224,7 +5251,7 @@ integrated with the platform.  The key takeaways from this chapter:
    `trace_processor` provides powerful analysis capabilities, and the web UI
    makes traces visually accessible.
 
-3. **simpleperf** (`system/extras/simpleperf/`) leverages the kernel's
+3. **simpleperf** (`system/extras/simpleperf/`) uses the kernel's
    `perf_events` subsystem for CPU profiling with hardware counter support,
    call graphs via DWARF unwinding, and JIT-aware symbol resolution.
 
@@ -5245,27 +5272,35 @@ integrated with the platform.  The key takeaways from this chapter:
    dump collection and progress tracking.
 
 8. **debuggerd/tombstoned** (`system/core/debuggerd/`) provides automatic
-   crash dump generation with register capture via ptrace, stack unwinding,
-   memory snapshots via VM process forking, and integration with GWP-ASan
+   crash dump generation.  It captures registers via ptrace, unwinds stacks,
+   takes memory snapshots via VM process forking, and integrates with GWP-ASan
    and Scudo for memory error diagnosis.  Tombstones now also record the
    crashing process's parent pid (`ppid`, `system/core/debuggerd/proto/tombstone.proto`).
 
 9. **The Profiling Mainline module** (`packages/modules/Profiling/`) wraps
    Perfetto, heapprofd, and simpleperf behind a safe, rate-limited app API and
-   delivers redacted results.  Android 17 grows its trigger catalogue to twelve
-   types, adds result-delivery acknowledgement and old-file cleanup, and
-   introduces the **anomaly detector** (`anomaly-detector/`): a rule-driven
-   subsystem that watches signals such as binder spam and automatically
-   captures a redacted trace through the `TRIGGER_TYPE_ANOMALY` path.
-   **UprobeStats** (`packages/modules/UprobeStats/`) sits alongside it,
-   providing server-configured uprobe + eBPF instrumentation of system
-   processes that in 17 adds a binder-transaction probe and the
-   `dynamic_instrumentation` event API.
+   delivers redacted results.  Android 17 grows its trigger catalog to twelve
+   types and adds result-delivery acknowledgement and old-file cleanup.  It
+   also introduces the **anomaly detector** (`anomaly-detector/`).  This is a
+   rule-driven subsystem that watches signals such as binder spam and
+   automatically captures a redacted trace through the `TRIGGER_TYPE_ANOMALY`
+   path.
 
-The tools are designed to work together: use logcat and bugreport for triage,
-Perfetto for temporal analysis, simpleperf for CPU profiling, heapprofd for
-memory profiling, dumpsys for service state inspection, tombstones for
-crash investigation, and the Profiling module (with its anomaly detector) for
-safe, automatic, production-grade capture.  Mastering this toolkit is essential
-for any Android platform engineer.
+    **UprobeStats** (`packages/modules/UprobeStats/`) sits alongside it.  It
+    provides server-configured uprobe + eBPF instrumentation of system
+    processes.  In 17 it adds a binder-transaction probe and the
+    `dynamic_instrumentation` event API.
+
+The tools are designed to work together:
+
+- Use logcat and bugreport for triage.
+- Use Perfetto for temporal analysis.
+- Use simpleperf for CPU profiling.
+- Use heapprofd for memory profiling.
+- Use dumpsys for service state inspection.
+- Use tombstones for crash investigation.
+- Use the Profiling module (with its anomaly detector) for safe, automatic,
+  production-grade capture.
+
+It is essential for any Android platform engineer to master this toolkit.
 

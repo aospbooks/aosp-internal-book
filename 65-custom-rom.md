@@ -1,17 +1,17 @@
 # Chapter 65: Custom ROM Guide
 
 This chapter is the capstone of the book. We take everything covered in the
-preceding 62 chapters -- build system, init, HALs, system services, SystemUI,
-the emulator, security, signing -- and weave it into a single, end-to-end
-walkthrough: building, customizing, signing, and distributing a fully
-functional custom ROM.
+preceding 62 chapters. This includes the build system, init, HALs, system
+services, SystemUI, the emulator, security, and signing. We combine it into a
+single, end-to-end walkthrough. The walkthrough shows how to build, customize,
+sign, and distribute a fully functional custom ROM.
 
 Our target device is the AOSP Goldfish emulator (`sdk_phone64_x86_64`). This is
 a deliberate choice: every reader of this book has access to a laptop or
-workstation that can run the emulator, no physical hardware required. Everything
-we build here -- custom device trees, overlays, apps, services, boot
-animations, kernel tweaks, HAL modifications -- applies equally to a physical
-device; only the `BoardConfig.mk` and kernel binaries change.
+workstation that can run the emulator. No physical hardware is required.
+Everything we build here applies equally to a physical device. This includes
+custom device trees, overlays, apps, services, boot animations, kernel tweaks,
+and HAL modifications. Only the `BoardConfig.mk` and kernel binaries change.
 
 Every file path, every command, and every code snippet in this chapter was
 verified against the Android 17 (`android17-release`) AOSP source tree.
@@ -193,12 +193,11 @@ The build is highly parallel. Each additional core shaves minutes off a full
 build. RAM is the second most important factor -- the linker (`lld`) and
 javac/d8 compilation stages can consume 2-4 GB per parallel job.
 
-A note on the build toolchain: AOSP ships its own host toolchain prebuilts,
-so you do **not** install a JDK or a C/C++ compiler from your distribution.
-The build picks up an in-tree OpenJDK (jdk21 is the global default, with jdk25
-present in-tree for opt-in toolchains; see
-`build/soong/ui/build/config.go`'s `ConfigJavaEnvironment`) and an in-tree
-clang. The host packages below are only the supporting libraries and tools the
+A note on the build toolchain: AOSP ships its own host toolchain prebuilts.
+For that reason, you do **not** install a JDK or a C/C++ compiler from your distribution.
+The build picks up an in-tree OpenJDK and an in-tree clang. The global default
+is jdk21, and jdk25 is present in-tree for opt-in toolchains (see
+`build/soong/ui/build/config.go`'s `ConfigJavaEnvironment`). The host packages below are only the supporting libraries and tools the
 build scripts shell out to.
 
 ### 65.2.2 Required Packages (Ubuntu/Debian)
@@ -437,9 +436,9 @@ lunch sdk_phone64_x86_64-trunk_staging-userdebug
 ```
 
 `list_products`, `list_releases`, and `list_variants` are standalone scripts
-under `build/soong/bin/` that `build/make/envsetup.sh` puts on your `PATH`
-(via its `set_global_paths` helper); `lunch` itself accepts a fully spelled
-`<product>-<release>-<variant>` string or, with no argument, prints a menu.
+under `build/soong/bin/`. `build/make/envsetup.sh` puts them on your `PATH`
+(via its `set_global_paths` helper). `lunch` itself accepts a fully spelled
+`<product>-<release>-<variant>` string. With no argument, it prints a menu.
 
 A lunch target has the form `<product>-<release>-<variant>`:
 
@@ -493,12 +492,14 @@ flowchart TD
 
 In Android 17 the final build step runs through **Siso** rather than classic
 Ninja by default. `build/soong/ui/build/config.go` sets
-`NINJA_DEFAULT = NINJA_SISO`, so `m` drives the Soong-generated build graph with
-Siso unless you override it (set `SOONG_NINJA=ninja` to fall back to classic
-Ninja; macOS CI builders also fall back automatically). Siso is wire-compatible
-with the Ninja manifest Soong emits, so from a ROM author's perspective the
-build still "feels like Ninja" -- the same `m`, the same `out/` layout -- but it
-adds better remote-execution and caching hooks. Everything in this chapter works
+`NINJA_DEFAULT = NINJA_SISO`. So `m` drives the Soong-generated build graph with
+Siso unless you override it. Set `SOONG_NINJA=ninja` to fall back to classic
+Ninja. macOS CI builders also fall back automatically.
+
+Siso is wire-compatible
+with the Ninja manifest Soong emits. For that reason, from a ROM author's perspective the
+build still "feels like Ninja", with the same `m` and the same `out/` layout.
+But it adds better remote-execution and caching hooks. Everything in this chapter works
 identically under either executor.
 
 ---
@@ -928,12 +929,12 @@ if the file does not exist -- useful for optional vendor overlays.
 
 ### 65.3.11 Generic System Images and Device Bring-Up
 
-Our `bookphone` product builds a complete device image, but Android also ships a
+Our `bookphone` product builds a complete device image. Android also ships a
 **Generic System Image (GSI)**: a single `system.img` built to the Treble
-interface contract that can boot on top of any Treble-compliant vendor
+interface contract. It can boot on top of any Treble-compliant vendor
 partition. The GSI is how you sanity-check a new device's vendor implementation
-against pure AOSP, and how Compatibility Test Suite on GSI (CTS-on-GSI) and the
-Vendor Test Suite validate the vendor/system split.
+against pure AOSP. The Compatibility Test Suite on GSI (CTS-on-GSI) and the
+Vendor Test Suite also use it to validate the vendor/system split.
 
 The GSI products live in `build/make/target/product/`:
 
@@ -975,8 +976,8 @@ fastboot reboot
 
 GSIs are a debugging and conformance tool, not a daily-driver ROM: they carry no
 vendor apps and rely entirely on the device's existing vendor partition. For our
-custom ROM we build the full device image instead, but knowing the GSI path is
-essential when bringing a custom ROM to a new piece of hardware.
+custom ROM we build the full device image instead. But you must know the GSI
+path when you bring a custom ROM to a new piece of hardware.
 
 ---
 
@@ -1269,19 +1270,19 @@ public class MainActivity extends Activity {
 
 ### 65.4.4 Removing Default Apps
 
-AOSP itself has no "remove this package" product variable (the
-`PRODUCT_PACKAGES_REMOVE` you may see in LineageOS trees is a vendor
-extension — `build/make/core/product.mk` declares only `PRODUCT_PACKAGES`
-and its `_DEBUG`/`_ENG`/`_TESTS` variants). In stock AOSP there are two
-ways to drop a default app:
+AOSP itself has no "remove this package" product variable. You may see
+`PRODUCT_PACKAGES_REMOVE` in LineageOS trees, but it is a vendor extension.
+`build/make/core/product.mk` declares only `PRODUCT_PACKAGES` and its
+`_DEBUG`/`_ENG`/`_TESTS` variants. In stock AOSP there are two ways to drop
+a default app:
 
 1. **Do not inherit the makefile that adds it** — most default apps enter
-   `PRODUCT_PACKAGES` through the `$(call inherit-product, ...)` chain, so
-   choosing a slimmer parent makefile keeps them out entirely.
+   `PRODUCT_PACKAGES` through the `$(call inherit-product, ...)` chain. If
+   you choose a slimmer parent makefile, they stay out entirely.
 2. **Override it with a replacement module** — a module that declares
    `overrides: ["Browser2"]` in Soong (or `LOCAL_OVERRIDES_PACKAGES` in
-   Make) removes the named module from `PRODUCT_PACKAGES` when both would
-   be installed:
+   Make) removes the named module from `PRODUCT_PACKAGES`. This happens
+   when both modules would be installed:
 
 ```json
 // In your replacement app's Android.bp
@@ -2424,9 +2425,9 @@ runtime_resource_overlay {
 </resources>
 ```
 
-The names describe the icon tone, not the UI mode: these two resources are
+The names describe the icon tone, not the UI mode. These two resources are
 defined in `frameworks/base/packages/SettingsLib/res/values/colors.xml`
-(SettingsLib is statically linked into SystemUI), where
+(SettingsLib is statically linked into SystemUI). There,
 `light_mode_icon_color_single_tone` is the light tint and
 `dark_mode_icon_color_single_tone` is the dark one.
 
@@ -2578,8 +2579,8 @@ color scheme for your ROM, use a theme overlay. The `system_accent*` palette
 is defined in framework resources
 (`frameworks/base/core/res/res/values/colors_dynamic.xml`, package
 `android`), so these overrides belong in the framework RRO
-(`BookFrameworkOverlay`, with `android:targetPackage="android"`) -- an
-overlay targeting `com.android.systemui` cannot override them:
+(`BookFrameworkOverlay`, with `android:targetPackage="android"`). An
+overlay that targets `com.android.systemui` cannot override them:
 
 ```xml
 <!-- device/AospBook/bookphone/overlay/BookFrameworkOverlay/res/values/colors.xml -->
@@ -2621,9 +2622,9 @@ SystemUI is built as a system app via:
 frameworks/base/packages/SystemUI/Android.bp
 ```
 
-To include your modifications, ensure that any new source files are added to
-the `srcs` list in the build file, or placed in a directory that is already
-included via a glob pattern.
+To include your modifications, make sure that any new source file is in the
+`srcs` list in the build file. A directory that a glob pattern already
+includes is also correct.
 
 ---
 
@@ -2854,8 +2855,8 @@ Common build errors and solutions:
 
 A change that affects every native binary in an Android 17 ROM is the move to
 **16 KB memory page sizes**. Modern arm64 SoCs can run their MMU with a 16 KB
-base page instead of the historical 4 KB; doing so reduces TLB misses and
-improves throughput, but it means all native code (`.so` files, executables)
+base page instead of the historical 4 KB. This reduces TLB misses and
+improves throughput. But all native code (`.so` files, executables)
 must be laid out so that loadable segments are 16 KB aligned.
 
 The build system already defaults to this on 64-bit targets.
@@ -2875,7 +2876,7 @@ endif
 
 So binaries you build from source through Soong are already 16 KB compatible.
 What can break is a **prebuilt `.so` shipped inside a prebuilt APK or a vendor
-blob** that was linked with 4 KB alignment by some older toolchain. Such a
+blob** that an older toolchain linked with 4 KB alignment. Such a
 library loads fine on a 4 KB kernel but fails to map on a 16 KB kernel.
 
 For development and testing, two knobs matter:
@@ -2903,12 +2904,13 @@ adb shell getconf PAGE_SIZE        # prints 16384 on a 16 KB build
 
 Use `getconf PAGE_SIZE` alone for this check. The related property
 `ro.product.build.16k_page.enabled` only reflects whether the product set
-`PRODUCT_16K_DEVELOPER_OPTION` (the dual-boot developer toggle), not whether
-the image is 16 KB aligned -- on `sdk_phone16k_x86_64`, which does not set
-that option, it reads `false` even though the build is a true 16 KB build.
+`PRODUCT_16K_DEVELOPER_OPTION` (the dual-boot developer toggle). The property does not
+show whether the image is 16 KB aligned. On `sdk_phone16k_x86_64`, which does
+not set that option, it reads `false` even though the build is a true 16 KB
+build.
 
-If a prebuilt fails to load on the 16 KB target, rebuild it from source (which
-picks up the 16 KB alignment automatically) or re-link it with a 16 KB
+If a prebuilt fails to load on the 16 KB target, rebuild it from source. This
+picks up the 16 KB alignment automatically. Or re-link it with a 16 KB
 `max-page-size`. Auditing prebuilts for 16 KB readiness is now a standard step
 when bringing a ROM forward to Android 17.
 
@@ -3287,8 +3289,8 @@ build/make/target/product/security/
 ```
 
 **CRITICAL**: The keys in that directory are publicly known test keys. Any
-ROM released with these keys is trivially vulnerable -- anyone can sign a
-malicious APK with the same key and it will be accepted as a system update.
+ROM released with these keys is trivially vulnerable. Anyone can sign a
+malicious APK with the same key, and it will be accepted as a system update.
 
 The `README` at `build/make/target/product/security/README` explicitly warns:
 
@@ -3424,11 +3426,11 @@ python3 build/make/tools/releasetools/ota_from_target_files.py \
 during ROM bring-up:
 
 - `ota_from_raw_img.py` builds an A/B payload directly from a set of `.img`
-  files instead of a full target-files package, which is convenient when you
+  files instead of a full target-files package. This is convenient when you
   only want to ship one or two repartitioned images.
 - `create_brick_ota.py` produces a recovery package that wipes the AVB/`vbmeta`
-  partitions to deliberately "brick" a device (used for RMA/secure-erase
-  flows), a reminder that an OTA payload is just a signed instruction set over
+  partitions to "brick" a device on purpose (used for RMA/secure-erase flows).
+  It is a reminder that an OTA payload is just a signed instruction set over
   partitions.
 
 These supplement, rather than replace, the `ota_from_target_files.py` path that
@@ -3640,8 +3642,8 @@ tools/bazel run //common:kernel_x86_64_dist -- --dist_dir=out/x86_64/dist
 # tools/bazel run //common:kernel_aarch64_dist -- --dist_dir=out/aarch64/dist
 ```
 
-Kleaf wraps the kernel build in Bazel rules; `tools/bazel` is the checked-in
-launcher and the `*_dist` targets stage the kernel image plus modules into the
+Kleaf wraps the kernel build in Bazel rules. `tools/bazel` is the checked-in
+launcher. The `*_dist` targets stage the kernel image plus modules into the
 `--dist_dir` you pass. The build configuration that used to live in
 `build.config.*` files is now expressed as Bazel `kernel_build` targets in the
 kernel tree.
@@ -3822,9 +3824,9 @@ RAMDISK_SYSTEM_KERNEL_MODULES := \
     vmw_vsock_virtio_transport.ko \
 ```
 
-These modules are loaded during first-stage init before the system partition
-is even mounted, because they provide the virtual hardware drivers needed to
-access the disk.
+These modules are loaded during first-stage init, before the system partition
+is even mounted. This is because they provide the virtual hardware drivers that are
+needed to access the disk.
 
 ---
 
@@ -4710,36 +4712,39 @@ device/AospBook/bookphone/
 
 ## 65.14 Case Study: MaruOS as a Convergence Custom ROM
 
-The thirteen sections above built up a generic "custom ROM" — a fork of AOSP
-with tailored apps, framework tweaks, branded SystemUI, custom kernel, and a
-release/distribution flow. To see how far this template can stretch in
-practice, consider **MaruOS** (<https://github.com/maruos>), an open-source
-custom ROM whose explicit goal is *"Your phone is your PC"* —
-*"when you're on the go, Maru is your phone; when you're at your desk, Maru
-is your desktop."* Plugging a supported Pixel or HTC 10 into a monitor over
-USB-C/HDMI brings up a full Debian GNU/Linux desktop session on the external
-display while the phone screen keeps running stock Android. Same kernel,
+The thirteen sections above built up a generic "custom ROM". It is a fork of
+AOSP with tailored apps, framework tweaks, branded SystemUI, a custom kernel,
+and a release/distribution flow. To see how far this template can stretch in
+practice, consider **MaruOS** (<https://github.com/maruos>), an
+open-source custom ROM. Its explicit goal is *"Your phone is your PC"*.
+The project describes the goal this way: *"when you're on the go, Maru is
+your phone; when you're at your desk, Maru is your desktop."*
+
+A supported Pixel or HTC 10 can be plugged into a monitor over USB-C/HDMI. A full
+Debian GNU/Linux desktop session then comes up on the external display. At
+the same time, the phone screen keeps running stock Android. Same kernel,
 same device, two simultaneous user-facing operating systems.
 
 ![MaruOS: a single phone driving both a mobile Android UI and a Debian desktop on an attached monitor](https://maruos.com/assets/img/hero.598c5250.jpg)
 
-MaruOS is not a typical custom ROM and is interesting precisely because of
-how it departs from the template the rest of this chapter laid out. It is a
-useful end-of-chapter exhibit: an unusual but production-realised demonstration
+MaruOS is not a typical custom ROM. It is interesting precisely because it
+departs from the template that the rest of this chapter laid out. It is a
+useful end-of-chapter exhibit: an unusual but production-realized demonstration
 of how much *room* the AOSP overlay model actually leaves a custom-ROM author.
 
 ### 65.14.1 Why MaruOS Is an Unusual Custom ROM
 
 A canonical custom ROM (LineageOS, GrapheneOS, /e/OS, ParanoidAndroid) keeps
-the AOSP shape unchanged and varies *content*: different APKs, different
-framework defaults, different SystemUI, different security posture, different
-kernel hardening. The runtime model the user experiences is still
+the AOSP shape unchanged and varies *content*. The differences are in the
+APKs, the framework defaults, SystemUI, the security posture, and the kernel
+hardening. The runtime model the user experiences is still
 zygote → activities → SystemUI → home launcher.
 
-MaruOS keeps that model intact for the phone surface but layers a *second*
-runtime model on top: a Debian system running inside an LXC container that
-the Android side starts on demand, with its own X11 desktop environment, its
-own package manager, and its own boot/login flow. The README states this
+MaruOS keeps that model intact for the phone surface. It also layers a
+*second* runtime model on top: a Debian system that runs inside an LXC
+container. The Android side starts the container on demand. The container has
+its own X11 desktop environment, its own package manager, and its own
+boot/login flow. The README states this
 explicitly:
 
 > *"It uses lightweight OS virtualization (containers) to spin up virtual
@@ -4750,7 +4755,7 @@ vendor blobs, branded apps), MaruOS ships:
 
 - An LXC container management daemon and supporting Android-side services.
 - A "Perspective" layer that bridges Android's display, input, and audio
-  pipelines to the container so the container can present a coherent
+  pipelines to the container. This lets the container present a coherent
   desktop on the external screen.
 - A build pipeline for the Debian container image, separate from the AOSP
   build.
@@ -4759,10 +4764,10 @@ vendor blobs, branded apps), MaruOS ships:
 - New SELinux policy to keep the container's Linux processes from
   trampling Android's domain model.
 
-The device list is intentionally narrow — recent forks track a few Pixel
-generations and the HTC 10, with device repos forked from LineageOS so the
-hardware-enablement layer is borrowed rather than maintained from scratch.
-See the manifest at `maruos/manifest` for the current set; supported devices
+The device list is intentionally narrow. Recent forks track a few Pixel
+generations and the HTC 10. The device repos are forked from LineageOS, so
+Maru borrows the hardware-enablement layer and does not maintain it from
+scratch. See the manifest at `maruos/manifest` for the current set; supported devices
 have changed across maru-0.x releases.
 
 The license is Apache-2.0 across the org, matching AOSP itself.
@@ -4817,20 +4822,20 @@ Three architectural points worth pulling out:
 1. **One kernel.** Both Android and Debian share `/proc/version`. The
    container runs by namespacing PIDs, mounts, network, IPC, and user IDs;
    it does not boot its own kernel image. This is the LXC bargain — much
-   lower overhead than a VM, but no defence against a kernel exploit
-   crossing the container boundary.
+   lower overhead than a VM, but no defense against a kernel exploit that
+   crosses the container boundary.
 2. **The Maru bridge daemon is Android-resident.** It runs as a normal
    Android process (Java/JNI on top of native C/C++) inside the AOSP user
-   space, listens for display-attach events, and uses ordinary Linux APIs
-   to start the LXC container. It is *not* an in-container piece of code;
-   the container only knows it's been booted.
+   space. It listens for display-attach events, and it uses ordinary Linux
+   APIs to start the LXC container. It is *not* an in-container piece of code;
+   the container only knows that it booted.
 3. **Two displays, two owners.** The phone screen continues to render
    Android's SystemUI on the internal display. The external display is
-   *not* running another Android UI — it is a presentation surface that
-   `SurfaceFlinger` hands off to the Linux side via mflinger (65.14.8),
-   so what the user sees on the monitor is rendered entirely by X.org and
-   the container's desktop environment (Xfce or whatever the Debian image
-   is configured with). The user's phone keeps running stock Android the
+   *not* running another Android UI. It is a presentation surface that
+   `SurfaceFlinger` hands off to the Linux side via mflinger (65.14.8).
+   X.org and the container's desktop environment (Xfce or whatever the
+   Debian image is configured with) render everything that the user sees
+   on the monitor. The user's phone keeps running stock Android the
    whole time the desktop is up.
 
 This is qualitatively different from "desktop mode" features built into
@@ -4841,9 +4846,9 @@ same kernel.
 ### 65.14.3 Kernel Configuration for LXC
 
 LXC is the mechanism that lets MaruOS run a Debian rootfs alongside Android
-without a second kernel, but it depends on Linux kernel features that stock
-Android kernels routinely disable. A custom ROM building on LXC has to start
-by making sure those features are present in the kernel image it ships.
+without a second kernel. But it depends on Linux kernel features that stock
+Android kernels routinely disable. A custom ROM that builds on LXC must first
+make sure those features are present in the kernel image it ships.
 
 Required kernel features for an unprivileged LXC container of the kind Maru
 runs:
@@ -4862,38 +4867,38 @@ runs:
 | Optional overlay FS | `CONFIG_OVERLAY_FS=y` | Layered container rootfs without full copies |
 
 The catch is `CONFIG_USER_NS`. Android's kernel teams historically disable
-this option on production kernels because user namespaces have been a
-recurring source of CVEs across Linux releases — the privilege boundary
+this option on production kernels, because user namespaces have been a
+recurring source of CVEs across Linux releases. The privilege boundary
 inside a user namespace has been harder to keep tight than the standard
-root-vs-non-root split, and Android's security posture is to remove
+root-vs-non-root split. Android's security posture is to remove
 attack surface where the platform itself does not need it. LineageOS device
-kernels typically inherit that default. MaruOS, in order to run LXC at all,
-must flip `CONFIG_USER_NS` back to `y` in its kernel build, knowingly
-accepting the additional attack surface.
+kernels typically inherit that default. To run LXC at all, MaruOS
+must flip `CONFIG_USER_NS` back to `y` in its kernel build, and it knowingly
+accepts the additional attack surface.
 
-The other features in the table are usually already on in an Android kernel:
-the Android Activity Manager uses cgroups (memory, freezer), the
-low-memory killer uses cgroup v2 memory controllers, seccomp filters are
-required by the Android sandbox, and namespaces are part of every modern
+The other features in the table are usually already on in an Android kernel.
+The Android Activity Manager uses cgroups (memory, freezer), and the
+low-memory killer uses cgroup v2 memory controllers. The Android sandbox
+requires seccomp filters, and namespaces are part of every modern
 Linux kernel's default configuration. So the kernel customization Maru
-needs is narrower than it first looks: enable `CONFIG_USER_NS`, confirm the
-remaining namespace and cgroup controllers are on, optionally enable
-`CONFIG_INPUT_UINPUT` if the synthetic-injection input path of 65.14.9 is
-wanted, and rebuild.
+needs is narrower than it first looks. Maru must enable `CONFIG_USER_NS`,
+confirm the remaining namespace and cgroup controllers are on, and rebuild.
+Maru can also enable `CONFIG_INPUT_UINPUT` if it wants the
+synthetic-injection input path of 65.14.9.
 
 This is why a Maru device build pulls a Maru-modified kernel from its
 `device_*` repos rather than reusing LineageOS's kernel as-is. Section 65.11
-covers the general kernel-customization workflow that MaruOS follows: a
-defconfig fragment that toggles the required options, layered on top of the
-device's base defconfig, and a rebuild of the boot image to flash alongside
-the system image.
+covers the general kernel-customization workflow that MaruOS follows. The
+workflow uses a defconfig fragment that toggles the required options on top
+of the device's base defconfig. Then the boot image is rebuilt. It is flashed
+alongside the system image.
 
-The trade-off is starkly stated. Enabling `CONFIG_USER_NS` opens an attack
+The trade-off is stark. Enabling `CONFIG_USER_NS` opens an attack
 surface that stock AOSP intentionally closes. For Maru this is an accepted
-cost of the convergence model. For any custom ROM considering an LXC-based
-or namespaces-based extension, the choice should be made deliberately, with
-the threat model written down — there is no way to get unprivileged LXC
-without this flag, and there is no way to flip this flag without expanding
+cost of the convergence model. Any custom ROM that considers an LXC-based
+or namespaces-based extension should make this choice deliberately, with
+the threat model written down. There is no way to get unprivileged LXC
+without this flag. There is also no way to flip this flag without expanding
 the kernel attack surface.
 
 ### 65.14.4 Repository Topology
@@ -4981,16 +4986,17 @@ vendor_maruos/
 Each directory has a specific role in the convergence story. Walking them
 in dependency order makes the overall design clearer than alphabetical:
 
-**`perspective/`** is the conceptual centre. The name signals the
+**`perspective/`** is the conceptual center. The name signals the
 abstraction: the device has multiple "perspectives" (phone screen, desktop
 screen, perhaps headphones-only) and Maru's job is to switch between them.
 The C++ + Java mix in this directory is the daemon that watches for
-display events, decides when the user's "desktop perspective" is active,
-and orchestrates everything below.
+display events. It decides when the user's "desktop perspective" is active,
+and it orchestrates everything below.
 
-**`container/`** holds the LXC integration: the lifecycle wrapper around
-`lxc-start`, the rootfs mount logic, the cgroup setup, the bind mounts
-that expose host resources to the container, and the tear-down path. It is
+**`container/`** holds the LXC integration. It has the lifecycle wrapper
+around `lxc-start` and the rootfs mount logic. It also has the cgroup setup,
+the bind mounts that expose host resources to the container, and the
+tear-down path. It is
 the layer that talks directly to LXC.
 
 **`overlay/`** uses AOSP's standard overlay mechanism (see section 65.5)
@@ -5002,30 +5008,31 @@ strings, and any pre-installed-app launch defaults.
 that the overlay system cannot express. Where overlays patch resource
 values inside an APK, `overrides/` replaces entire files or scripts.
 
-**`sepolicy/`** is the SELinux policy delta needed to let the container
+**`sepolicy/`** is the SELinux policy delta. It lets the container
 daemon talk to LXC, mount the rootfs, manipulate cgroups, forward input,
-and grab a framebuffer — none of which stock AOSP policy permits, because
+and grab a framebuffer. Stock AOSP policy permits none of these, because
 no stock AOSP component does any of those things.
 
 **`prebuilts/`** carries pre-compiled artifacts that the AOSP build does
-not produce on its own — typically the LXC toolchain binaries, helper
-shell scripts that aren't built per device, and any third-party Debian
-support pieces.
+not produce on its own. These are typically the LXC toolchain binaries,
+helper shell scripts that are not built per device, and any third-party
+Debian support pieces.
 
-**`mlogwrapper/`** is a small utility for redirecting Maru daemon logs
-into Android's logging infrastructure (`logd`/`logcat`) so a developer
-debugging Maru can use the same tools they'd use for any Android service.
+**`mlogwrapper/`** is a small utility that redirects Maru daemon logs
+into Android's logging infrastructure (`logd`/`logcat`). A developer who
+debugs Maru can then use the same tools that they use for any Android
+service.
 
-**`scripts/`** contains repo-level setup helpers — things invoked outside
-the normal `m`/`make` flow, like fetching the Debian rootfs from the
-blueprints build output and dropping it into a per-product path before
-the system image is packaged.
+**`scripts/`** contains repo-level setup helpers. These are things invoked
+outside the normal `m`/`make` flow. For example, one helper fetches the
+Debian rootfs from the blueprints build output. It drops the rootfs into a
+per-product path before the system image is packaged.
 
 ### 65.14.6 The blueprints Container Builder
 
-The Debian rootfs the container runs is not built by Soong. It is built by
-a separate repository, `maruos/blueprints`, which is a self-contained
-shell pipeline:
+The Debian rootfs the container runs is not built by Soong. A separate
+repository, `maruos/blueprints`, builds it. This repository is a
+self-contained shell pipeline:
 
 - `build.sh` — main build entry point. Reads a blueprint, invokes its
   per-blueprint hooks, produces an output tarball.
@@ -5042,55 +5049,59 @@ shell pipeline:
 The split is deliberate. AOSP's build system is excellent at producing
 Android system images and signed boot images, but it has no idea what a
 Debian rootfs is. Rather than teach Soong about `debootstrap`, Maru runs
-two builds — one Soong/Make for the Android side, one Shell/`debootstrap`
-for the Debian side — and a final assembly step folds the rootfs output
-into the appropriate product directory.
+two builds. One is Soong/Make for the Android side. The other is
+Shell/`debootstrap` for the Debian side. A final assembly step then folds
+the rootfs output into the appropriate product directory.
 
-What this means for the custom-ROM author: when your customization adds an
+This has a lesson for the custom-ROM author. If your customization adds an
 entirely foreign environment (a container, a VM, a different libc), the
-right answer is often a *sibling* build system that exports a tarball,
-not a Soong module that tries to model the foreign world.
+right answer is often a *sibling* build system. This build system exports a
+tarball. It is not a Soong module that tries to model the foreign world.
 
 ### 65.14.7 The "Perspective" Bridge Layer
 
 The `perspective/` and `include/perspective/` directories carry the
 hardest-to-classify part of the design: the Android-resident daemon that
-animates the entire convergence flow. From its structural position
-(Android user space, C++/Java mix, `include/` next to source) and the role
-the rest of the tree assumes it plays, it is responsible for at least the
-following:
+animates the entire convergence flow. We infer its duties from its
+structural position (Android user space, C++/Java mix, `include/` next to
+source). We also infer them from the role that the rest of the tree assumes
+for it. It is
+responsible for at least the following:
 
-1. **Display-attach detection.** Listening for `DisplayManager`
-   `onDisplayAdded` callbacks (or the equivalent at a lower level) and
-   deciding when an attached display is "desktop class" — large enough
+1. **Display-attach detection.** It listens for `DisplayManager`
+   `onDisplayAdded` callbacks (or the equivalent at a lower level). It
+   decides when an attached display is "desktop class" — large enough
    and external enough — to warrant launching the desktop perspective.
-2. **Container lifecycle.** Calling into `container/` to start the LXC
+2. **Container lifecycle.** It calls into `container/` to start the LXC
    container on first desktop attach and to stop it on the last desktop
-   detach, plus quiescing it on screen-off if Maru policy says so.
-3. **Input routing.** Forwarding keyboard, mouse, and possibly touch
-   events from Android's input system into the container so the user
-   driving an external keyboard sees the keystrokes land in Debian.
-4. **Audio routing.** Negotiating audio output between the phone's
-   speakers and any audio device the desktop monitor provides over HDMI.
-5. **Permission and authentication.** Some way for the user to confirm
-   that an attached display is allowed to host a desktop session — Maru
-   is not going to expose a Debian session to anyone who plugs into the
+   detach. It also quiesces the container on screen-off if Maru policy
+   says so.
+3. **Input routing.** It forwards keyboard, mouse, and possibly touch
+   events from Android's input system into the container. This lets a user who uses
+   an external keyboard see the keystrokes land in Debian.
+4. **Audio routing.** It negotiates audio output between the phone's
+   speakers and any audio device that the desktop monitor provides over
+   HDMI.
+5. **Permission and authentication.** It provides some way for the user to
+   confirm that an attached display is allowed to host a desktop session.
+   Maru does not expose a Debian session to anyone who plugs into the
    port.
 
-The repository organisation suggests the perspective layer is the
-"director" while `container/` is the "stagehand": one decides what
-should happen, the other actually moves the LXC machinery. The split is
-a useful pattern for any custom ROM author writing a long-running
+The repository organization suggests the perspective layer is the
+"director" while `container/` is the "stagehand". One decides what
+should happen. The other actually moves the LXC machinery. The split is
+a useful pattern for any custom ROM author who writes a long-running
 Android service that drives non-Android user-space resources.
 
 ### 65.14.8 mflinger and mclient: The Graphics Bridge
 
 When the X11 server inside the Debian container draws to its framebuffer,
-those pixels live in the container's address space — a different mount
-namespace, a different `/dev`, a different view of GPU memory. Android's
+those pixels live in the container's address space. The container has a
+different mount namespace, a different `/dev`, and a different view of GPU
+memory. Android's
 `SurfaceFlinger`, which owns presentation on the external display, knows
-nothing about that buffer. Some piece of software has to bridge the two,
-and the design Maru uses for this bridge is unusually elegant: it makes
+nothing about that buffer. Some piece of software has to bridge the two.
+The design Maru uses for this bridge is unusually elegant: it makes
 the LXC namespace boundary effectively invisible to the GPU.
 
 mflinger lives in its own repository at <https://github.com/maruos/mflinger>,
@@ -5099,13 +5110,13 @@ bridge for Maru OS."* The codebase is C-dominant (~64% C, 21% C++) with
 `src/`, `include/`, `lib/`, `tests/`, and `scripts/` directories — the
 layout of a small Linux system service.
 
-The name signals the analogy. Android's `SurfaceFlinger` is the consumer
-that takes per-producer graphics buffers — from apps, the camera HAL, video
+The name signals the analogy: Android's `SurfaceFlinger` is the consumer.
+It takes per-producer graphics buffers — from apps, the camera HAL, video
 decoders, and so on — via the standard `ANativeWindow`/`BufferQueue`
-producer protocol and composes them onto the display. mflinger plays the
-*producer* role for the container's frames: it asks SurfaceFlinger for an
-`ANativeWindow`-backed Surface, hands the underlying buffer to Linux for
-direct rendering, and tells SurfaceFlinger when the buffer is ready to
+producer protocol. Then it composes them onto the display. mflinger plays the
+*producer* role for the container's frames. It asks SurfaceFlinger for an
+`ANativeWindow`-backed Surface and hands the underlying buffer to Linux for
+direct rendering. Then it tells SurfaceFlinger when the buffer is ready to
 present.
 
 The mflinger architecture is split into two halves:
@@ -5113,32 +5124,32 @@ The mflinger architecture is split into two halves:
 - **mflinger** (the daemon, Android-side) runs as an Android user-space
   service started by `init.maru.rc`. It creates an Android `Surface`
   attached to the external display and uses the standard `ANativeWindow`
-  C API to dequeue `GraphicBuffer` slots. Each buffer is backed by a
-  gralloc allocation — typically a **dma-buf** on modern AOSP devices —
-  whose file descriptor mflinger can hand to a process in another
+  C API to dequeue `GraphicBuffer` slots. A gralloc allocation backs each
+  buffer — typically a **dma-buf** on modern AOSP devices. mflinger can
+  hand the file descriptor of this allocation to a process in another
   namespace.
 - **mclient** (the container-side client) ships inside the Debian rootfs.
   It receives the dma-buf file descriptor from mflinger over a Unix
-  domain socket using `SCM_RIGHTS` ancillary data — the standard Linux
-  mechanism for passing a kernel-managed fd between processes. This
-  works across the LXC namespace boundary because the kernel
+  domain socket. The transfer uses `SCM_RIGHTS` ancillary data — the
+  standard Linux mechanism to pass a kernel-managed fd between processes.
+  This works across the LXC namespace boundary because the kernel
   reference-counts the underlying object, not the path. mclient then
-  `mmap`s the dma-buf (or imports it via DRI3 as a pixmap) and exposes
+  `mmap`s the dma-buf (or imports it via DRI3 as a pixmap). It exposes
   the resulting memory region to X.org as the root window's backing
   store.
 
 The pivotal fact: **X.org renders directly into the same physical GPU
 memory that SurfaceFlinger will present.** When the X server commits a
-frame, mclient tells mflinger the buffer is ready; mflinger calls
-`queueBuffer` on the `ANativeWindow`; SurfaceFlinger picks the buffer up,
-includes it in its next composition pass on the external display, and the
+frame, mclient tells mflinger that the buffer is ready, and mflinger calls
+`queueBuffer` on the `ANativeWindow`. SurfaceFlinger picks the buffer up and
+includes it in its next composition pass on the external display. Then the
 user sees the desktop. There is no intermediate "container framebuffer"
-that gets copied across the boundary — the fd *is* the boundary, and the
+to copy across the boundary. The fd *is* the boundary, and the
 GPU memory is shared.
 
 This is the same producer/consumer pattern Android uses internally for
-every camera, codec, and OpenGL surface; mflinger generalises it by
-handing the producer end to a process living in a different mount
+every camera, codec, and OpenGL surface. mflinger generalizes it. It hands
+the producer end to a process that lives in a different mount
 namespace.
 
 The graphics bridge per frame.
@@ -5178,31 +5189,32 @@ Two consequences of this design worth pulling out:
 - **One composition per frame.** Because X.org draws directly into the
   buffer SurfaceFlinger will present, there is no separate "container
   framebuffer → host framebuffer" composition step. The same number of
-  compositions happen as for any normal Android surface, which is why the
-  design scales to a 1920×1080 external monitor without becoming the
+  compositions happen as for any normal Android surface. This is why the
+  design scales to a 1920×1080 external monitor and does not become the
   bottleneck on modest hardware.
 
-The Android-side SELinux policy in `vendor_maruos/sepolicy/` (65.14.11) is
-what permits mflinger to acquire `ANativeWindow` surfaces, talk to
-SurfaceFlinger over binder, and pass file descriptors out over its UDS;
-without those rules the daemon would be denied at process start. The
-bind-mount that exposes the mclient↔mflinger socket across the container
-boundary is set up by the container module in `vendor_maruos/container/`
-(65.14.5) when LXC starts.
+The Android-side SELinux policy in `vendor_maruos/sepolicy/` (65.14.11)
+permits mflinger to acquire `ANativeWindow` surfaces and to talk to
+SurfaceFlinger over binder. It also permits mflinger to pass file
+descriptors out over its UDS. Without those rules, the
+daemon would be denied at process start. The container module in
+`vendor_maruos/container/` (65.14.5) sets up the bind-mount that exposes
+the mclient↔mflinger socket across the container boundary when LXC starts.
 
 ### 65.14.9 Input Mapping Between Linux and Android
 
-The complement of the graphics bridge is the input bridge — but it is
-much smaller than the graphics bridge, and for the same architectural
-reason that the graphics bridge is small: Android and the LXC container
-share the same kernel.
+The complement of the graphics bridge is the input bridge. It is much
+smaller than the graphics bridge. The reason is the same: Android and the
+LXC container share the same kernel.
 
 Keyboard, mouse, and touch hardware lives in the kernel's input subsystem
 and is exposed through `/dev/input/event*` nodes. Because there is only
-one kernel, there is only one set of these nodes — there is not a separate
+one kernel, there is only one set of these nodes. There is not a separate
 "Linux input device" and "Android input device" pair per piece of
 hardware. Android's `InputReader` (inside `system_server`, see chapter 22)
-opens them through Android's `/dev/input/`. The container sees the same
+opens them through Android's `/dev/input/`.
+
+The container sees the same
 nodes through its own `/dev/input/` namespace, which Maru bind-mounts from
 the host at LXC startup. X.org inside the container reads them through
 the evdev input driver — the same evdev path X.org would use on a stock
@@ -5229,36 +5241,37 @@ What the bridge actually does, then, is *route* — decide which side
 3. **Exclusivity via `EVIOCGRAB`.** When the owning side needs to be
    the *only* reader of a device, the relevant process issues
    `ioctl(fd, EVIOCGRAB, 1)` on the event node. Without that, evdev's
-   read path is multicast — every open file descriptor on the same
-   `/dev/input/eventN` receives every event — and Android and X.org
+   read path is multicast. Every open file descriptor on the same
+   `/dev/input/eventN` receives every event, and Android and X.org
    would both dispatch the same keystroke. With `EVIOCGRAB`, the kernel
    delivers events only to the grabbing fd until the grab is released.
 4. **Coordinate translation for cross-display touch.** Touch events use
    absolute coordinates scaled to the originating panel's resolution. A
    touch on Android's internal 1080×1920 panel is meaningless to an X
-   server drawing on a 1920×1080 external monitor. The common case
-   doesn't hit this — the internal panel is owned by Android, the
-   external touch monitor is owned by the desktop. The uncommon case is
-   "use the phone screen as a touchpad for the desktop," where the
-   perspective daemon reads internal-panel events, rescales coordinates
-   into the desktop's space, and synthesises new events on a virtual
-   device. `CONFIG_INPUT_UINPUT` (65.14.3) is what enables this
-   synthetic-injection path. The common path does not need it.
+   server drawing on a 1920×1080 external monitor.
+
+    The common case does not hit this, because Android owns the internal
+    panel and the desktop owns the external touch monitor. The uncommon case is
+    "use the phone screen as a touchpad for the desktop." In that case the
+    perspective daemon reads internal-panel events and rescales coordinates
+    into the desktop's space. Then it synthesizes new events on a virtual
+    device. `CONFIG_INPUT_UINPUT` (65.14.3) is what enables this
+    synthetic-injection path. The common path does not need it.
 
 The whole pipeline is invisible to both ends. Android's `InputReader`
-enumerates the devices it owns and dispatches normally; the container's
-X server enumerates the devices it owns and dispatches normally; only the
-perspective daemon in the middle knows which side currently owns what.
+enumerates the devices it owns and dispatches normally. The container's
+X server does the same for the devices it owns. Only the perspective
+daemon in the middle knows which side currently owns what.
 
-The contrast with the graphics bridge is the architectural lesson here:
-when two user-space stacks share a kernel, anything the kernel already
+The contrast with the graphics bridge is the architectural lesson here.
+This applies when two user-space stacks share a kernel. Then anything the kernel already
 abstracts (input events, network sockets, fds, character devices) can be
 shared by routing instead of forwarding. Anything the kernel does *not*
 abstract (the GPU memory backing a Surface) has to be bridged with
 explicit fd-passing as in 65.14.8. Maru's input bridge stays small
-because the kernel does the work; the graphics bridge stays small
-because the bridge piggy-backs on the kernel's existing dma-buf
-fd-passing instead of inventing its own pixel transport.
+because the kernel does the work. The graphics bridge stays small
+because it piggy-backs on the kernel's existing dma-buf fd-passing
+instead of inventing its own pixel transport.
 
 ### 65.14.10 Init and Boot Integration
 
@@ -5268,8 +5281,8 @@ at boot, defining services and triggers. For MaruOS the file
 conceptually contains:
 
 - A `service` entry for the perspective daemon, with the right `user`,
-  `group`, and `seclabel` so that SELinux can place it in the Maru
-  domain and so that init can supervise restarts.
+  `group`, and `seclabel`. These let SELinux place it in the Maru
+  domain and let init supervise restarts.
 - One or more `on` triggers — `on boot`, `on property:sys.boot_completed=1`,
   perhaps `on property:maru.container.requested=1` — that decide when the
   daemon starts and what auxiliary setup runs first.
@@ -5311,9 +5324,9 @@ systems on demand."*
 
 ### 65.14.11 SELinux Implications
 
-Stock AOSP SELinux policy is designed around the assumption that no
-Android process needs to launch an LXC container, mount a rootfs, or
-manipulate cgroups outside the ones Android's lmkd/freezer already own.
+Stock AOSP SELinux policy assumes that no Android process needs to
+launch an LXC container or mount a rootfs. It also assumes that none needs
+to manipulate cgroups outside the ones Android's lmkd/freezer already own.
 Maru's `sepolicy/` directory carries the delta:
 
 - A new domain — call it `maru_perspective` and `maru_container` — for
@@ -5322,17 +5335,17 @@ Maru's `sepolicy/` directory carries the delta:
   the container rootfs at a Maru-specific path, and write to the
   cgroups the container uses.
 - Rules permitting the daemon to bind to the framebuffer (or surfaceflinger
-  equivalent) on the external display, since X11 inside the container
-  needs to draw somewhere visible.
+  equivalent) on the external display. X11 inside the container needs to
+  draw somewhere visible.
 - Rules permitting input pipes to cross from Android's input domain into
   the perspective domain so input forwarding works.
 
-What an aspiring ROM author should take from this: any custom ROM that
+An aspiring ROM author should take this from it. Any custom ROM that
 adds new system services with elevated capabilities has to author new
 SELinux policy, full stop. The cost is not in writing the `*.te` files
 themselves (Maru's `sepolicy/` is small) but in *bisecting denials*
-during development. Each new denial gets logged once on first hit,
-silently after that, which is why fresh installs of a Maru build
+during development. Each new denial is logged once on first hit. It is
+silent after that. This is why fresh installs of a Maru build
 on a different device often need an audit pass.
 
 ### 65.14.12 Privileged Permissions for Maru-System Apps
@@ -5340,10 +5353,10 @@ on a different device often need an audit pass.
 `privapp-permissions-maru.xml` lives at vendor-overlay scope and is
 processed by Android's privileged-permission allowlist mechanism (see
 section 65.4 on adding custom apps). Maru needs this file because its
-perspective-daemon companion APK — the user-facing UI that confirms
-desktop access, manages container settings, and surfaces the
-"desktop is active" notification — sits at `/system/priv-app/` and
-declares permissions that the allowlist must explicitly grant.
+perspective-daemon companion APK sits at `/system/priv-app/` and
+declares permissions that the allowlist must explicitly grant. This APK
+is the user-facing UI that confirms desktop access, manages container
+settings, and surfaces the "desktop is active" notification.
 
 The shape is a familiar one for ROM authors:
 
@@ -5360,7 +5373,7 @@ The shape is a familiar one for ROM authors:
 
 The exact entries are Maru's own decision; the file structure is mandated
 by AOSP. Any custom ROM with a privileged system app must ship one of
-these files, and a `dexopt`-time denial from `PackageManagerService`
+these files. A `dexopt`-time denial from `PackageManagerService`
 during boot is almost always traceable to a missing entry here.
 
 ### 65.14.13 The Build Flow
@@ -5392,28 +5405,28 @@ Three things stand out compared to the build flow in section 65.8:
 - **Two build systems.** The Soong/Make pipeline does not run the
   blueprints pipeline. The custom-ROM author orchestrates them by hand
   or via a wrapper script.
-- **The container image is a build artefact, not source.** The Debian
+- **The container image is a build artifact, not source.** The Debian
   rootfs is produced once per release, signed, and shipped inside the
   Maru system image. Devices do not run `debootstrap` at install time.
 - **The `lunch` combo embeds Maru.** A `maru_<device>` combo means the
-  product makefile inherits `device-maru.mk` (and via it `maru_build.mk`),
-  which is what pulls in `vendor_maruos` and turns on the Maru-specific
+  product makefile inherits `device-maru.mk` (and via it `maru_build.mk`).
+  That makefile pulls in `vendor_maruos` and turns on the Maru-specific
   build flags. A standard `lineage_<device>` lunch would build the same
   device without the Maru layer.
 
 ### 65.14.14 What MaruOS Teaches the Custom ROM Author
 
 Reading MaruOS as an exemplar rather than a one-off, three lessons
-generalise beyond this specific project:
+generalize beyond this specific project:
 
 1. **The overlay model is very flexible.** Sections 65.3–65.5 talked
    about overlays as a way to change resource values and ship a few
-   APKs. MaruOS shows the *upper bound*: you can add an entire second
+   APKs. MaruOS shows the *upper bound*. You can add an entire second
    operating system through vendor overlay + sepolicy + init.rc + a
    sibling build system, without forking the AOSP source tree itself.
-   If your customization can be expressed as files that land in
-   `/system/`, `/vendor/`, `/product/`, or `/system_ext/` plus init
-   rules plus SELinux policy, you do not need to patch AOSP.
+   Your customization can be expressed as files that land in `/system/`,
+   `/vendor/`, `/product/`, or `/system_ext/`, plus init rules and
+   SELinux policy. In that case, you do not need to patch AOSP.
 2. **Delegate hardware enablement.** Maru forks LineageOS device trees
    rather than maintaining its own per-device HAL forks. The result is
    that a Maru maintainer can focus on the convergence layer, and
@@ -5423,11 +5436,13 @@ generalise beyond this specific project:
 3. **Separate the foreign world from Soong.** The Debian container's
    build pipeline is shell-based and lives in a separate repo. Soong
    never has to know what `debootstrap` is. The two systems meet at a
-   single tarball artefact. Any time your custom ROM needs to ship
-   something that is *not* an Android system image — a container
-   rootfs, a separately-licensed firmware blob, a Buildroot image for a
-   companion microcontroller — model that artefact as a sibling build
-   that hands off a file.
+   single tarball artifact.
+
+    Sometimes your custom ROM needs to ship
+    something that is *not* an Android system image. In that case, model that artifact
+    as a sibling build that hands off a file. Examples are a container
+    rootfs, a separately-licensed firmware blob, or a Buildroot image for
+    a companion microcontroller.
 
 ### 65.14.15 Limitations and Trade-Offs
 
@@ -5437,7 +5452,7 @@ honest read of the trade-offs:
 - **Device support is narrow.** Maintaining the convergence layer across
   many devices means tracking each LineageOS device branch, validating
   the LXC kernel feature set on each, and re-testing display routing.
-  Real Maru releases ship for a handful of devices at a time, which is
+  Real Maru releases ship for a handful of devices at a time. This is
   about right for a small team but well short of any "works on every
   Android phone" promise.
 - **Shared kernel, shared exposure.** LXC is much cheaper than a VM but
@@ -5447,24 +5462,24 @@ honest read of the trade-offs:
 - **No isolation from Android's filesystem.** By default, an LXC
   container can be configured to expose much of the host's filesystem.
   Maru's container/perspective bridge has to decide carefully which
-  host paths it bind-mounts and which it withholds; getting that wrong
+  host paths it bind-mounts and which it withholds. A wrong decision
   exposes Android user data to Debian apps.
 - **Maintenance debt.** Two build systems, two userspace stacks, and a
   custom bridge layer is a lot to keep running across an AOSP version
-  bump. Each yearly Android letter release ships behavioural changes in
+  bump. Each yearly Android letter release ships behavioral changes in
   `DisplayManager`, input dispatching, and SELinux that the perspective
   daemon has to adapt to.
 - **Upstream uncertainty.** Maru's design predates the Android Computer
-  Control framework (section 51.3) and the formalisation of desktop-
+  Control framework (section 51.3) and the formalization of desktop-
   mode in stock Android. Convergent UIs are now closer to a first-class
-  upstream concern, which could either obsolete Maru's approach or
-  raise the floor under it. The case study above is best read as a
-  *snapshot* of where one production custom ROM landed under the AOSP
-  primitives available to it through Android 12-era releases.
+  upstream concern. This could either obsolete Maru's approach or
+  raise the floor under it. Read the case study above as a
+  *snapshot*. It shows where one production custom ROM landed under the
+  AOSP primitives available to it through Android 12-era releases.
 
-The lesson here is symmetrical to the one in 65.14.14: the same overlay-
-mechanism flexibility that lets a single small team ship a phone-to-desktop
-convergence ROM also distributes the cost. Every layer of additional
+The lesson here is symmetrical to the one in 65.14.14. The same overlay-
+mechanism flexibility lets a single small team ship a phone-to-desktop
+convergence ROM. It also distributes the cost. Every layer of additional
 ambition adds a layer of maintenance. Custom ROM authors weighing how far
 to push the model should plan a realistic device list and a realistic
 release cadence first.
@@ -5475,7 +5490,7 @@ release cadence first.
 
 Work these on an Android 17 (`android17-release`) checkout. They walk the full
 arc of the chapter from a registered product to a signed, page-size-correct
-image, so the early ones are prerequisites for the later ones.
+image. The early ones are prerequisites for the later ones.
 
 1. **Register and lunch your own product.** Create
    `device/AospBook/bookphone/` with the four files from Section 65.3
@@ -5497,11 +5512,11 @@ image, so the early ones are prerequisites for the later ones.
    and `RELEASE_PLATFORM_VERSION_LAST_STABLE.textproto`.
 
 4. **Build a 16 KB page-size image.** Build
-   `sdk_phone16k_x86_64-trunk_staging-userdebug`, launch the emulator, and run
-   `adb shell getconf PAGE_SIZE` (expect `16384`; note that
+   `sdk_phone16k_x86_64-trunk_staging-userdebug` and launch the emulator.
+   Run `adb shell getconf PAGE_SIZE` (expect `16384`). Note that
    `ro.product.build.16k_page.enabled` reads `false` here because this product
-   does not set `PRODUCT_16K_DEVELOPER_OPTION`). Then add a 4 KB-aligned prebuilt
-   `.so` and observe it fail to load on the 16 KB target; rebuild it from source
+   does not set `PRODUCT_16K_DEVELOPER_OPTION`. Then add a 4 KB-aligned prebuilt
+   `.so` and observe it fail to load on the 16 KB target. Rebuild it from source
    and watch it succeed.
 
 5. **Sign and package a release build.** Generate keys with
@@ -5518,9 +5533,9 @@ image, so the early ones are prerequisites for the later ones.
    `adb logcat -b kernel`.
 
 7. **Add and discover a custom AIDL HAL.** Implement the `IBookLight` HAL from
-   Section 65.12 with its VINTF fragment and SELinux policy, then verify the
-   framework can see it with `adb shell lshal | grep booklight` and that there
-   are no `avc: denied` lines for it in logcat.
+   Section 65.12 with its VINTF fragment and SELinux policy. Then verify that the
+   framework can see it with `adb shell lshal | grep booklight`. Also verify that
+   there are no `avc: denied` lines for it in logcat.
 
 If you want to go deeper, the source map below points at the subsystem that
 backs each step.
@@ -5588,8 +5603,8 @@ ROM from the ground up:
    customizations on the emulator before ever touching real hardware.
 
 The techniques in this chapter form the foundation used by every major custom
-ROM project. Whether you are building a privacy-focused ROM, an enterprise
-management solution, or simply learning how Android works from the inside out,
+ROM project. You can build a privacy-focused ROM, an enterprise management
+solution, or simply learn how Android works from the inside out. In each case,
 the ability to build, customize, sign, and distribute a complete Android
 system image is the ultimate expression of AOSP mastery.
 
