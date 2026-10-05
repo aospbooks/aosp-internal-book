@@ -1,11 +1,11 @@
 # Chapter 35: Networking and Connectivity
 
-Android's networking stack is one of the most sophisticated subsystems in AOSP,
-spanning from high-level Java framework APIs down through native daemons and into
-the Linux kernel's networking primitives. This chapter traces the complete path a
-network packet takes, examines the key services and modules that manage
-connectivity, and explores how Android handles everything from Wi-Fi association
-to DNS resolution to VPN tunneling.
+Android's networking stack is one of the most sophisticated subsystems in AOSP.
+It spans from high-level Java framework APIs, through native daemons, into the
+Linux kernel's networking primitives. This chapter traces the complete path a
+network packet takes. It examines the key services and modules that manage
+connectivity. It also explains how Android handles everything from Wi-Fi
+association to DNS resolution to VPN tunneling.
 
 ---
 
@@ -94,8 +94,8 @@ graph TD
 
 Starting with Android 10 (API 29), Google began extracting networking components
 into independently updatable Mainline modules. This was a pivotal architectural
-decision: it decoupled critical networking code from the slower platform OTA
-cadence, allowing Google to push security patches and feature updates through the
+decision. It decoupled critical networking code from the slower platform OTA
+cadence. This lets Google push security patches and feature updates through the
 Play Store.
 
 The key networking Mainline modules are:
@@ -112,12 +112,12 @@ The key networking Mainline modules are:
 Each module ships as an APEX package, providing a self-contained update unit
 with its own versioning, signing, and rollback capability.
 
-Android 17 pushes this trend further by carrying native networking binaries
-inside the modules themselves rather than only on the read-only system and
-vendor partitions. Two examples documented later in this chapter are the
+Android 17 pushes this trend further. It carries native networking binaries
+inside the modules themselves, not only on the read-only system and vendor
+partitions. This chapter documents two examples later. The first is the
 *mainline supplicant* (`/apex/com.android.wifi/bin/wpa_supplicant_mainline`, a
-wpa_supplicant build shipped inside the Wi-Fi APEX, Section 35.27) and the
-multi-proxy PAC handler services that the Connectivity APEX binds to as
+wpa_supplicant build shipped inside the Wi-Fi APEX, Section 35.27). The second is
+the multi-proxy PAC handler services that the Connectivity APEX binds to as
 APEX-resident apps (Section 35.26). Both let Google update security-sensitive
 networking code through Play System Updates without an OEM build.
 
@@ -177,9 +177,9 @@ is tagged with a 32-bit mark whose bit layout is defined by the `Fwmark` union i
 - Permission bits (bits 18--19)
 
 The `FwmarkServer` in netd is responsible for applying these marks. It is a
-`SocketListener` on a UNIX domain socket: clients hand it a socket file
-descriptor, and it stamps the computed mark onto that socket with
-`setsockopt(SOL_SOCKET, SO_MARK, ...)` (it is not a BPF program or a cgroup hook):
+`SocketListener` on a UNIX domain socket. Clients hand it a socket file
+descriptor. It stamps the computed mark onto that socket with
+`setsockopt(SOL_SOCKET, SO_MARK, ...)`. It is not a BPF program or a cgroup hook:
 
 ```cpp
 // Source: system/netd/server/FwmarkServer.cpp:314-319
@@ -198,9 +198,10 @@ descriptor, and it stamps the computed mark onto that socket with
 ### 35.2.1 Overview
 
 `ConnectivityService` is the central nervous system of Android networking. It
-is one of the largest and most critical services in `system_server`. It manages the lifecycle of all networks, satisfies
-application network requests, handles network scoring and selection, and
-coordinates with native daemons for routing and DNS configuration.
+is one of the largest and most critical services in `system_server`. It manages
+the lifecycle of all networks and satisfies application network requests. It also
+handles network scoring and selection, and coordinates with native daemons for
+routing and DNS configuration.
 
 **Source file:**
 `packages/modules/Connectivity/service/src/com/android/server/ConnectivityService.java`
@@ -599,7 +600,7 @@ These BPF programs provide:
 
 - **UID-based accounting**: Track bytes sent/received per UID
 - **Firewall enforcement**: Block/allow traffic per UID and chain
-- **Socket-creation permission checks**: The `cgroup/sock_create` program enforces the per-UID INTERNET permission and records the UID and socket cookie in socket storage (fwmarks themselves are applied by netd's `FwmarkServer`)
+- **Socket-creation permission checks**: The `cgroup/sock_create` program enforces the per-UID INTERNET permission. It records the UID and socket cookie in socket storage. (netd's `FwmarkServer` applies the fwmarks themselves.)
 - **Data saver**: Restrict background data for metered networks
 - **Bandwidth control**: Enforce per-interface quotas
 
@@ -614,14 +615,14 @@ many of the traditional iptables-based mechanisms:
 
 ConnectivityService has sophisticated handling for frozen (cached) applications.
 When an app is frozen by the ActivityManager, its network callbacks are queued
-rather than delivered, avoiding unnecessary wake-ups:
+rather than delivered. This avoids unnecessary wake-ups:
 
 ```java
 // Source: ConnectivityService.java import block
 import static com.android.server.connectivity.ConnectivityFlags.QUEUE_CALLBACKS_FOR_FROZEN_APPS;
 ```
 
-When the app is unfrozen, queued callbacks are delivered in order, ensuring the
+When the app is unfrozen, queued callbacks are delivered in order. This makes sure the
 app has an accurate view of the current network state.
 
 ---
@@ -630,7 +631,7 @@ app has an accurate view of the current network state.
 
 ### 35.3.1 Architecture Overview
 
-The Wi-Fi framework in AOSP is a complex subsystem that manages Wi-Fi radio
+The Wi-Fi framework in AOSP is a complex subsystem. It manages Wi-Fi radio
 operations, network scanning, connection management, SoftAP (hotspot), Wi-Fi
 Direct (P2P), and Wi-Fi Aware (NAN). Since Android 11, the entire Wi-Fi stack
 ships as a Mainline module.
@@ -840,12 +841,14 @@ AIDL interface, handling:
 `SupplicantStaIfaceHal` does not bind to one fixed transport. Its factory
 `createStaIfaceHalMockable()` in
 `packages/modules/Wifi/service/java/com/android/server/wifi/SupplicantStaIfaceHal.java`
-picks the first available backend in a strict preference order: the AIDL
+picks the first available backend in a strict preference order.
+
+First is the AIDL
 *mainline* implementation (a supplicant binary shipped inside the Wi-Fi APEX,
-covered in Section 35.27), then the AIDL *vendor* implementation (the supplicant
-on the vendor partition), then the legacy HIDL implementation. Each candidate
-exposes an `isServiceAvailable()` / `serviceDeclared()` probe; the first that
-answers yes wins. The same three-tier selection exists for Wi-Fi Direct in
+covered in Section 35.27). Second is the AIDL *vendor* implementation (the
+supplicant on the vendor partition). Third is the legacy HIDL implementation.
+Each candidate exposes an `isServiceAvailable()` / `serviceDeclared()` probe. The
+first that answers yes wins. The same three-tier selection exists for Wi-Fi Direct in
 `SupplicantP2pIfaceHal`.
 
 ### 35.3.6 Network Selection
@@ -1228,8 +1231,8 @@ The firewall supports two modes:
 
 The interface-scoped `fw_INPUT`/`fw_OUTPUT`/`fw_FORWARD` chains above are still
 iptables chains owned by `FirewallController`. The per-policy power-saving chains,
-however, are no longer iptables child chains: as §35.2.9 describes, they were moved
-into BPF and are now enforced by `BpfNetMaps` in the Connectivity module. They are
+however, are no longer iptables child chains. As §35.2.9 describes, they moved
+into BPF and `BpfNetMaps` now enforces them in the Connectivity module. They are
 identified by the `FIREWALL_CHAIN_*` constants (`ConnectivityManager` /
 `packages/modules/Connectivity/.../BpfNetMapsConstants.java`) rather than by
 `FirewallController` chain names, but the names and semantics map one-to-one:
@@ -1284,7 +1287,7 @@ It handles:
 
 The `FwmarkServer` is a UNIX domain socket server within netd that handles
 socket tagging. When a socket is created, the C library (`bionic`) connects
-to the FwmarkServer, which applies the appropriate fwmark based on the
+to the FwmarkServer. The FwmarkServer applies the appropriate fwmark based on the
 process's UID, the default network, and any explicit network binding.
 
 **Source file:** `system/netd/server/FwmarkServer.cpp`
@@ -1299,7 +1302,7 @@ correct network without application intervention.
 ### 35.5.1 Architecture
 
 The DNS resolver runs as a module within the netd process (linked as a shared
-library) but is maintained as a separate Mainline module for independent
+library). It is maintained as a separate Mainline module for independent
 updatability.
 
 **Module root:** `packages/modules/DnsResolver/`
@@ -1575,7 +1578,7 @@ stateDiagram-v2
 
 The `Dns64Configuration` class handles DNS64 prefix discovery for IPv6-only
 networks. When a network has no IPv4 connectivity, DNS64 synthesizes AAAA
-records from A records, and NAT64 (handled by clatd in the connectivity module)
+records from A records. NAT64 (handled by clatd in the connectivity module)
 translates the packets.
 
 **Source file:** `packages/modules/DnsResolver/Dns64Configuration.cpp`
@@ -1583,9 +1586,9 @@ translates the packets.
 ### 35.5.8 Per-Network DNS Cache
 
 The resolver maintains separate DNS caches per network ID. This prevents
-DNS cache poisoning across networks and ensures that responses are appropriate
-for the network context (e.g., captive portal responses are not cached for
-the global DNS).
+DNS cache poisoning across networks. It also makes sure that responses are
+appropriate for the network context (e.g., captive portal responses are not
+cached for the global DNS).
 
 Key cache behaviors:
 
@@ -1931,14 +1934,14 @@ stateDiagram-v2
 ```
 
 The `LOCAL_ONLY` and `TETHERING` edges are the two request types that start
-serving; the self-transition on `TetheredState` is an upstream change, which
+serving. The self-transition on `TetheredState` is an upstream change. It
 reconfigures forwarding without leaving the state.
 
 Both serving states (`LocalHotspotState` and `TetheredState`) derive from the
-abstract `BaseServingState`, whose entry code configures the interface address,
-starts the DHCP server, and brings up IPv6 tethering; `TetheredState`
-additionally sets up forwarding and NAT toward the current upstream and
-reconfigures them when the upstream changes.
+abstract `BaseServingState`. Its entry code configures the interface address,
+starts the DHCP server, and brings up IPv6 tethering. `TetheredState`
+also sets up forwarding and NAT toward the current upstream. It reconfigures
+them when the upstream changes.
 
 ### 35.7.5 BPF Offload
 
@@ -2033,12 +2036,12 @@ the best one for providing Internet to tethered clients. It registers
 network callbacks with ConnectivityService and responds to network changes.
 
 By default (`config_tether_upstream_automatic` is true), the upstream simply
-follows the device's current default Internet network, with a DUN (Dedicated
-Upstream Network) cellular connection substituted when the carrier requires
-DUN for tethering. When a device instead ships the legacy ordered list
+follows the device's current default Internet network. When the carrier
+requires DUN for tethering, a DUN (Dedicated Upstream Network) cellular
+connection replaces it. When a device instead ships the legacy ordered list
 (`config_tether_upstream_types`), `TetheringConfiguration` always prepends
-Ethernet to the list, so Ethernet has the highest priority, followed by the
-configured entries (typically DUN or regular cellular and Wi-Fi).
+Ethernet to the list. So Ethernet has the highest priority. The configured
+entries follow it (typically DUN or regular cellular and Wi-Fi).
 
 ### 35.7.9 NAT Configuration
 
@@ -2052,8 +2055,8 @@ graph LR
     TETHER -->|"dst: 192.168.49.2"| CLIENT
 ```
 
-The NAT is configured through netd's tethering controller, which sets up
-iptables MASQUERADE rules in the nat/POSTROUTING chain.
+The NAT is configured through netd's tethering controller. It sets up iptables
+MASQUERADE rules in the nat/POSTROUTING chain.
 
 ---
 
@@ -2223,8 +2226,8 @@ targeting SDK 37 (`CINNAMON_BUN`) and above:
 static final long DEFAULT_ENABLE_CERTIFICATE_TRANSPARENCY = 407952621L;
 ```
 
-Note that `@EnabledAfter` enables the change only for apps whose target SDK is
-*greater than* the named version, so targeting `BAKLAVA` (36) itself does not
+Note that `@EnabledAfter` enables the change only for apps with a target SDK
+*greater than* the named version. So targeting `BAKLAVA` (36) itself does not
 yet opt an app into CT by default.
 
 The `CertificateTransparencyService` in the Connectivity module manages
@@ -2247,10 +2250,10 @@ CT log list updates and verification:
 By default, Android blocks cleartext (non-HTTPS) traffic for apps targeting
 Android 9+. That target-SDK default comes from the Network Security Config
 machinery and is enforced in the app's own process by `NetworkSecurityPolicy`
-and `NetworkSecurityConfig`, not by netd. What netd's `StrictController`
-implements is a different, opt-in mechanism: StrictMode's per-UID
-cleartext-detection penalty (`detectCleartextNetwork()`), configured through
-netd's `strictUidCleartextPenalty()` and realized as the `st_OUTPUT`,
+and `NetworkSecurityConfig`, not by netd. netd's `StrictController`
+implements a different, opt-in mechanism. This is StrictMode's per-UID
+cleartext-detection penalty (`detectCleartextNetwork()`). It is configured
+through netd's `strictUidCleartextPenalty()` and realized as the `st_OUTPUT`,
 `st_clear_detect`, `st_penalty_log`, and `st_penalty_reject` iptables chains:
 
 ```
@@ -2267,8 +2270,8 @@ static const std::vector<const char*> FILTER_OUTPUT = {
 ### 35.8.10 The usesCleartextTraffic Manifest Flag Is Deprecated in Android 17
 
 The manifest attribute `android:usesCleartextTraffic` is the older, coarser
-control: a single boolean on `<application>` that the runtime folds into the
-default `NetworkSecurityConfig` when the app ships no XML config of its own.
+control: a single boolean on `<application>`. When the app ships no XML config
+of its own, the runtime folds it into the default `NetworkSecurityConfig`.
 Android 17 (`CINNAMON_BUN`, API 37) begins deprecating it in favor of the
 Network Security Config XML.
 
@@ -2286,7 +2289,7 @@ static final long DEPRECATE_USES_CLEARTEXT_TRAFFIC = 415007211L;
 ```
 
 When the config source builds the default config for an app with no XML, it
-reads the manifest flag and then zeroes it out if both the change and the
+reads the manifest flag. Then it zeroes the flag out if both the change and the
 aconfig flag are on:
 
 ```java
@@ -2302,11 +2305,10 @@ if (CompatChanges.isChangeEnabled(DEPRECATE_USES_CLEARTEXT_TRAFFIC) &&
 For an affected app, the manifest attribute is treated as `false` regardless of
 its declared value. An app that still needs cleartext for specific hosts must
 say so in a Network Security Config (a `<domain-config cleartextTrafficPermitted=
-"true">` for those hosts), which is the more granular and auditable mechanism the
+"true">` for those hosts). This is the more granular and auditable mechanism that the
 deprecation pushes apps toward. `DEFAULT_CLEARTEXT_TRAFFIC_PERMITTED` itself is
-unchanged (still `true`), so the default-deny-by-target-SDK behavior in the table
-below is what governs apps that supply neither the manifest flag nor an XML
-config.
+unchanged (still `true`). So the default-deny-by-target-SDK behavior in the table
+below governs apps that supply neither the manifest flag nor an XML config.
 
 ### 35.8.11 Default Security Behavior by Target SDK
 
@@ -2602,29 +2604,29 @@ This process isolation provides:
 ## 35.10 VCN (Virtual Carrier Network)
 
 The Virtual Carrier Network (VCN) subsystem provides carrier-grade IPsec
-tunneling over any available transport -- cellular or Wi-Fi -- presenting the
-result as a single, seamless mobile network to the rest of the platform. Where a
-traditional VPN serves user privacy, VCN serves the *carrier*: a mobile operator
+tunneling over any available transport, cellular or Wi-Fi. It presents the
+result as a single, seamless mobile network to the rest of the platform. A
+traditional VPN serves user privacy. VCN serves the *carrier*: a mobile operator
 can configure the device to wrap all traffic in an IKEv2/IPsec tunnel back to
-the carrier's gateway, effectively creating a "virtual" carrier network that
+the carrier's gateway. This effectively creates a "virtual" carrier network that
 follows the subscriber across physical transports.
 
 ### 35.10.1 Motivation and Design Goals
 
 Carriers that deploy Wi-Fi Offload (ePDG) or private networks need a mechanism
-to tunnel subscriber traffic securely from the device to the carrier gateway,
-regardless of whether the device is on Wi-Fi, cellular, or switching between
-them. VCN provides:
+to tunnel subscriber traffic securely from the device to the carrier gateway.
+The mechanism must work when the device is on Wi-Fi, on cellular, or switching
+between them. VCN provides:
 
 1. **Carrier-bound tunneling**: Unlike user VPNs, VCN tunnels are tied to a
    carrier subscription group. Only the carrier's provisioning app (with
    carrier privileges) can install a VCN configuration.
 2. **Seamless mobility**: When the underlying transport changes (e.g., Wi-Fi to
-   cellular), the VCN migrates the IKE/IPsec session via MOBIKE (RFC 4555),
-   avoiding TCP connection resets visible to applications.
+   cellular), the VCN migrates the IKE/IPsec session via MOBIKE (RFC 4555).
+   This avoids TCP connection resets visible to applications.
 3. **Safe-mode fallback**: If the tunnel cannot be established within a timeout,
-   VCN falls back to "safe mode" -- exposing the raw underlying networks so the
-   device is never left without connectivity.
+   VCN falls back to "safe mode". In this mode it exposes the raw underlying
+   networks, so the device is never left without connectivity.
 4. **Per-capability gateway connections**: A single VCN instance can manage
    multiple gateway connections, each serving different `NetworkCapabilities`
    (e.g., one for INTERNET, another for DUN/tethering).
@@ -2633,7 +2635,7 @@ them. VCN provides:
 
 **Module root:** `packages/modules/Connectivity/Vcn/`
 
-The VCN subsystem is organised into four main classes, each at a different
+The VCN subsystem is organized into four main classes, each at a different
 level of granularity:
 
 ```mermaid
@@ -2841,7 +2843,7 @@ private static final int EVENT_TRANSFORM_CREATED = 5;
 private static final int EVENT_SETUP_COMPLETED = 6;
 ```
 
-Critical timeouts govern the behaviour:
+Critical timeouts govern the behavior:
 
 | Timeout | Value | Purpose |
 |---------|-------|---------|
@@ -2971,19 +2973,19 @@ sequenceDiagram
 Thread is an IPv6-based mesh networking protocol designed for low-power IoT
 (Internet of Things) devices, built on the IEEE 802.15.4 radio standard.
 Android's Thread implementation, added as part of the Connectivity Mainline
-module, allows Android devices to serve as Thread Border Routers -- bridging
+module, allows Android devices to serve as Thread Border Routers. They bridge
 Thread mesh networks to the wider IP infrastructure (Wi-Fi/Ethernet).
 
 ### 35.11.1 What is Thread?
 
-Thread is a low-power, low-latency mesh networking protocol standardised by
+Thread is a low-power, low-latency mesh networking protocol standardized by
 the Thread Group. Key properties:
 
 - **IEEE 802.15.4**: Uses the 2.4 GHz radio band with 250 kbps throughput,
   channel pages 0 (channels 11-26).
 - **IPv6 native**: Every Thread device gets a globally routable IPv6 address;
   no NAT or application-layer gateways needed.
-- **Mesh topology**: Devices self-organise into a mesh, with Routers forwarding
+- **Mesh topology**: Devices self-organize into a mesh, with Routers forwarding
   packets and a single Leader coordinating the network.
 - **Low power**: End devices (Children) can sleep for extended periods,
   delegating packet buffering to their parent Router.
@@ -3106,7 +3108,7 @@ Key APIs on the controller:
 ### 35.11.4 Active Operational Dataset
 
 An `ActiveOperationalDataset` contains all parameters needed to join a Thread
-network. It is serialised as a TLV (Type-Length-Value) byte array, following
+network. It is serialized as a TLV (Type-Length-Value) byte array. This follows
 the Thread specification:
 
 ```java
@@ -3156,7 +3158,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
 }
 ```
 
-The service initialises `ot-daemon` with the device configuration:
+The service initializes `ot-daemon` with the device configuration:
 
 ```java
 // Source: ThreadNetworkControllerService.java (simplified)
@@ -3181,7 +3183,7 @@ private IOtDaemon getOtDaemon() throws RemoteException {
 
 The native Thread protocol implementation is based on
 [OpenThread](https://openthread.io/), Google's open-source Thread stack. The
-`ot-daemon` process runs as a system daemon, initialised via an `.rc` file:
+`ot-daemon` process runs as a system daemon, initialized via an `.rc` file:
 
 ```
 # packages/modules/Connectivity/thread/apex/ot-daemon.34rc
@@ -3265,14 +3267,14 @@ private static final Duration EPHEMERAL_KEY_LIFETIME_MAX =
 ```
 
 When enabled, an external commissioner (e.g., a smartphone app) can use the
-ephemeral key to establish a DTLS session with the Border Router, obtain the
-network credentials, and join the Thread mesh.
+ephemeral key to establish a DTLS session with the Border Router. The
+commissioner then obtains the network credentials and joins the Thread mesh.
 
 ### 35.11.9 Country Code and Channel Management
 
 `ThreadNetworkCountryCode` coordinates with Wi-Fi and Telephony country code
 modules to determine the operating region, which affects allowed channels
-and transmit power. The service is initialised after both modules are ready:
+and transmit power. The service is initialized after both modules are ready:
 
 ```java
 // Source: ThreadNetworkService.java
@@ -3543,10 +3545,9 @@ Notable feature flags:
 | `INGRESS_TO_VPN_ADDRESS_FILTERING` | Filter ingress to VPN addresses |
 
 A related but separate mechanism is the aconfig flag
-`com.android.net.flags.request_restricted_wifi`, referenced as
-`@FlaggedApi(Flags.FLAG_REQUEST_RESTRICTED_WIFI)` in `NetworkCapabilities` and
-`NetworkRequest` to gate restricted Wi-Fi requests; it is not a
-`ConnectivityFlags` entry.
+`com.android.net.flags.request_restricted_wifi`. `NetworkCapabilities` and
+`NetworkRequest` reference it as `@FlaggedApi(Flags.FLAG_REQUEST_RESTRICTED_WIFI)`
+to gate restricted Wi-Fi requests. It is not a `ConnectivityFlags` entry.
 
 ### 35.12.6 DNS Resolver Unsolicited Events
 
@@ -4187,8 +4188,8 @@ graph TD
 ### 35.21.2 INTERNET Permission Enforcement
 
 The `INTERNET` permission is unique in Android: it is enforced at the kernel
-level. On modern Android this is done by the `cgroupsock/inet_create` eBPF
-program in `packages/modules/Connectivity/bpf/progs/netd.c`, which runs on
+level. On modern Android the `cgroupsock/inet_create` eBPF program in
+`packages/modules/Connectivity/bpf/progs/netd.c` does this. It runs on
 every AF_INET/AF_INET6 socket creation and checks the per-UID
 `BPF_PERMISSION_INTERNET` bit in a BPF map. The map is populated through
 netd's `trafficSetNetPermForUids()`:
@@ -4245,12 +4246,12 @@ The UID information flows from:
 ### 35.22.1 mDNS Service Discovery
 
 mDNS (multicast DNS) powers Android's Network Service Discovery (NSD) API. The
-implementation has moved into the Connectivity module: `NsdService`
+implementation has moved into the Connectivity module. `NsdService`
 (`packages/modules/Connectivity/service-t/src/com/android/server/NsdService.java`)
 drives a pure-Java mDNS stack under
 `packages/modules/Connectivity/service-t/src/com/android/server/connectivity/mdns/`
 (`MdnsDiscoveryManager`, `MdnsAdvertiser`, `MdnsSocketProvider`, and the packet
-reader/writer classes), so discovery and advertisement no longer depend on a
+reader/writer classes). So discovery and advertisement no longer depend on a
 native daemon. A legacy `MDnsService` still ships in `system/netd/server/MDnsService.cpp`
 as the compatibility backend, but new devices use the in-module Java backend.
 
@@ -4411,10 +4412,9 @@ graph TD
     NOTIFY_LOST --> DONE["Network removed"]
 ```
 
-This comprehensive flow shows how a network moves through every stage from
-factory registration through active use, lingering, and eventual teardown,
-highlighting the interactions between the application, ConnectivityService,
-NetworkAgent, NetworkMonitor, and the kernel.
+This flow shows how a network moves through every stage: factory registration,
+active use, lingering, and teardown. It also shows the interactions between the
+application, ConnectivityService, NetworkAgent, NetworkMonitor, and the kernel.
 
 ---
 
@@ -4423,33 +4423,33 @@ NetworkAgent, NetworkMonitor, and the kernel.
 ### 35.26.1 Why a New Proxy Stack
 
 Historically Android supported a single, system-wide HTTP proxy. The proxy was
-either a static host/port or a **PAC** (Proxy Auto-Config) URL: a JavaScript
-file whose `FindProxyForURL(url, host)` function returns which proxy (if any) to
-use for a given request. The legacy implementation lives in
+either a static host/port or a **PAC** (Proxy Auto-Config) URL. A PAC file is
+a JavaScript file. Its `FindProxyForURL(url, host)` function returns which proxy
+(if any) to use for a given request. The legacy implementation lives in
 `packages/modules/Connectivity/service/src/com/android/server/connectivity/ProxyTracker.java`,
 which holds one global `ProxyInfo` and, for PAC, hands the script to a single
 out-of-process PAC processor. Every network and every app shares that one proxy
 decision.
 
 That model breaks down on a multi-network device. A managed work network may
-ship its own PAC script while the personal Wi-Fi uses none; a VPN may want a
+ship its own PAC script while the personal Wi-Fi uses none. A VPN may want a
 different proxy than the underlying transport. Android 17 introduces a redesigned
 proxy stack that can run **multiple independent PAC scripts simultaneously**,
 selected by context (network, user, or application UID). The AIDL header for the
-new PAC processor states the goal directly: it supports "running multiple
+new PAC processor states the goal directly. It supports "running multiple
 PacProcessors to allow using different PAC scripts to be used based on context,
 such as network, user, or application UID"
 (`packages/modules/Connectivity/commercial/pac/multipacprocessor/src/com/android/multipacprocessor/IMultiPacService.aidl`).
 
-This is a scaffolded feature in the 17 tree: the wiring, service contracts, and
-coordinator are in place behind a flag, while several leaf operations are still
+This is a scaffolded feature in the 17 tree. The wiring, service contracts, and
+coordinator are in place behind a flag. Several leaf operations are still
 stubbed (`UnsupportedOperationException`). It is documented here because the
 architecture is the durable part and is what an integrator needs to understand.
 
 ### 35.26.2 Two Cooperating Services: PacProcessor and ProxyServer
 
-The new stack splits the job that the legacy single PAC service did into two
-cooperating, APEX-resident services, each running its own pool of paired
+The new stack splits the job of the legacy single PAC service into two
+cooperating, APEX-resident services. Each service runs its own pool of paired
 `{ProxyServer; PacProcessor}` instances:
 
 - **MultiPacService** — runs the `PacProcessor` instances that actually evaluate
@@ -4465,8 +4465,8 @@ Both are exposed via AIDL stubs —
 `packages/modules/Connectivity/commercial/pac/multipacprocessor/src/com/android/multipacprocessor/IMultiPacService.aidl`
 and
 `packages/modules/Connectivity/commercial/pac/multiproxyhandler/src/com/android/multiproxyhandler/IMultiProxyService.aidl`.
-In the 17 tree both interface bodies are intentionally empty placeholders; the
-binding, lifecycle, and intent contracts are settled, and the RPC methods are
+In the 17 tree both interface bodies are intentionally empty placeholders. The
+binding, lifecycle, and intent contracts are settled. The RPC methods are
 filled in as the implementation lands. Both apps live inside the Connectivity
 (`com.android.tethering`) APEX, which is why the coordinator restricts its
 service lookup to packages under `/apex/com.android.tethering/`.
@@ -4497,22 +4497,26 @@ public void startServingPacScript(ProxyInfo proxy, Optional<Integer> netId) {
 public void stopServingPacScript(ProxyInfo proxy, Optional<Integer> netId) { ... }
 ```
 
-`startServingPacScript()` binds to both services if needed, then schedules a
-download of the PAC script and, on completion, asks the two services to stand up
-a `{ProxyServer; PacProcessor}` pair for that script. If a pair is already
-running for the key, the call is a no-op. The key is a `PacKey`
-(`packages/modules/Connectivity/commercial/pac/common/src/com/android/commercial/PacKey.java`),
-a parcelable pair of the PAC `Uri` and an `Optional<Integer>` network id —
-`Optional.empty()` (serialized as `-1`) means the default network. The download
+`startServingPacScript()` binds to both services if needed. Then it schedules a
+download of the PAC script. When the download completes, it asks the two services
+to stand up a `{ProxyServer; PacProcessor}` pair for that script. If a pair is
+already running for the key, the call is a no-op.
+
+The key is a `PacKey`
+(`packages/modules/Connectivity/commercial/pac/common/src/com/android/commercial/PacKey.java`).
+It is a parcelable pair of the PAC `Uri` and an `Optional<Integer>` network id.
+`Optional.empty()` (serialized as `-1`) means the default network.
+
+The download
 itself is delegated to `PacDownloader`
 (`packages/modules/Connectivity/service/src/com/android/server/connectivity/proxy/PacDownloader.java`),
 which fetches the script over the requested network so a per-network PAC is
 retrieved through that network.
 
 Binding uses `BIND_AUTO_CREATE | BIND_NOT_FOREGROUND`. The `NOT_FOREGROUND` flag
-is deliberate: a long-running or blocking PAC evaluation (the proxy server makes
-blocking calls into the PAC processor while resolving a URL) must not be allowed
-to drag the system process into a foreground-priority state.
+is deliberate. The proxy server makes blocking calls into the PAC processor
+while it resolves a URL. This is because a long-running or blocking PAC evaluation must not
+drag the system process into a foreground-priority state.
 
 Description of how a PAC request flows through the coordinator:
 
@@ -4549,17 +4553,19 @@ mProxyTracker = multiProxyEnabled
         : /* legacy ProxyTracker */ ...;
 ```
 
-`isMultiProxyEnabled()` returns `com.android.tethering.flags.Flags.enableMultiProxySystem()`,
-so both an aconfig flag and a resource overlay (`config_enable_multi_proxy_system`)
-must be set before the multi-proxy path is used; otherwise ConnectivityService
-falls back to the classic single `ProxyTracker`. `MultiProxyTracker` declares
+`isMultiProxyEnabled()` returns `com.android.tethering.flags.Flags.enableMultiProxySystem()`.
+So both an aconfig flag and a resource overlay (`config_enable_multi_proxy_system`)
+must be set before the multi-proxy path is used. Otherwise ConnectivityService
+falls back to the classic single `ProxyTracker`.
+
+`MultiProxyTracker` declares
 the `updateNetworkProxy(network, newProxy, oldProxy)` and
 `updateDefaultNetworkState(...)` callbacks that are intended to drive
 `PacCoordinator.startServingPacScript()` per network. `PacCoordinator` also
-takes a `MultiPacProxyInstalledListener` in its constructor, to be notified
-once a proxy server is running and its PAC script is loaded — but in the
-Android 17 tree `MultiProxyTracker` does not yet implement that listener, and
-its `updateNetworkProxy`/`updateDefaultNetworkState` overrides are still empty
+takes a `MultiPacProxyInstalledListener` in its constructor. The listener is
+notified once a proxy server is running and its PAC script is loaded. But in the
+Android 17 tree `MultiProxyTracker` does not yet implement that listener. Its
+`updateNetworkProxy`/`updateDefaultNetworkState` overrides are still empty
 `// TODO: Implement` stubs.
 
 ---
@@ -4576,8 +4582,8 @@ inside the Wi-Fi APEX (`com.android.wifi`) so Google can update it through Play
 System Updates.
 
 The mainline supplicant does **not** replace the vendor supplicant. It runs
-alongside it and acts as a thin front door: its root AIDL interface hands back
-the vendor supplicant for the bulk of STA/P2P work, while the mainline binary
+alongside it and acts as a thin front door. Its root AIDL interface hands back
+the vendor supplicant for the bulk of STA/P2P work. The mainline binary
 itself owns a small, evolving set of capabilities (today: Wi-Fi Aware / NAN
 interface management and per-user identity). This lets new supplicant-side code
 ship in the module while existing vendor behavior is untouched.
@@ -4601,11 +4607,17 @@ service wpa_supplicant_mainline /apex/com.android.wifi/bin/wpa_supplicant_mainli
     oneshot
 ```
 
-Key points: the executable lives under `/apex/com.android.wifi/bin/` (inside the
-module, hence updatable); it registers in servicemanager under the AIDL instance
-name `wifi_mainline_supplicant`; it runs as user `wifi` with `NET_RAW`/`NET_ADMIN`
-capabilities; and it is `disabled oneshot`, so init does not start it at boot —
-the framework starts it on demand. A matching SELinux domain is defined in
+Key points:
+
+- The executable lives under `/apex/com.android.wifi/bin/` (inside the
+  module, hence updatable).
+- It registers in servicemanager under the AIDL instance name
+  `wifi_mainline_supplicant`.
+- It runs as user `wifi` with `NET_RAW`/`NET_ADMIN` capabilities.
+- It is `disabled oneshot`, so init does not start it at boot. The framework
+  starts it on demand.
+
+A matching SELinux domain is defined in
 `system/sepolicy/private/wifi_mainline_supplicant.te`. The C++ side of the
 interface is implemented in
 `external/wpa_supplicant_8/wpa_supplicant/aidl/mainline_supplicant.cpp`.
@@ -4630,8 +4642,8 @@ interface IMainlineSupplicant {
 - `getVendorSupplicant()` returns the standard vendor `ISupplicant` root —
   this is how STA and P2P operations get routed back to the vendor supplicant.
 - `addNanInterface()` / `removeNanInterface()` register and tear down a Wi-Fi
-  Aware (NAN) interface (e.g. `aware0`), returning a mainline
-  `android.system.wifi.mainline_supplicant.ISupplicantNanIface` — the NAN
+  Aware (NAN) interface (e.g. `aware0`). They return a mainline
+  `android.system.wifi.mainline_supplicant.ISupplicantNanIface`. This is the NAN
   surface owned by the mainline supplicant itself, not the vendor NAN iface.
 - `setCurrentUserIdentity()` tells the supplicant which user is in the
   foreground so it can load that user's credential-encrypted (CE) configuration.
@@ -4654,11 +4666,11 @@ protected IMainlineSupplicant getNewServiceBinderMockable() {
 ```
 
 `startDaemon()` fetches the binder, caches the vendor `ISupplicant` returned by
-`getVendorSupplicant()`, and links a death recipient; `terminate()` asks the
-supplicant to exit and waits on a latch for the binder-death confirmation. NAN
+`getVendorSupplicant()`, and links a death recipient. `terminate()` asks the
+supplicant to exit. Then it waits on a latch for the binder-death confirmation. NAN
 interface acquisition (`getWifiNanIface()`) wraps `addNanInterface()` and hands
 the result to the Aware stack as an `AwareIfaceAidlSupplicantImpl`. Death
-callbacks are posted onto the `WifiThreadRunner`, keeping the manager's state
+callbacks are posted onto the `WifiThreadRunner`. This keeps the manager's state
 single-threaded.
 
 Whether the mainline supplicant is used at all is decided by
@@ -4676,11 +4688,14 @@ public static boolean isServiceAvailable(WifiContext context) {
 }
 ```
 
-That is: a resource overlay (`config_wifiMainlineSupplicantEnabled`) enables it,
-the platform is Android 17+ (or a PC form factor), the `mainlineSupplicant`
-aconfig flag is on, the binary actually exists inside the Wi-Fi APEX, and the
-device is not one of the resource-constrained form factors (watch, embedded,
-leanback/TV, automotive) that `isUnsupportedDevice()` excludes.
+That is:
+
+- A resource overlay (`config_wifiMainlineSupplicantEnabled`) enables it.
+- The platform is Android 17+ (or a PC form factor).
+- The `mainlineSupplicant` aconfig flag is on.
+- The binary actually exists inside the Wi-Fi APEX.
+- The device is not one of the resource-constrained form factors (watch,
+  embedded, leanback/TV, automotive) that `isUnsupportedDevice()` excludes.
 
 ### 35.27.5 HAL Selection: Mainline, Vendor, or HIDL
 
@@ -4706,12 +4721,12 @@ The mainline STA implementation
 (`packages/modules/Wifi/service/java/com/android/server/wifi/SupplicantStaIfaceHalAidlMainlineImpl.java`)
 and its P2P counterpart
 (`packages/modules/Wifi/service/java/com/android/server/wifi/p2p/SupplicantP2pIfaceHalAidlMainlineImpl.java`)
-both start the mainline daemon, call `getVendorSupplicant()` to obtain the vendor
-`ISupplicant`, and then drive ordinary STA/P2P operations through that vendor
+both start the mainline daemon and call `getVendorSupplicant()` to get the vendor
+`ISupplicant`. Then they drive ordinary STA/P2P operations through that vendor
 interface. The mainline-only surface (NAN interface management, current-user
 identity) is reached directly through `IMainlineSupplicant`. So on a device where
 the mainline supplicant is enabled, the framework gets an updatable supplicant
-process whose Aware/identity logic ships in the module while its STA/P2P
+process. Its Aware/identity logic ships in the module. Its STA/P2P
 mechanics still run through the vendor supplicant.
 
 ---
@@ -4721,12 +4736,12 @@ mechanics still run through the vendor supplicant.
 ### 35.28.1 The Problem: Local Network Visibility
 
 Until recently, any app with the `INTERNET` permission could use the NSD API to
-enumerate every mDNS service on the local network — printers, smart-home hubs,
-TVs, other phones. That is a meaningful privacy leak: the set of services on
-someone's home network is identifying. Android 17 closes it with a new
-runtime permission, `ACCESS_LOCAL_NETWORK`, plus a **service-access picker**: a
-user-driven allowlist that lets an app reach specific services it does not have
-blanket permission to discover.
+list every mDNS service on the local network. Examples are printers, smart-home
+hubs, TVs, and other phones. That is a meaningful privacy leak, because the set of services
+on someone's home network is identifying. Android 17 closes it with a new
+runtime permission, `ACCESS_LOCAL_NETWORK`. It also adds a **service-access
+picker**. This is a user-driven allowlist that lets an app reach specific
+services it does not have blanket permission to discover.
 
 ### 35.28.2 DiscoveryRequest Flags
 
@@ -4757,7 +4772,7 @@ enforcement points matter:
 - **Discovery**: `checkDiscoveryPermissionsAndPicker()` decides, from the request
   flags and the caller's permission, whether to discover directly, refuse, or
   launch the picker. When the picker path is chosen, `NsdService` does not deliver
-  raw results to the app — it routes them through a `PickerListener` whose
+  raw results to the app. It routes them through a `PickerListener` whose
   `startPicker()` shows the system UI.
 - **Resolve / register-callback**: `checkQueryServicePermissions()` allows an
   operation either when the caller holds `ACCESS_LOCAL_NETWORK` or when the
@@ -4777,15 +4792,15 @@ store, both under
 
 - `ServiceAccessRepository.java` is the in-memory cache and orchestrator. It maps
   each `(uid, packageName)` to the set of `(serviceName, serviceType)` tuples the
-  user approved, keeps "last seen" timestamps for LRU eviction, caps entries per
-  client, and runs entirely on the `NsdService` handler thread (it is explicitly
-  not thread-safe). Its main methods are `addAllowedService()`, `isServiceAllowed()`,
+  user approved. It keeps "last seen" timestamps for LRU eviction and caps entries
+  per client. It runs entirely on the `NsdService` handler thread, and it is
+  explicitly not thread-safe. Its main methods are `addAllowedService()`, `isServiceAllowed()`,
   `loadPackage()`, `unloadPackage()`, and a `maybeScheduleDatabaseMaintenance()`
   that prunes entries for uninstalled packages.
-- `ServiceAccessDb.java` is the persistence layer: a small SQLite database
-  (`NsdServiceAccess.db`) with a `package` table tracking known packages and a
-  `service_access` table holding the approved `(uid, package, serviceName,
-  serviceType, last_seen_time)` rows, with a cascading delete so uninstalling a
+- `ServiceAccessDb.java` is the persistence layer. It is a small SQLite database
+  (`NsdServiceAccess.db`) with a `package` table that tracks known packages. A
+  `service_access` table holds the approved `(uid, package, serviceName,
+  serviceType, last_seen_time)` rows. A cascading delete means that uninstalling a
   package removes its grants.
 
 Description of the access-control decision path:
@@ -4814,9 +4829,9 @@ adds `checkPermissionForService(serviceName, serviceType, executor, resultReceiv
 so an app can ask whether a previously approved service is still accessible before
 resolving it. The result is one of `SERVICE_PERMISSION_GRANTED` or
 `SERVICE_PERMISSION_DENIED`. This pairs with the `DiscoveryRequest` flags so an
-app can drive the whole flow: discover with `FLAG_USER_APPROVED_ONLY`, and if a
-service it cares about is missing, re-discover with `FLAG_SHOW_PICKER` to prompt
-the user.
+app can drive the whole flow. First it discovers with `FLAG_USER_APPROVED_ONLY`.
+If a service it cares about is missing, it re-discovers with `FLAG_SHOW_PICKER`
+to prompt the user.
 
 ---
 
@@ -4824,18 +4839,20 @@ the user.
 
 NSD/mDNS (§35.28) discovers services over an existing IP network. Android 17
 adds a complementary discovery mechanism that runs lower in the stack, before any
-IP connectivity exists: Wi-Fi Unsynchronized Service Discovery (USD). USD is a
+IP connectivity exists: Wi-Fi Unsynchronized Service Discovery (USD).
+
+USD is a
 member of the Wi-Fi Aware (NAN) family already introduced in this chapter
-(§35.25.1 maps `aware0` to `WifiAwareNetworkAgent`), and it lets two devices
-advertise and find services over the air without first establishing a network,
-an IP address, or — as the name says — any prior time and channel
+(§35.25.1 maps `aware0` to `WifiAwareNetworkAgent`). It lets two devices
+advertise and find services over the air. They need no network and no IP
+address first. As the name says, they also need no prior time and channel
 synchronization. That makes it well suited to quickly finding a service on a new
 device that has just come into range.
 
 The model is publish/subscribe. A *publisher* device advertises a named service
-and a *subscriber* device searches for it; when a subscriber receives a matching
-advertisement it exchanges follow-up messages with the publisher to carry
-service-specific configuration information. The implementation follows the Wi-Fi
+and a *subscriber* device searches for it. When a subscriber receives a matching
+advertisement, it exchanges follow-up messages with the publisher. These
+messages carry service-specific configuration information. The implementation follows the Wi-Fi
 Aware Specification version 4.0.
 
 The feature surfaces as a new system service in the Wifi mainline module rather
@@ -4857,23 +4874,25 @@ ships in a mainline module, the manager is gated three ways:
   resource `config_deviceSupportsWifiUsd` is true, so `getSystemService()`
   yields no `UsdManager` on hardware that cannot do USD.
 
-The companion classes in `android.net.wifi.usd` describe the discovery shape:
-`PublishConfig`/`SubscribeConfig` (what to advertise or look for),
-`PublishSession`/`SubscribeSession` with their callbacks, `DiscoveryResult`, and
-`Characteristics` (device USD limits, read via `UsdManager.getCharacteristics()`).
+The companion classes in `android.net.wifi.usd` describe the discovery shape.
+`PublishConfig`/`SubscribeConfig` say what to advertise or look for.
+`PublishSession`/`SubscribeSession` come with their callbacks.
+`DiscoveryResult` holds a result. `Characteristics` holds the device USD limits,
+read through `UsdManager.getCharacteristics()`.
 `UsdManager` also exposes `publish(...)`, `subscribe(...)`, and
 publisher/subscriber availability listeners
 (`registerPublisherStatusListener`/`registerSubscriberStatusListener`), since
 USD availability depends on concurrent radio use.
 
 The server side lives in the same module under
-`packages/modules/Wifi/service/java/com/android/server/wifi/usd/`:
+`packages/modules/Wifi/service/java/com/android/server/wifi/usd/`. It has
 `UsdService` (the `SystemService` that publishes the binder under
 `Context.WIFI_USD_SERVICE`), `UsdServiceImpl`, `UsdRequestManager`, and
-`UsdNativeManager`, which drives the discovery down to the Wi-Fi HAL. So where
-NSD answers "what services are reachable on the network I am already on", USD
+`UsdNativeManager`, which drives the discovery down to the Wi-Fi HAL.
+
+NSD answers "what services are reachable on the network I am already on". USD
 answers the earlier question "what devices and services are nearby over the air,
-before any network exists" — the two sit at adjacent layers of the
+before any network exists". The two sit at adjacent layers of the
 service-discovery story.
 
 ---
@@ -4882,23 +4901,28 @@ service-discovery story.
 
 Everything in this chapter so far assumes the application processor (AP) is
 awake to look at packets. That assumption is exactly what kills battery on an
-idle device. A phone sitting in a pocket on Wi-Fi still receives a steady drizzle
-of multicast and broadcast traffic that is not addressed to it: mDNS service
-announcements, SSDP/UPnP discovery, ARP probes from other hosts, IPv6 router
-advertisements, and assorted chatter from every other device on the network.
-Each frame the NIC receives normally wakes the AP out of its low-power sleep
-state just so the network stack can look at it, decide it is uninteresting, and
-drop it. On a busy home or office network that can be hundreds of needless
-wakeups per minute, and wakeups are one of the most expensive things a mobile
-SoC does for power.
+idle device.
+
+A phone sitting in a pocket on Wi-Fi still receives a steady drizzle
+of multicast and broadcast traffic that is not addressed to it. Examples are
+mDNS service announcements, SSDP/UPnP discovery, ARP probes from other hosts,
+and IPv6 router advertisements. Every other device on the network adds more
+chatter. Each frame the NIC receives normally wakes the AP out of its low-power
+sleep state. This happens so that the network stack can look at the frame. The stack then decides it is
+uninteresting, and drops it.
+
+On a busy home or office network that can be
+hundreds of needless wakeups per minute. Wakeups are one of the most expensive
+things a mobile SoC does for power.
 
 The Android Packet Filter (APF) exists to win back that power. APF pushes a
-small packet-filtering program *down into the Wi-Fi (or Ethernet) NIC firmware*,
-so the firmware itself can decide whether an incoming frame is worth waking the
+small packet-filtering program *down into the Wi-Fi (or Ethernet) NIC firmware*.
+This lets the firmware itself decide whether an incoming frame is worth waking the
 AP for. Uninteresting multicast and broadcast is dropped while the AP stays
-asleep; only frames the program decides to PASS bubble up and wake the host. The
-firmware-resident interpreter and bytecode definition live in the Google APF
-hardware project at `hardware/google/apf/`, and the framework-side compiler that
+asleep. Only frames the program decides to PASS bubble up and wake the host.
+
+The firmware-resident interpreter and bytecode definition live in the Google APF
+hardware project at `hardware/google/apf/`. The framework-side compiler that
 generates the programs lives in the NetworkStack mainline module at
 `packages/modules/NetworkStack/src/android/net/apf/`.
 
@@ -4911,14 +4935,14 @@ APF is split across two codebases that must agree on a bytecode contract:
   `hardware/google/apf/next/apf_interpreter.c`, with the bytecode and machine
   model defined in `hardware/google/apf/next/apf.h`. Versioned snapshots
   (`v2/`, `v4/`, `v6/`, `v6.1/`) are kept so firmware can pin a known revision.
-- **The generator** is Java code in the NetworkStack module that *compiles* an
-  APF program at runtime from the current network state (the device's own
-  addresses, multicast filter setting, RA filters, mDNS offload rules, and so
-  on) and installs the resulting byte array into the firmware.
+- **The generator** is Java code in the NetworkStack module. It *compiles* an
+  APF program at runtime from the current network state. That state includes the
+  device's own addresses, multicast filter setting, RA filters, and mDNS offload
+  rules. It then installs the resulting byte array into the firmware.
 
-The device never ships a fixed filter. The framework regenerates and reinstalls
-the program whenever the relevant state changes, because the program embeds the
-device's current IP addresses and other live values as literal bytes.
+The device never ships a fixed filter. The program embeds the device's current
+IP addresses and other live values as literal bytes. So the framework
+regenerates and reinstalls the program whenever the relevant state changes.
 
 ```mermaid
 graph LR
@@ -4951,46 +4975,53 @@ machine precisely. An APF machine has:
 4. A read-only copy of the packet.
 5. An optional read-write transmit buffer (APFv6+), used to build a reply.
 
-Each instruction begins with one byte whose top 5 bits are the opcode, next 2
-bits encode the length of an immediate (0, 1, 2, or 4 bytes), and bottom bit
-selects a register. The instruction set is deliberately small: packet loads
-(`ldb`/`ldh`/`ldw` and their indexed `*x` variants) pull 1/2/4 bytes from a
-packet offset into a register; arithmetic and bitwise ops (`add`, `and`, `or`,
-`sh`, ...) combine a register with an immediate or the other register; and
-conditional jumps (`jeq`, `jne`, `jgt`, `jlt`, `jset`, and the byte-sequence
-match `jbsmatch`) compare `R0` against a value and branch. These opcodes are
-enumerated as the `*_OPCODE` defines in `apf.h` (for example `LDB_OPCODE`,
-`JEQ_OPCODE`, `JBSMATCH_OPCODE`) and mirrored on the Java side by the
-`Opcodes` enum in
-`packages/modules/NetworkStack/src/android/net/apf/BaseApfGenerator.java`.
+Each instruction begins with one byte. The top 5 bits are the opcode. The next 2
+bits encode the length of an immediate (0, 1, 2, or 4 bytes). The bottom bit
+selects a register. The instruction set is deliberately small:
+
+- Packet loads (`ldb`/`ldh`/`ldw` and their indexed `*x` variants) pull 1/2/4
+  bytes from a packet offset into a register.
+- Arithmetic and bit-wise ops (`add`, `and`, `or`, `sh`, ...) combine a register
+  with an immediate or the other register.
+- Conditional jumps (`jeq`, `jne`, `jgt`, `jlt`, `jset`, and the byte-sequence
+  match `jbsmatch`) compare `R0` against a value and branch.
+
+The `*_OPCODE` defines in `apf.h` enumerate these opcodes (for example
+`LDB_OPCODE`, `JEQ_OPCODE`, `JBSMATCH_OPCODE`). The `Opcodes` enum in
+`packages/modules/NetworkStack/src/android/net/apf/BaseApfGenerator.java`
+mirrors them on the Java side.
 
 The interpreter pre-fills several of the sixteen memory slots before each run so
-programs do not have to recompute common values. Per the slot table in `apf.h`
-(and the `memory_type` union near the top of `apf_interpreter.c`), slot 13 holds
-the computed IPv4 header length, slot 14 holds the total packet size, and slot 15
-holds the *filter age in seconds* since the program was installed, which lets a
-filter rate-limit a packet to one every N seconds or expire a stale rule.
+programs do not have to recompute common values. The slot table in `apf.h`
+(and the `memory_type` union near the top of `apf_interpreter.c`) defines them.
+Slot 13 holds the computed IPv4 header length, and slot 14 holds the total
+packet size. Slot 15 holds the *filter age in seconds* since the program was
+installed. A filter can use it to rate-limit a packet to one every N seconds or
+to expire a stale rule.
 
 PASS and DROP are encoded as jumps off the end of the program, which keeps the
-core loop branchless and trivial. The header comment spells out the convention:
-jumping to one byte past the end of the program means "pass this packet to the
-AP", and jumping to two bytes past the end means "drop it". The interpreter
+core loop branchless and trivial. The header comment spells out the convention.
+Jumping to one byte past the end of the program means "pass this packet to the
+AP". Jumping to two bytes past the end means "drop it". The interpreter
 turns that into return codes at the top of its dispatch loop in
-`apf_interpreter.c`: the `PASS`/`DROP`/`EXCEPTION` macros resolve to `1`/`0`/`2`,
-and `apf_run()` returns one of them. Any internal error or assertion failure is
-deliberately converted to `PASS` (`ASSERT_RETURN` returns `EXCEPTION`, and the
-runner rewrites `EXCEPTION` to `PASS` before returning) so a buggy or
-adversarial program can never cause a packet to be silently lost: when in doubt,
-wake the AP. APFv6 adds a transmit path: the program can `allocate` a tx buffer,
-copy bytes into it, and `transmit` it, which is how the firmware answers ARP
-requests, IPv6 neighbor solicitations, and offloaded mDNS queries on the AP's
-behalf without ever waking it. The host-side allocate/transmit callbacks are the
+`apf_interpreter.c`. The `PASS`/`DROP`/`EXCEPTION` macros resolve to `1`/`0`/`2`,
+and `apf_run()` returns one of them.
+
+Any internal error or assertion failure is deliberately converted to
+`PASS`. `ASSERT_RETURN` returns `EXCEPTION`, and the runner rewrites `EXCEPTION`
+to `PASS` before it returns. So a buggy or adversarial program can never cause a
+packet to be silently lost: when in doubt, wake the AP.
+
+APFv6 adds a transmit path. The program can `allocate` a tx buffer, copy bytes
+into it, and `transmit` it. This is how the firmware answers ARP requests, IPv6
+neighbor solicitations, and offloaded mDNS queries on the AP's behalf without
+ever waking it. The host-side allocate/transmit callbacks are the
 `apf_allocate_tx_buffer()` / `apf_transmit_tx_buffer()` functions declared in
 `hardware/google/apf/next/apf_interpreter.h`.
 
 A matching disassembler (`hardware/google/apf/disassembler.c`) and the assembler
 library (`hardware/google/apf/apflib.c`) let developers read installed programs
-back as human-readable assembly, which is invaluable when debugging why a packet
+back as human-readable assembly. This is invaluable when debugging why a packet
 was or was not dropped.
 
 ### 35.30.3 Capabilities Negotiation
@@ -5005,16 +5036,16 @@ which carries three fields:
 - `maximumApfProgramSize`: how many bytes of NIC RAM are available for the
   program plus its data region.
 - `apfPacketFormat`: the link-layer frame format the firmware hands to the
-  filter (one of the `ARPHRD_*` constants; the generator currently only emits
-  code for `ARPHRD_ETHER` Ethernet framing).
+  filter (one of the `ARPHRD_*` constants). The generator currently only emits
+  code for `ARPHRD_ETHER` Ethernet framing.
 
 `IpClient.maybeCreateApfFilter()` (around line 2936 of
 `packages/modules/NetworkStack/src/android/net/ip/IpClient.java`) reads these
 capabilities and decides whether and how to build a filter. The logic there is
-worth noting: if a device advertises APFv3+ but exposes fewer than 1024 bytes of
-RAM, IpClient downgrades the configured version to `2`, because the counter
-region APF reserves at the end of RAM would leave too little room for an actual
-program. It also refuses to build a filter for any `apfPacketFormat` other than
+worth noting. If a device advertises APFv3+ but exposes fewer than 1024 bytes of
+RAM, IpClient downgrades the configured version to `2`. This is because the
+counter region APF reserves at the end of RAM would leave too little room for an
+actual program. It also refuses to build a filter for any `apfPacketFormat` other than
 `ARPHRD_ETHER`, since the generator's hard-coded packet offsets assume Ethernet
 framing. The fully populated `ApfConfiguration` (multicast filter state, RA
 minimum lifetime, ARP/ND/mDNS/IGMP/MLD offload flags, and RAM size) is then
@@ -5022,11 +5053,11 @@ handed to `ApfFilter.maybeCreate()`.
 
 ### 35.30.4 The Interpreter <-> Generator Version-Sync Contract
 
-Because the interpreter lives in firmware and the generator lives in an
-updatable mainline module, the two must never disagree about what a given opcode
-means. The contract is the version number returned by `apf_version()` in
-`apf_interpreter.c` (currently the date-stamped value `20250228`) on the firmware
-side, matched against version constants on the framework side in
+The interpreter lives in firmware and the generator lives in an updatable
+mainline module. For that reason, the two must never disagree about what a given opcode means.
+On the firmware side, the contract is the version number that `apf_version()`
+returns in `apf_interpreter.c` (currently the date-stamped value `20250228`).
+The framework side matches it against version constants in
 `BaseApfGenerator.java`:
 
 ```java
@@ -5041,10 +5072,10 @@ public static final int APF_VERSION_61 = 6100;
 The generator picks the most capable program format the firmware can run.
 `ApfFilter.createApfGenerator()` (around line 4187 of `ApfFilter.java`)
 instantiates an `ApfV61Generator`, `ApfV6Generator`, or `ApfV4Generator`
-depending on the negotiated version, gated through `useApfV61Generator()` /
-`useApfV6Generator()`, which call each generator's `supportsVersion()` check (for
-example `ApfV6Generator.supportsVersion()` returns true only for
-`version >= APF_VERSION_6`). All three derive from `ApfV4GeneratorBase`, and
+depending on the negotiated version. The choice is gated through
+`useApfV61Generator()` / `useApfV6Generator()`. These call each generator's
+`supportsVersion()` check (for example `ApfV6Generator.supportsVersion()` returns
+true only for `version >= APF_VERSION_6`). All three derive from `ApfV4GeneratorBase`, and
 `BaseApfGenerator.requireApfVersion()` throws `IllegalInstructionException` if
 generator code ever tries to emit an instruction the negotiated firmware version
 cannot execute. That compile-time guard is what keeps a newer NetworkStack from
@@ -5059,34 +5090,36 @@ updated mDNS offload rules). The flow is:
 
 1. Create a generator for the negotiated version (`createApfGenerator()`).
 2. Emit a prologue, then progressively fit in as much filtering as the program
-   budget allows. The code is explicit about prioritization: it first reserves
+   budget allows. The code is explicit about prioritization. It first reserves
    room for mDNS offload rules (so the device can answer service queries from
-   firmware rather than waking for them), then RA filters, sizing everything
-   against `mMaximumApfProgramSize`. If a piece does not fit, it is dropped from
-   this program rather than overflowing NIC RAM.
+   firmware rather than waking for them). Then it reserves room for RA filters.
+   It sizes everything against `mMaximumApfProgramSize`. If a piece does not fit,
+   it is dropped from this program rather than overflowing NIC RAM.
 3. Call `gen.generate()` to assemble the instruction list into the final
    `byte[]` program.
 4. Hand the bytes to `installPacketFilter()`, which calls through the
    `IApfController` interface to the Wi-Fi HAL, which writes the program into NIC
    RAM. IpClient wires up two controller implementations (`mIpClientApfController`
-   and `mNonHalApfController` around line 1144 of `IpClient.java`) depending on
-   whether the program is installed via the IpClient callback path or directly
-   through a non-HAL API. On any install failure the filter records a
+   and `mNonHalApfController` around line 1144 of `IpClient.java`). Which one it
+   uses depends on whether the program is installed via the IpClient callback path
+   or directly through a non-HAL API. On any install failure the filter records a
    `QE_APF_INSTALL_FAILURE` network-quirk metric.
 
-A subtle but important detail is *liveness*: the program is not generic. It bakes
-the device's current unicast IPv4/IPv6 addresses into `jeq` comparisons so that
+A subtle but important detail is *liveness*. The program is not generic.
+
+It bakes
+the device's current unicast IPv4/IPv6 addresses into `jeq` comparisons. So
 broadcast/multicast destined for *those* addresses is passed while everything
 else is dropped. The moment an address changes, the old program is stale and
-`installNewProgram()` must run again. The "filter age" slot (slot 15) the
-interpreter pre-fills lets time-sensitive rules (such as RA lifetime checks and
-rate limits) reason about how long the current program has been live without the
-framework having to reinstall on a timer.
+`installNewProgram()` must run again. The interpreter pre-fills the "filter age"
+slot (slot 15). It lets time-sensitive rules (such as RA lifetime checks and
+rate limits) reason about how long the current program has been live. The
+framework does not have to reinstall the program on a timer.
 
-The net effect is a clean division of labor: the framework, with full visibility
-into network state and an updatable code path, does the thinking and compiles a
-tailored program; the firmware, with the AP asleep, does nothing but run a few
-hundred bytes of branchless bytecode per frame and decides PASS or DROP. That is
+The net effect is a clean division of labor. The framework has full visibility
+into network state and an updatable code path. It does the thinking and compiles a
+tailored program. The firmware, with the AP asleep, does nothing but run a few
+hundred bytes of branchless bytecode per frame and decide PASS or DROP. That is
 how an idle Android device stays on the network without paying the wakeup tax for
 traffic it never wanted.
 
@@ -5095,12 +5128,14 @@ traffic it never wanted.
 ## 35.31 Wi-Fi RTT and 802.11az Secure Ranging
 
 Wi-Fi RTT (Round-Trip Time) lets a device measure its distance to a Wi-Fi
-access point or to another device by timing the fine-timing-measurement (FTM)
-frame exchange defined by IEEE 802.11mc. The API has existed since Android 9:
-an app builds a `RangingRequest`, submits it through `WifiRttManager`, and gets
-back a list of `RangingResult` objects carrying a distance in millimetres and a
-distance standard deviation. Android 17 keeps that API and adds support for the
-newer IEEE 802.11az ranging amendment, including its secure variant.
+access point or to another device. It times the fine-timing-measurement (FTM)
+frame exchange that IEEE 802.11mc defines.
+
+The API has existed since Android 9. An app builds a `RangingRequest` and submits it through `WifiRttManager`. The
+app then gets back a list of `RangingResult` objects. Each object carries a
+distance in millimeters and a distance standard deviation. Android 17 keeps
+that API and adds support for the newer IEEE 802.11az ranging amendment,
+including its secure variant.
 
 The framework classes live in the Wifi mainline module under
 `packages/modules/Wifi/framework/java/android/net/wifi/rtt/`.
@@ -5109,58 +5144,60 @@ The framework classes live in the Wifi mainline module under
 
 `WifiRttManager`
 (`packages/modules/Wifi/framework/java/android/net/wifi/rtt/WifiRttManager.java`)
-is obtained from `Context.getSystemService(WifiRttManager.class)` and gated on
-the `android.hardware.wifi.rtt` feature. A ranging request names its peers two
-ways:
+comes from `Context.getSystemService(WifiRttManager.class)`. It is gated on
+the `android.hardware.wifi.rtt` feature. A ranging request names its peers
+in two ways:
 
 - By `ScanResult` (or `ResponderConfig`), to range against an access point.
 - By `PeerHandle`, to range against another Wi-Fi Aware (NAN) peer. The
-  `PeerHandle` is the same opaque Aware peer identifier described in the Aware
-  material earlier in this chapter; ranging reuses it so an app that has already
-  discovered a peer over Aware can measure distance to it without a separate
-  association.
+  `PeerHandle` is the same opaque Aware peer identifier described in the Aware material
+  earlier in this chapter. Ranging reuses it. This lets an app that has already
+  discovered a peer over Aware measure distance to it without a
+  separate association.
 
 `ResponderConfig`
 (`.../rtt/ResponderConfig.java`) describes one peer. For 802.11az it gains a
 `supports80211azNtb` field with `is80211azNtbSupported()` / Builder
-`set80211azNtbSupported()` (NTB = non-trigger-based ranging), plus
+`set80211azNtbSupported()` (NTB = non-trigger-based ranging). It also gains
 `getPeerHandle()` / `setPeerHandle()` for the Aware case and a
 `getSecureRangingConfig()` accessor. The `fromScanResult()` factory inspects the
-scan result's capabilities and, when it sees PASN support, fills in a secure
+capabilities of the scan result. When it sees PASN support, it fills in a secure
 configuration automatically.
 
 ### 35.31.2 802.11az Secure Ranging: PASN and Frame Protection
 
 The 802.11mc exchange is unauthenticated, so a nearby attacker can spoof FTM
 frames and lie about distance. 802.11az adds Pre-Association Security
-Negotiation (PASN): the two devices run a lightweight authenticated key
+Negotiation (PASN). The two devices run a lightweight authenticated key
 exchange before ranging, then protect the ranging frames. Android 17 exposes
-this through two new classes, both guarded by the `secure_ranging` aconfig flag
+this through two new classes. Both classes are guarded by the `secure_ranging` aconfig flag
 (`packages/modules/Wifi/flags/wifi_flags.aconfig`):
 
 - `SecureRangingConfig` (`.../rtt/SecureRangingConfig.java`) carries the
-  per-session security options: `isSecureHeLtfEnabled()` (encrypted HE-LTF
-  Long Training Fields, which prevent an observer from replaying the ranging
-  waveform), `isRangingFrameProtectionEnabled()`, and the `PasnConfig` to use.
-- `PasnConfig` (`.../rtt/PasnConfig.java`) holds the authentication parameters:
-  a set of base AKMs (`AKM_PASN`, `AKM_SAE`, `AKM_FT_*`, `AKM_FILS_*`) and
-  pairwise ciphers (`CIPHER_CCMP_128`, `CIPHER_GCMP_256`, and so on), an
-  optional password or SSID, and a PASN comeback cookie. The static helpers
+  per-session security options. These are `isSecureHeLtfEnabled()` (encrypted
+  HE-LTF Long Training Fields, which prevent an observer from replaying the
+  ranging waveform), `isRangingFrameProtectionEnabled()`, and the `PasnConfig`
+  to use.
+- `PasnConfig` (`.../rtt/PasnConfig.java`) holds the authentication parameters.
+  These are a set of base AKMs (`AKM_PASN`, `AKM_SAE`, `AKM_FT_*`,
+  `AKM_FILS_*`) and pairwise ciphers (`CIPHER_CCMP_128`, `CIPHER_GCMP_256`, and
+  so on). They also include an optional password or SSID and a PASN comeback
+  cookie. The static helpers
   `getBaseAkmsFromCapabilities()` and `getCiphersFromCapabilities()` derive the
-  AKM and cipher bitmasks from a scan result's capability string.
+  AKM and cipher bitmasks from the capability string of a scan result.
 
-The PASN key cache is what lets repeated ranging sessions skip the full
-handshake: when the responder cannot immediately admit a requester it returns a
-*comeback cookie* and a back-off delay, which the requester echoes on its next
+The PASN key cache lets repeated ranging sessions skip the full handshake.
+When the responder cannot immediately admit a requester, it returns a
+*comeback cookie* and a back-off delay. The requester echoes both on its next
 attempt. `RangingResult` surfaces both through `getPasnComebackCookie()` and
-`getPasnComebackAfterMillis()`, alongside `isRangingAuthenticated()`,
-`isRangingFrameProtected()`, and `isSecureHeLtfEnabled()` so the caller can tell
-whether a given measurement was actually secured.
+`getPasnComebackAfterMillis()`. It also offers `isRangingAuthenticated()`,
+`isRangingFrameProtected()`, and `isSecureHeLtfEnabled()`. With these, the
+caller can tell whether a given measurement was actually secured.
 
 ### 35.31.3 Choosing a Security Mode
 
 `RangingRequest`
-(`.../rtt/RangingRequest.java`) gains a security mode that the requester sets
+(`.../rtt/RangingRequest.java`) gains a security mode. The requester sets it
 with `Builder.setSecurityMode()`:
 
 | Mode | Behavior |
@@ -5174,8 +5211,8 @@ through new boolean keys: `CHARACTERISTICS_KEY_BOOLEAN_NTB_INITIATOR`,
 `CHARACTERISTICS_KEY_BOOLEAN_SECURE_HE_LTF_SUPPORTED`,
 `CHARACTERISTICS_KEY_BOOLEAN_RANGING_FRAME_PROTECTION_SUPPORTED`, and an integer
 `CHARACTERISTICS_KEY_INT_MAX_SUPPORTED_SECURE_HE_LTF_PROTO_VERSION`. An app can
-read these once and decide whether to ask for `SECURITY_MODE_SECURE_AUTH` or
-settle for opportunistic security.
+read these once. It can then decide whether to ask for
+`SECURITY_MODE_SECURE_AUTH` or settle for opportunistic security.
 
 The decision path for a single peer:
 
@@ -5202,7 +5239,7 @@ flowchart TD
 ### 35.32.1 dumpsys connectivity
 
 The most powerful tool for debugging Android networking is `dumpsys connectivity`.
-It provides a comprehensive snapshot of the entire connectivity state.
+It gives a comprehensive snapshot of the entire connectivity state.
 
 ```bash
 # Full connectivity dump
@@ -5372,7 +5409,7 @@ cdm.registerConnectivityDiagnosticsCallback(
 
 ### 35.32.7 Simulating Network Conditions
 
-For testing, Android provides several tools to simulate network conditions:
+For testing, Android provides several tools that simulate network conditions:
 
 ```bash
 # Enable/disable Wi-Fi
@@ -5578,44 +5615,49 @@ cm.requestNetwork(wifiRequest, new ConnectivityManager.NetworkCallback() {
 
 ## Summary
 
-Android's networking and connectivity stack is a deeply layered system that
+Android's networking and connectivity stack is a deeply layered system. It
 combines Java framework services, native daemons, eBPF programs, and Linux
 kernel subsystems into a cohesive whole. The key architectural insights are:
 
 1. **ConnectivityService is the orchestrator**: All network management flows
-   through this single service, which maintains a global view of all networks,
-   requests, and their matching.
+   through this single service. The service keeps a global view of all
+   networks, requests, and their matching.
 
 2. **NetworkAgent is the network abstraction**: Each transport (Wi-Fi, cellular,
-   VPN) communicates with ConnectivityService through this uniform interface,
-   enabling transport-agnostic network management.
+   VPN) communicates with ConnectivityService through this uniform interface.
+   The interface makes transport-agnostic network management possible.
 
 3. **Mainline modularization enables agility**: Critical networking components
    (Connectivity, NetworkStack, Wi-Fi, DnsResolver) ship as independently
-   updatable APEX modules, decoupling security fixes from platform OTAs.
+   updatable APEX modules. This decouples security fixes from platform OTAs.
 
 4. **eBPF is replacing iptables**: Modern Android increasingly uses BPF programs
-   for traffic control, offering better performance and more flexible policy
+   for traffic control. They give better performance and more flexible policy
    enforcement than traditional iptables chains.
 
-5. **Per-network isolation is fundamental**: The netId/fwmark mechanism ensures
-   that routing, DNS, and firewall rules are correctly scoped to individual
-   networks, enabling features like per-app VPN and multi-network connectivity.
+5. **Per-network isolation is fundamental**: The netId/fwmark mechanism makes
+   sure that routing, DNS, and firewall rules are correctly scoped to individual
+   networks. This makes features like per-app VPN and multi-network
+   connectivity possible.
 
-6. **Security is layered**: From Network Security Config (application-level)
-   through encrypted DNS (transport-level) to firewall rules (network-level),
-   Android applies defense in depth to protect network communications.
+6. **Security is layered**: Android applies defense in depth to protect network
+   communications. The layers run from Network Security Config
+   (application-level) through encrypted DNS (transport-level) to firewall
+   rules (network-level).
 
 The networking stack continues to evolve rapidly. Recent additions include
 Wi-Fi 7 MLO support, satellite connectivity, Thread mesh networking, and
-DoH for encrypted DNS. Android 17 pushes modularization into native code with
+DoH for encrypted DNS.
+
+Android 17 pushes modularization into native code with
 the *mainline supplicant* (an updatable `wpa_supplicant` shipped inside the
-Wi-Fi APEX), redesigns the proxy stack to support multiple concurrent PAC
-scripts per network/user/UID via `PacCoordinator` and the APEX-resident
-MultiPacService/MultiProxyService, and adds a per-app, user-driven NSD
-service-access picker behind the new `ACCESS_LOCAL_NETWORK` permission. The
-modular architecture ensures these features can be delivered to users without
-waiting for full platform upgrades.
+Wi-Fi APEX). It also redesigns the proxy stack. The new stack supports multiple
+concurrent PAC scripts per network/user/UID via `PacCoordinator` and the
+APEX-resident MultiPacService/MultiProxyService. In addition, Android 17 adds a
+per-app, user-driven NSD service-access picker behind the new
+`ACCESS_LOCAL_NETWORK` permission. The modular architecture makes sure that
+these features can be delivered to users without waiting for full platform
+upgrades.
 
 ### Key Source Files Reference
 

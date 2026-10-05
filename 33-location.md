@@ -3,17 +3,18 @@
 Location services form one of the most privacy-sensitive yet indispensable
 subsystems in Android.  They unite satellite receivers, cell-tower databases,
 Wi-Fi fingerprinting engines, and sensor fusion algorithms behind a single
-framework API -- `LocationManager` -- while enforcing a multi-tier permission
+framework API -- `LocationManager`.  They also enforce a multi-tier permission
 model that distinguishes fine, coarse, foreground, and background access.  This
-chapter traces every layer of that stack, from the public SDK surface through
-`LocationManagerService`, the GNSS HAL AIDL contract, the fused and network
-location providers, geofencing, geocoding, and the GeoTZ module that converts
-a position into a time-zone identifier.  It covers the state of the subsystem in
-Android 17, where the GNSS HAL has reached AIDL version 7, the structured GNSS
-assistance interface has replaced opaque PSDS blobs for new hardware, and a
-sweep of feature-flag removals has turned several once-experimental behaviors
-(population-density coarsening, GNSS assistance injection) into the default
-code path.
+chapter traces every layer of that stack.  It starts at the public SDK surface
+and goes through `LocationManagerService`, the GNSS HAL AIDL contract, the fused
+and network location providers, geofencing, and geocoding.  It ends with the
+GeoTZ module, which converts a position into a time-zone identifier.
+
+The chapter covers the state of the subsystem in Android 17.  In Android 17, the
+GNSS HAL has reached AIDL version 7.  The structured GNSS assistance interface
+has replaced opaque PSDS blobs for new hardware.  A sweep of feature-flag
+removals has turned several once-experimental behaviors (population-density
+coarsening, GNSS assistance injection) into the default code path.
 
 All source paths are relative to the AOSP root unless stated otherwise.
 
@@ -132,19 +133,19 @@ Three details changed by Android 17 are worth calling out here:
 - **The GNSS provider can be a proxy overlay.** When
   `config_useGnssHardwareProvider` is false, LMS first tries to bind an
   external GNSS provider via `ProxyLocationProvider.create(..., ACTION_GNSS_PROVIDER,
-  config_enableGnssLocationOverlay, ...)` and only falls back to the in-process
-  `GnssLocationProvider` if no overlay is installed.  If an overlay *is* present,
-  the raw HAL is still exposed separately under `GPS_HARDWARE_PROVIDER` (guarded
-  by `LOCATION_HARDWARE`), because the GNSS HAL supports only a single client.
+  config_enableGnssLocationOverlay, ...)`.  It falls back to the in-process
+  `GnssLocationProvider` only if no overlay is installed.  If an overlay *is*
+  present, the raw HAL is still exposed separately under `GPS_HARDWARE_PROVIDER`
+  (guarded by `LOCATION_HARDWARE`).  The reason is that the GNSS HAL supports
+  only a single client.
 - **Population density is no longer flag-gated.**  The
-  `ProxyPopulationDensityProvider` is registered unconditionally; the
+  `ProxyPopulationDensityProvider` is registered unconditionally.  The
   `population_density_provider` and `density_based_coarse_locations` flags that
-  used to gate it were cleaned up, so the only condition is whether a provider
+  used to gate it were cleaned up.  As a result, the only condition is whether a provider
   service exists on the device (§33.5.8).
-- **The GNSS assistance proxy moved into the GNSS subsystem.**  Rather than
-  being bound from `onSystemThirdPartyAppsCanStart()`, the
-  `ProxyGnssAssistanceProvider` is now registered inside
-  `GnssManagerService.onSystemReady()` (§33.10.5).
+- **The GNSS assistance proxy moved into the GNSS subsystem.**  The
+  `ProxyGnssAssistanceProvider` is no longer bound from `onSystemThirdPartyAppsCanStart()`.
+  It is now registered inside `GnssManagerService.onSystemReady()` (§33.10.5).
 
 ### 33.1.5  Source File Map
 
@@ -320,7 +321,7 @@ classDiagram
 
 The control surface for any provider is the package-private
 `LocationProviderController` interface (`setRequest`, `start`, `stop`, `flush`,
-`sendExtraCommand`); `AbstractLocationProvider` exposes its state to
+`sendExtraCommand`).  `AbstractLocationProvider` exposes its state to
 `LocationProviderManager` through an inner `Controller` that implements it.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/provider/`
@@ -435,18 +436,19 @@ void addLocationProviderManager(
 ```
 
 The `StationaryThrottlingLocationProvider` decorator reduces fix frequency
-when the device is in doze and the accelerometer indicates it is stationary,
-replaying the last known location at a long interval instead of asking the
+when the device is in doze and the accelerometer indicates it is stationary.
+It replays the last known location at a long interval instead of asking the
 hardware for new fixes.
 
 The gating logic was simplified in Android 17.  The old
-`Flags.disableStationaryThrottling()` flag was removed, and the throttling
-decorator is now applied to **only** the GPS provider, and only when both
-`Flags.keepGnssStationaryThrottling()` is enabled and the
-`Settings.Global.LOCATION_ENABLE_STATIONARY_THROTTLE` setting is on.  That
-setting defaults to 1 (on) on phones but 0 (off) on Wear OS devices
-(`FEATURE_WATCH`), where the small form factor makes stationary detection
-less reliable.  In other words, network and fused providers are no longer
+`Flags.disableStationaryThrottling()` flag was removed.  The throttling
+decorator is now applied to **only** the GPS provider.  It is applied only when
+both `Flags.keepGnssStationaryThrottling()` is enabled and the
+`Settings.Global.LOCATION_ENABLE_STATIONARY_THROTTLE` setting is on.
+
+That setting defaults to 1 (on) on phones but 0 (off) on Wear OS devices
+(`FEATURE_WATCH`).  The reason is that the small form factor of these devices makes stationary
+detection less reliable.  In other words, network and fused providers are no longer
 wrapped, which is a behavior change from earlier releases.
 
 #### Removing a provider
@@ -675,9 +677,9 @@ When delivering to coarse-permission clients, `LocationFudger` obfuscates
 the true position.  The algorithm:
 
 1. Adds a slowly-drifting random offset to the true coordinates.  The offset
-   is seeded from a `SecureRandom` at construction (effectively per-boot) and
+   is seeded from a `SecureRandom` at construction (effectively per-boot).  It
    is nudged by `CHANGE_PER_INTERVAL` (3%) every `OFFSET_UPDATE_INTERVAL_MS`
-   (1 hour) so that the fudged position is not perfectly static yet does not
+   (1 hour).  This is so that the fudged position is not perfectly static, yet it does not
    reveal movement faster than the grid resolution.
 2. Snaps the offset coordinates to a grid whose cell width is `mAccuracyM`.
    That width comes from `Settings.Secure` via
@@ -695,11 +697,11 @@ Since Android 16, `LocationFudger` can instead use the S2-cell density path,
 where `LocationFudgerCache` consults `ProxyPopulationDensityProvider` to pick a
 coarsening level per S2 cell.  In dense urban areas the cells are smaller
 (higher precision); in rural areas they are larger (stronger privacy
-protection).  In Android 17 this path is no longer flag-gated: the
+protection).  In Android 17 this path is no longer flag-gated.  The
 `density_based_coarse_locations` and `population_density_provider` flags were
-cleaned up, so the density algorithm runs whenever the cache has been populated
-from a non-null population-density provider, falling back to the legacy grid
-algorithm otherwise.
+cleaned up.  As a result, the density algorithm runs whenever the cache has been populated
+from a non-null population-density provider.  Otherwise it falls back to the
+legacy grid algorithm.
 
 ### 33.2.14  Event Logging
 
@@ -744,9 +746,9 @@ to propagate locations from all other managers.
 `setTestProviderLocation()` for instrumentation and development.  Under the
 hood these install a `MockLocationProvider` that replaces the real provider
 until `removeTestProvider()` is called.  Mock providers are gated by the
-`OP_MOCK_LOCATION` app-op -- each entry point calls
-`mInjector.getAppOpsHelper().noteOp(AppOpsManager.OP_MOCK_LOCATION, identity)`
--- and that op is granted to the app the user selects as the mock-location
+`OP_MOCK_LOCATION` app-op.  Each entry point calls
+`mInjector.getAppOpsHelper().noteOp(AppOpsManager.OP_MOCK_LOCATION, identity)`.
+That op is granted to the app the user selects as the mock-location
 app in Developer Options.  (The old `ACCESS_MOCK_LOCATION` permission has
 not been used for this since API 23.)
 
@@ -760,12 +762,12 @@ AIDL HAL interface; the legacy HIDL interfaces in `hardware/interfaces/gnss/1.0`
 through `2.1` are deprecated.
 
 The AIDL interface is versioned and frozen per release.  As of Android 17 the
-current frozen version is **V7** (`android.hardware.gnss-V7`); the framework
+current frozen version is **V7** (`android.hardware.gnss-V7`).  The framework
 generates its stubs against the latest version through the `gnss_use_latest_hal`
 defaults in `hardware/interfaces/gnss/aidl/Android.bp`.  The Android 17
 compatibility matrix accepts GNSS HAL versions 2 through 7.  V7 adds the
 `CAPABILITY_ENGINE_RESTART_AFTER_POWER_MODE_CHANGE` capability (§33.3.9) and
-additive fields to the structured assistance parcelables; the structured GNSS
+additive fields to the structured assistance parcelables.  The structured GNSS
 assistance interface itself (§33.10.5) first appeared in V5.
 
 **Source directory:** `hardware/interfaces/gnss/aidl/android/hardware/gnss/`
@@ -796,8 +798,8 @@ graph TB
 
 Each sub-interface in the diagram is reached through a `getExtension*` accessor
 on `IGnss` (for example `getExtensionGnssMeasurement()`,
-`getExtensionGnssConfiguration()`, `getExtensionGnssAssistanceInterface()`); the
-nullable ones (`getExtensionPsds()`, `getExtensionGnssBatching()`,
+`getExtensionGnssConfiguration()`, `getExtensionGnssAssistanceInterface()`).
+The nullable ones (`getExtensionPsds()`, `getExtensionGnssBatching()`,
 `getExtensionGnssGeofence()`, `getExtensionGnssNavigationMessage()`,
 `getExtensionMeasurementCorrections()`) return null on hardware that does not
 implement them.
@@ -837,8 +839,8 @@ enum GnssPositionMode {
 In MS_BASED mode, the GNSS chipset downloads satellite orbit data (ephemeris,
 almanac) from assistance servers to accelerate time-to-first-fix (TTFF).  The
 HAL documents that `setPositionMode` should be passed only `MS_BASED` or
-`STANDALONE`, and recommends that implementations fall back to `MS_BASED` when
-`MS_ASSISTED` is requested and `MS_BASED` is supported.
+`STANDALONE`.  It also recommends that implementations fall back to `MS_BASED`
+when `MS_ASSISTED` is requested and `MS_BASED` is supported.
 
 **Source:** `hardware/interfaces/gnss/aidl/android/hardware/gnss/IGnss.aidl`
 (`GnssPositionMode` enum).
@@ -970,7 +972,7 @@ control-plane A-GNSS using the cellular radio.  This is used for:
    signaling channels (for E911).
 
 The `IAGnssRil` interface provides the HAL with cellular identity
-information (cell ID, LAC/TAC, MCC/MNC) that it uses to obtain
+information (cell ID, LAC/TAC, MCC/MNC).  The HAL uses this information to get
 assistance data from the network.
 
 #### Time and Location Injection
@@ -1028,8 +1030,8 @@ graph LR
 ```
 
 The native side is the `libservices.core-gnss` static library (sources under
-`frameworks/base/services/core/jni/gnss/`), which is linked into
-`libservices.core` and shipped inside `libandroid_servers.so` -- there is no
+`frameworks/base/services/core/jni/gnss/`). It is linked into
+`libservices.core` and shipped inside `libandroid_servers.so`. There is no
 standalone GNSS JNI shared library.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/gnss/hal/GnssNative.java`
@@ -1226,7 +1228,7 @@ These keys are defined as `CONFIG_LONGTERM_PSDS_SERVER_1..3`,
 `CONFIG_NORMAL_PSDS_SERVER`, and `CONFIG_REALTIME_PSDS_SERVER` in
 `GnssConfiguration.java` (lines 84-88) and consumed by `GnssPsdsDownloader`.
 On production devices they are normally set through `config.xml` resource
-overlays; `gps_debug.conf` serves only as a debug override (the sample
+overlays. `gps_debug.conf` serves only as a debug override (the sample
 `gps_debug.conf` in the tree contains no PSDS entries).
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/gnss/GnssConfiguration.java`
@@ -1305,9 +1307,9 @@ public class GnssManagerService implements GnssNative.GnssAssistanceCallbacks {
 ```
 
 `GnssManagerService` implements `GnssNative.GnssAssistanceCallbacks`.  In its
-`onSystemReady()` it binds the `ProxyGnssAssistanceProvider` and, if one is
-present, registers itself with `mGnssNative.setGnssAssistanceCallbacks(this)` so
-the HAL can request structured assistance data (§33.10.5).
+`onSystemReady()` it binds the `ProxyGnssAssistanceProvider`. If one is
+present, it registers itself with `mGnssNative.setGnssAssistanceCallbacks(this)`.
+This lets the HAL request structured assistance data (§33.10.5).
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/gnss/GnssManagerService.java`
 
@@ -1389,10 +1391,10 @@ combination can eliminate the ionospheric error term entirely.
 `GnssSignalType.codeType` is a single-letter string drawn from the HAL's
 `CODE_TYPE_*` constants (`"A"`, `"B"`, `"C"`, ... `"Z"`, plus
 `CODE_TYPE_UNKNOWN`).  Several of those code-type strings document NavIC L1
-usage (data, pilot, and data+pilot), reflecting the NavIC (IRNSS) L1 signal
+usage (data, pilot, and data+pilot). They reflect the NavIC (IRNSS) L1 signal
 support that Android 17 exposes at the SDK level through the new
-`gnss_api_navic_l1` flag (it adds `GnssNavigationMessage.TYPE_IRN_L1 = 0x0703`
-alongside the existing `TYPE_IRN_L5`).
+`gnss_api_navic_l1` flag. The flag adds `GnssNavigationMessage.TYPE_IRN_L1 = 0x0703`
+alongside the existing `TYPE_IRN_L5`.
 
 ### 33.3.11  GNSS Power Statistics
 
@@ -1551,8 +1553,8 @@ graph TB
 ### 33.4.5  Power Efficiency
 
 The FLP dynamically selects the cheapest positioning source that satisfies
-the merged request.  For a low-accuracy, long-interval request (e.g., a
-weather app requesting updates every 30 minutes), the FLP may rely entirely
+the merged request.  Consider a low-accuracy, long-interval request (e.g., a
+weather app that requests updates every 30 minutes). The FLP may rely entirely
 on cell-tower positioning without activating GNSS or Wi-Fi scanning.  For
 a navigation app requesting 1-second updates, it engages the full sensor
 suite including GNSS.
@@ -1592,11 +1594,11 @@ Settings.Global.LOCATION_ENABLE_STATIONARY_THROTTLE
 It defaults to enabled (1) on phones but disabled (0) on Wear OS devices
 where the small form factor makes stationary detection less reliable.
 
-As described in §33.2.3, the gating was simplified in Android 17: the old
-`Flags.disableStationaryThrottling()` flag was removed, and the
+§33.2.3 describes how the gating was simplified in Android 17. The old
+`Flags.disableStationaryThrottling()` flag was removed. The
 `StationaryThrottlingLocationProvider` wrapper is now applied to the **GPS
-provider only**, and only when `Flags.keepGnssStationaryThrottling()` is on and
-the setting above is enabled.  The fused provider is therefore no longer wrapped
+provider only**. It is applied only when `Flags.keepGnssStationaryThrottling()`
+is on and the setting above is enabled.  The fused provider is therefore no longer wrapped
 in the throttling decorator; an FLP implementation that wants to throttle while
 stationary now does so internally.
 
@@ -1611,20 +1613,19 @@ converter is integrated into the location delivery pipeline in
 get a populated value.
 
 The conversion matters because GPS receivers natively report height above
-the WGS84 ellipsoid, which can differ from actual elevation above sea level
-by up to 100 meters in some locations.  Apps displaying elevation to users
+the WGS84 ellipsoid. This height can differ from actual elevation above sea
+level by up to 100 meters in some locations.  Apps displaying elevation to users
 need MSL altitude for meaningful results.
 
 `AltitudeService` is the system-server side of this.  It is an
 `IAltitudeService.Stub` (published by `AltitudeService.Lifecycle` from
-`SystemServer`) that exposes `addMslAltitudeToLocation()` and
+`SystemServer`). It exposes `addMslAltitudeToLocation()` and
 `getGeoidHeight()` so that **vendor HAL clients** can request the same
-framework-side geoid conversions; both methods delegate to the
+framework-side geoid conversions, and both methods delegate to the
 `AltitudeConverter`.  The direction is the framework *serving* conversions to
 vendors, not the framework reading geoid heights from a HAL.  A
 `geoid_heights_via_altitude_hal` flag is defined in Android 17 to make geoid
-heights available via the Altitude HAL, but it is not yet wired into the
-service.
+heights available via the Altitude HAL. It is not yet wired into the service.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/altitude/AltitudeService.java`
 
@@ -1734,10 +1735,10 @@ In rural areas, cells are larger for stronger privacy guarantees.
 
 In Android 17 the binding is unconditional.  The
 `population_density_provider` and `density_based_coarse_locations` flags that
-used to gate this were cleaned up, so the only check is whether the device
-ships a population-density provider service: if `createAndRegister()` returns
+used to gate this were cleaned up. The only check is whether the device
+ships a population-density provider service. If `createAndRegister()` returns
 non-null, LMS installs a `LocationFudgerCache` over it and the density
-algorithm runs; otherwise it falls back to the legacy grid (§33.2.13).  LMS
+algorithm runs. Otherwise it falls back to the legacy grid (§33.2.13).  LMS
 also logs `POPULATION_DENSITY_PROVIDER_LOADING_REPORTED` with the load time.
 
 **Source:** `frameworks/base/services/core/java/com/android/server/location/provider/proxy/ProxyPopulationDensityProvider.java`
@@ -1924,9 +1925,9 @@ geocoder.getFromLocationName("1600 Amphitheatre Pkwy", 1,
 
 The blocking `getFromLocation(lat, lng, maxResults)` and
 `getFromLocationName(name, maxResults)` overloads still exist, but they are
-deprecated in favor of the `GeocodeListener` callback forms, which avoid
-blocking the calling thread while the request crosses Binder to the geocode
-provider.  Internally the deprecated overloads call the listener variant and
+deprecated in favor of the `GeocodeListener` callback forms. The callback
+forms do not block the calling thread while the request crosses Binder to the
+geocode provider.  Internally the deprecated overloads call the listener variant and
 wait on a `SynchronousGeocoder`.
 
 **Source:** `frameworks/base/location/java/android/location/Geocoder.java`.
@@ -1953,8 +1954,8 @@ sequenceDiagram
     Geocoder-->>App: List<Address>
 ```
 
-Note the return path: the `IGeocodeCallback` that `Geocoder` passes in is an
-`IGeocodeCallback.Stub` living in the *app* process, and LMS forwards that
+Note the return path. The `IGeocodeCallback` that `Geocoder` passes in is an
+`IGeocodeCallback.Stub` that lives in the *app* process. LMS forwards that
 binder straight through `ProxyGeocodeProvider` to the bound geocode service.
 The service therefore calls `onResults()` directly on the app's callback --
 neither LMS nor `ProxyGeocodeProvider` sees or relays the results.
@@ -1965,8 +1966,8 @@ neither LMS nor `ProxyGeocodeProvider` sees or relays the results.
 the action `GeocodeProviderBase.ACTION_GEOCODE_PROVIDER`.  The
 `ForwardGeocodeRequest` / `ReverseGeocodeRequest` parcelables and the
 `GeocodeProviderBase` base class (in `android.location.provider`) are the
-modern, structured geocode provider SDK surface gated by the Android 17
-`new_geocoder` flag.  Note that this flag gates the *provider*-side classes;
+modern, structured geocode provider SDK surface. The Android 17
+`new_geocoder` flag gates it.  Note that this flag gates the *provider*-side classes;
 the client-side `Geocoder` `GeocodeListener` overloads (§33.7.1) are available
 independently of it.
 
@@ -2126,13 +2127,13 @@ public static int getPermissionLevel(Context context, int uid, int pid) {
 
 When an app holds only `ACCESS_COARSE_LOCATION`, `LocationProviderManager`
 applies `LocationFudger` to obfuscate the exact position.  The fudging adds a
-slowly-drifting random offset and then snaps the result to a grid whose cell
+slowly-drifting random offset.  Then it snaps the result to a grid whose cell
 width defaults to 2 km (`DEFAULT_COARSE_LOCATION_ACCURACY_M`, floored at
-200 m), so the fudged location stays stable for small movements (§33.2.13).
+200 m).  So the fudged location stays stable for small movements (§33.2.13).
 
 Since Android 16, a population-density-based fudging mode is available.  A
-`ProxyPopulationDensityProvider` supplies density data, and the
-`LocationFudgerCache` picks the S2-cell coarsening level by density -- larger
+`ProxyPopulationDensityProvider` supplies density data.  The
+`LocationFudgerCache` picks the S2-cell coarsening level by density: larger
 cells in rural areas and smaller cells in dense urban areas.  As of Android 17
 this mode is no longer flag-gated (`density_based_coarse_locations` and
 `population_density_provider` were cleaned up); it runs whenever a
@@ -2169,9 +2170,9 @@ public static void enforceBypassPermission(Context context, int uid, int pid) {
 }
 ```
 
-In Android 17 this enforcement is a plain permission check with no flag gate;
-the `location_bypass` flag (still defined in `location.aconfig`) is no longer
-consulted at runtime, and the old `enable_location_bypass` flag was removed.
+In Android 17 this enforcement is a plain permission check with no flag gate.
+The `location_bypass` flag (still defined in `location.aconfig`) is no longer
+consulted at runtime.  The old `enable_location_bypass` flag was removed.
 A separate `READ_LOCATION_BYPASS_ALLOWLIST` permission now guards reading the
 bypass allowlist (`LocationPermissions.enforceReadLocationBypassAllowlist*`).
 
@@ -2209,13 +2210,15 @@ The GNSS HAL callback surfaces as `onRequestLocation(independentFromGnss,
 isUserEmergency)` on the framework's `LocationRequestCallbacks`, propagating the
 emergency flag down from the hardware layer.
 
-Android 17 tightened how emergency state interacts with AppOps restrictions
-through several flags: `fix_app_ops_restriction_for_emergency_mode` refreshes
-AppOps restrictions on emergency-state transitions (so the ignore-setting
-allowlist is excluded only while in emergency mode), `cache_emergency_callback_mode`
-caches the emergency-callback-mode broadcast value to avoid querying
-`TelephonyManager` on the hot path, and `check_bypass_permission_before_emergency_mode`
-checks the bypass permission first to skip an unnecessary IPC.
+Android 17 tightened how emergency state interacts with AppOps restrictions.
+It did this through several flags.
+`fix_app_ops_restriction_for_emergency_mode` refreshes AppOps restrictions on
+emergency-state transitions (so the ignore-setting allowlist is excluded only
+while in emergency mode).
+`cache_emergency_callback_mode` caches the emergency-callback-mode broadcast
+value to avoid querying `TelephonyManager` on the hot path.
+`check_bypass_permission_before_emergency_mode` checks the bypass permission
+first to skip an unnecessary IPC.
 
 ### 33.8.8  Permission Enforcement Flow
 
@@ -2244,7 +2247,7 @@ graph TB
 
 Starting with Android 10 (API 29), apps that need continuous background
 location must use a foreground service of type `location`
-(`FOREGROUND_SERVICE_TYPE_LOCATION`); Android 12 then added restrictions on
+(`FOREGROUND_SERVICE_TYPE_LOCATION`).  Android 12 then added restrictions on
 starting such services from the background.  LMS tracks foreground service
 API usage:
 
@@ -2394,8 +2397,8 @@ try (GeoTimeZonesFinder finder = GeoTimeZonesFinder.create(...)) {
 }
 ```
 
-The `LocationToken` is a lightweight handle that enables efficient caching --
-if the device has not moved far enough to cross an S2 cell boundary, the
+The `LocationToken` is a lightweight handle that enables efficient caching.
+If the device has not moved far enough to cross an S2 cell boundary, the
 previous lookup result can be reused.
 
 ### 33.9.4  OfflineLocationTimeZoneDelegate
@@ -2543,9 +2546,9 @@ The delegate handles several failure scenarios:
    missing, the delegate enters `MODE_FAILED` and reports a permanent
    failure.
 
-3. **Location unavailable in passive mode**: When passive listening
-   times out without receiving a location, the delegate may switch to
-   active listening (consuming budget) to obtain a fix.
+3. **Location unavailable in passive mode**: The delegate may switch to
+   active listening (which uses budget) to get a fix.  This happens when
+   passive listening times out and no location arrives.
 
 4. **User change**: When the current user changes, `onStopUpdates()` is
    called.  The delegate clears all location state to prevent
@@ -2634,16 +2637,16 @@ The APEX contains:
 | `geotz.jar` | `javalib/` | The provider as a system-server-classpath jar |
 | License files | `etc/` | Attribution for timezone-boundary-builder data |
 
-There is no `app/` APK and no native `lib/` directory in this APEX: the
+There is no `app/` APK and no native `lib/` directory in this APEX.  The
 provider ships as the `geotz` Java library, delivered through a
-`systemserverclasspath_fragment`, and the `geotz_lookup` and `s2storage`
+`systemserverclasspath_fragment`.  The `geotz_lookup` and `s2storage`
 libraries are Java libraries statically linked into that jar.
 
 When a time-zone boundary change occurs (e.g., a country changes its
 time zone), Google can push an updated APEX containing a new `tzs2.dat`
-file.  Because a staged APEX update only becomes active after the
-activation reboot -- which also restarts the system server hosting the
-provider -- the new data takes effect from the next boot onward.
+file.  A staged APEX update only becomes active after the
+activation reboot, and that reboot also restarts the system server hosting the
+provider.  So the new data takes effect from the next boot onward.
 
 ---
 
@@ -2731,13 +2734,13 @@ The framework exposes this through `GnssAntennaInfo`:
 
 The structured GNSS assistance mechanism is exposed through the
 `IGnssAssistanceInterface` HAL (reached via
-`IGnss.getExtensionGnssAssistanceInterface()`), which first appeared in GNSS
+`IGnss.getExtensionGnssAssistanceInterface()`).  This HAL first appeared in GNSS
 HAL V5 and is part of the Android 17 (V7) surface.  It supplements the legacy
 opaque-PSDS approach with a richly typed assistance model.
 
 In Android 17 the registration is **unconditional**.  The
-`gnss_assistance_interface_jni` flag that used to gate the JNI path was removed,
-so `GnssManagerService.onSystemReady()` simply binds the proxy provider and, if
+`gnss_assistance_interface_jni` flag that used to gate the JNI path was removed.
+So `GnssManagerService.onSystemReady()` simply binds the proxy provider and, if
 present, registers its assistance callbacks:
 
 ```java
@@ -2760,13 +2763,16 @@ When the HAL fires `GnssAssistanceCallbacks.onRequestGnssAssistanceInject()`,
 `GnssManagerService` queries the proxy provider for a `GnssAssistance` object.
 The HAL's `GnssAssistance` parcelable nests per-constellation assistance
 (`GpsAssistance`, `GalileoAssistance`, `GlonassAssistance`, `QzssAssistance`,
-`BeidouAssistance`) plus an optional `IonexAssistance`.  Each per-constellation
+`BeidouAssistance`) plus an optional `IonexAssistance`.
+
+Each per-constellation
 record references its own ephemeris parcelable
 (`GpsSatelliteEphemeris`, `GalileoSatelliteEphemeris`,
 `BeidouSatelliteEphemeris`, `GlonassSatelliteEphemeris`,
-`QzssSatelliteEphemeris`), almanac (`GnssAlmanac`/`GlonassAlmanac`),
-ionospheric models (`KlobucharIonosphericModel`, `GalileoIonosphericModel`),
-plus `LeapSecondsModel`, `UtcModel`, `TimeModel`, `RealTimeIntegrityModel`, and
+`QzssSatelliteEphemeris`).  It also references an almanac
+(`GnssAlmanac`/`GlonassAlmanac`) and ionospheric models
+(`KlobucharIonosphericModel`, `GalileoIonosphericModel`).  It references
+`LeapSecondsModel`, `UtcModel`, `TimeModel`, `RealTimeIntegrityModel`, and
 `AuxiliaryInformation`.  This structured format allows more fine-grained and
 efficient assistance delivery than opaque PSDS binary blobs.  Android 17 also
 adds the `support_ionex_assistance` and `support_toa_in_gnss_satellite_almanac`
@@ -2852,14 +2858,14 @@ hardware-accelerated activity recognition.  Android 17 adds the
 path.
 
 Activity recognition (walking, running, driving, etc.) uses the same
-sensor data that location services consume, and the results can influence
+sensor data that location services consume.  The results can influence
 location provider behavior (e.g., the FLP may weight different sources
 differently based on detected activity).
 
 The Context Hub itself is hosted in this package
-(`com.android.server.location.contexthub`), and in Android 17 it gained a
-data-flow / endpoint model with a per-connection permission `PccAccessList`,
-covered in Chapter 17 (Sensors and Context Hub).
+(`com.android.server.location.contexthub`).  In Android 17 it gained a
+data-flow / endpoint model with a per-connection permission `PccAccessList`.
+Chapter 17 (Sensors and Context Hub) covers this model.
 
 ---
 
@@ -2871,9 +2877,9 @@ relevant flag and source references are given inline.
 
 ### 33.11.1  Feature-Flag Cleanups (Behaviors Now Default)
 
-A large fraction of the 16-to-17 location churn is flag removal: behaviors that
+A large fraction of the 16-to-17 location churn is flag removal.  Behaviors that
 shipped behind `android.location.flags` flags in earlier releases became the
-default code path, and the dead flags were deleted.  The flags below no longer
+default code path.  The dead flags were deleted.  The flags below no longer
 gate anything at runtime:
 
 | Removed / cleaned-up flag | Effect now that it is gone |
@@ -2916,8 +2922,8 @@ Android 17 exposes several new GNSS SDK surfaces, each behind a flag in
 | `gnss_api_measurement_request_work_source` | `GnssMeasurementRequest.getWorkSource()` |
 | `gnss_assistance_interface` | The `GnssAssistance`, `GnssAlmanac`, and `IonexAssistance` SDK classes |
 
-Note that the QZSS SVID range is inconsistent across surfaces: the legacy
-`GnssSvInfo` HAL doc and `GnssStatus` use 183-212, while the newer
+Note that the QZSS SVID range is inconsistent across surfaces.  The legacy
+`GnssSvInfo` HAL doc and `GnssStatus` use 183-212.  The newer
 `gnss_assistance` parcelables and `android.location.GnssAssistance` use
 183-206.
 
@@ -3035,8 +3041,8 @@ PendingIntent pi = PendingIntent.getBroadcast(
 lm.addProximityAlert(lat, lng, 100f, -1, pi);
 ```
 
-`addProximityAlert()` is the public entry point for software geofences;
-internally it builds an `android.location.Geofence` (an `@hide` class whose
+`addProximityAlert()` is the public entry point for software geofences.
+Internally it builds an `android.location.Geofence` (an `@hide` class whose
 factory is `Geofence.createCircle(lat, lng, radius, expirationMs)`) and hands
 it to `GeofenceManager`.
 
@@ -3106,8 +3112,8 @@ lm.registerGnssMeasurementsCallback(request, getMainExecutor(),
     });
 ```
 
-This data can be used with open-source GNSS processing software to compute
-a position fix independently of the HAL's built-in positioning engine.
+Open-source GNSS processing software can use this data. It computes a
+position fix independently of the HAL's built-in positioning engine.
 
 ### 33.12.8  Exercise 8: Permission Behavior Comparison
 
@@ -3116,11 +3122,12 @@ Build two variants of a location app:
 1. **Variant A**: Requests only `ACCESS_COARSE_LOCATION`.
 2. **Variant B**: Requests `ACCESS_FINE_LOCATION`.
 
-Compare the locations received by each.  Variant A should receive locations
-fudged to a grid whose default cell width is ~2 km (or finer in dense areas
-where the population-density path is active).  Verify by logging the raw
-coordinates and computing the distance between the two variants' reported
-positions.
+Compare the locations that each variant receives.  Variant A should receive
+locations fudged to a grid. The default cell width of the grid is ~2 km.
+The cells are finer in dense areas where the population-density path is
+active.  Log the raw
+coordinates and compute the distance between the positions that the two
+variants report.
 
 ### 33.12.9  Exercise 9: Trace the Provider Initialization
 
@@ -3159,7 +3166,7 @@ Study the output to identify:
 
 - The current polling interval.
 - The distance to the nearest geofence boundary.
-- The `WorkSource` showing which apps' geofences are being serviced.
+- The `WorkSource`, which shows the apps whose geofences are being serviced.
 
 ### 33.12.11  Exercise 11: Compare GNSS Constellations
 
@@ -3355,9 +3362,9 @@ Write a script to parse the dump output and extract:
 
 ## Summary
 
-This chapter explored Android's location services from the public
-`LocationManager` API down through the system-server implementation in
-`LocationManagerService`, the GNSS HAL AIDL contract, and the
+This chapter explored Android's location services. It started at the public
+`LocationManager` API. It then went down through the system-server
+implementation in `LocationManagerService`, the GNSS HAL AIDL contract, and the
 auxiliary subsystems for geofencing, geocoding, and time-zone detection.
 
 The key architectural insights are:
@@ -3367,25 +3374,26 @@ The key architectural insights are:
    directly trading battery life for accuracy.
 
 2. **The provider abstraction** (`AbstractLocationProvider`) cleanly
-   separates the framework from diverse positioning technologies --
-   satellite receivers, Wi-Fi scanners, cell databases, and sensor
+   separates the framework from diverse positioning technologies.
+   Satellite receivers, Wi-Fi scanners, cell databases, and sensor
    fusion engines are all interchangeable behind the same interface.
 
 3. **The GNSS HAL** (`IGnss` AIDL) provides a rich, capability-driven
    interface that supports everything from basic position fixes to raw
    carrier-phase measurements suitable for centimeter-level positioning.
 
-4. **The permission model** implements defense-in-depth: runtime
+4. **The permission model** implements defense-in-depth. Runtime
    permissions, AppOps, foreground/background separation, per-user
    settings, emergency overrides, and ADAS bypass form multiple
    independent gates on location data flow.
 
-5. **Geofencing** operates at two layers: a software `GeofenceManager`
-   that dynamically adjusts its polling interval based on proximity to
-   fence boundaries, and a hardware `IGnssGeofence` HAL that offloads
-   boundary monitoring to the GNSS chipset for minimal power consumption.
+5. **Geofencing** operates at two layers. The first layer is a software
+   `GeofenceManager` that dynamically adjusts its polling interval based on
+   proximity to fence boundaries. The second layer is a hardware
+   `IGnssGeofence` HAL that offloads boundary monitoring to the GNSS chipset
+   for minimal power consumption.
 
-6. **GeoTZ** demonstrates Android's modular architecture -- an APEX-
+6. **GeoTZ** demonstrates Android's modular architecture. It is an APEX-
    delivered module that converts location into time-zone identifiers
    using an offline S2-geometry database, with no dependency on network
    services.  Its dual-mode listening strategy (active/passive with power
@@ -3397,15 +3405,15 @@ The key architectural insights are:
    service, making it replaceable and optional.
 
 8. **The carrier integration** in `GnssConfiguration` shows how GNSS
-   behavior adapts to the cellular environment -- SUPL server addresses,
+   behavior adapts to the cellular environment. SUPL server addresses,
    LPP profiles, and emergency PDN settings are all carrier-configurable.
 
 9. **Android 17** advanced the subsystem mainly by turning experiments into
-   defaults: the GNSS HAL reached AIDL V7 (adding the engine-restart
-   capability and structured-assistance fields), the structured GNSS
+   defaults. The GNSS HAL reached AIDL V7 (adding the engine-restart
+   capability and structured-assistance fields). The structured GNSS
    assistance interface and population-density coarse fudging became
-   unconditional as their gating flags were removed, stationary throttling
-   narrowed to the GPS provider, and new GNSS SDK surfaces (NavIC L1, GNSS
+   unconditional as their gating flags were removed. Stationary throttling
+   narrowed to the GPS provider. New GNSS SDK surfaces (NavIC L1, GNSS
    status code types, the QZSS SVID extension) landed behind flags (§33.11).
 
 The source files explored in this chapter are:

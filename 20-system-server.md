@@ -1,17 +1,17 @@
 # Chapter 20: system_server
 
 The `system_server` process is the beating heart of the Android framework. Born
-from Zygote during early boot, it hosts over one hundred Java system services
-that collectively manage every aspect of the device: activities, windows,
+from Zygote during early boot, it hosts over one hundred Java system services.
+Together these services manage every aspect of the device: activities, windows,
 packages, power, networking, notifications, input, display, audio, security,
 and much more. Every Android app interacts with `system_server` dozens of
-times per second through Binder IPC, even if the developer never writes a
-single line of code that mentions it.
+times per second through Binder IPC. This is true even if the developer never
+writes a single line of code that mentions it.
 
 This chapter traces `system_server` from its creation by Zygote through its
-multi-phase boot sequence, catalogs the services it hosts, explains its
-threading model, examines the Watchdog that guards against deadlocks, and
-provides hands-on exercises for inspecting a live system.
+multi-phase boot sequence. It catalogs the services it hosts
+and explains its threading model. It also examines the Watchdog that guards
+against deadlocks, and it gives hands-on exercises to inspect a live system.
 
 ---
 
@@ -22,7 +22,7 @@ provides hands-on exercises for inspecting a live system.
 When the Android runtime starts, `init` launches `app_process` which creates
 the Zygote process. Zygote preloads common classes and resources, then
 forks `system_server` as its very first child. This fork-based creation
-gives `system_server` an enormous head start: all preloaded framework classes,
+gives `system_server` an enormous head start. All preloaded framework classes,
 common libraries, and shared resources are already mapped into its address
 space via copy-on-write memory.
 
@@ -56,8 +56,8 @@ public SystemServer() {
 ```
 
 The `mStartCount` field tracks how many times `system_server` has started.
-A value greater than 1 indicates a runtime restart rather than a fresh boot --
-an important distinction because a runtime restart skips certain one-time
+A value greater than 1 indicates a runtime restart rather than a fresh boot.
+This distinction is important because a runtime restart skips certain one-time
 initialization steps.
 
 ### 20.1.2 The run() Method -- Initializing the World
@@ -119,9 +119,9 @@ Looper.getMainLooper().setSlowLogThresholdMs(
         SLOW_DISPATCH_THRESHOLD_MS, SLOW_DELIVERY_THRESHOLD_MS);
 ```
 
-The main thread gets foreground priority, and its looper is configured to log
-warnings for messages taking longer than 100ms to dispatch or 200ms to
-deliver. These thresholds help identify performance problems.
+The main thread gets foreground priority. Its looper is configured to log a warning for a
+message that takes longer than 100ms to dispatch or 200ms to deliver. These
+thresholds help identify performance problems.
 
 **System context creation:**
 
@@ -139,7 +139,7 @@ private void createSystemContext() {
 ```
 
 Even though `system_server` is not a typical Android app, it needs an
-`ActivityThread` and a `Context` for accessing resources, databases,
+`ActivityThread` and a `Context`. It uses them to access resources, databases,
 content providers, and the rest of the framework APIs.
 
 **SystemServiceManager creation:**
@@ -419,10 +419,10 @@ graph LR
     style H fill:#dfd,stroke:#333
 ```
 
-The boot phases form a contract: a service that needs to call
-`PowerManager` should wait until `PHASE_SYSTEM_SERVICES_READY` (500),
-while a service that needs to start third-party app components should wait
-until `PHASE_THIRD_PARTY_APPS_CAN_START` (600).
+The boot phases form a contract. A service that needs to call
+`PowerManager` should wait until `PHASE_SYSTEM_SERVICES_READY` (500). A
+service that needs to start third-party app components should wait until
+`PHASE_THIRD_PARTY_APPS_CAN_START` (600).
 
 ### 20.2.5 TargetUser and User Lifecycle
 
@@ -488,9 +488,9 @@ public SystemService startServiceFromJar(String className, String path) {
 }
 ```
 
-This modular loading allows mainline modules (WiFi, Bluetooth, Connectivity,
-UWB) to deliver their system services via APEXes rather than being compiled
-into the platform monolith.
+This modular loading lets mainline modules (WiFi, Bluetooth, Connectivity,
+UWB) deliver their system services via APEXes. These services are not
+compiled into the platform monolith.
 
 ---
 
@@ -499,9 +499,9 @@ into the platform monolith.
 ### 20.3.1 Bootstrap Services
 
 Bootstrap services form the critical dependency chain. They have circular
-dependencies that prevent simple sequential initialization, which is why
-they are started in a special `startBootstrapServices()` method. Listed in
-start order from `SystemServer.java`:
+dependencies that prevent simple sequential initialization. For this reason,
+they are started in a special `startBootstrapServices()` method.
+Listed in start order from `SystemServer.java`:
 
 | # | Service | Class | Purpose |
 |---|---------|-------|---------|
@@ -1206,9 +1206,9 @@ public static Watchdog getInstance() {
 
 ### 20.5.2 Default Timeout
 
-The default timeout is 60 seconds. A 10-second alternative exists, but it
-is selected only by manually flipping the hard-coded `DB` constant in the
-source (which is `false` in the tree) -- it is not tied to
+The default timeout is 60 seconds. A 10-second alternative exists. It is selected
+only by manually flipping the hard-coded `DB` constant in the source. The
+constant is `false` in the tree. The alternative is not tied to
 debuggable/userdebug builds (line 101):
 
 ```java
@@ -1303,12 +1303,12 @@ public void run() {
 }
 ```
 
-There is an important optimization (line 311-321): if the checker has no
-registered monitors *and* the target looper is currently polling (idle)
--- or the checker is paused -- the HandlerChecker skips posting. An idle
-looper means the thread is not blocked, so there is no need to waste time
-with a context switch; but if monitors are registered, the post happens
-anyway, because the monitors themselves still need to run.
+There is an important optimization (line 311-321). The HandlerChecker skips
+posting if the checker has no registered monitors *and* the target looper is
+currently polling (idle). It also skips posting if the checker is paused. An
+idle looper means the thread is not blocked, so there is no need to waste time
+with a context switch. If monitors are registered, the post happens anyway,
+because the monitors themselves still need to run.
 
 ### 20.5.5 Monitored Threads
 
@@ -1462,10 +1462,10 @@ When the Watchdog detects an OVERDUE state:
 3. **Process kill**: Calls `Process.killProcess(Process.myPid())` to
    terminate system_server.
 
-4. **Runtime restart**: Zygote (which forked system_server and reaps it
-   via its SIGCHLD handler) detects the death and SIGKILLs itself
-   (`frameworks/base/core/jni/com_android_internal_os_Zygote.cpp`);
-   init then restarts the zygote service, and that restart tears down
+4. **Runtime restart**: Zygote forked system_server and reaps it via its
+   SIGCHLD handler. Zygote detects the death and SIGKILLs itself
+   (`frameworks/base/core/jni/com_android_internal_os_Zygote.cpp`).
+   Then init restarts the zygote service. That restart tears down
    and respawns the entire Java runtime.
 
 The native processes of interest (lines 126-148):
@@ -1586,11 +1586,11 @@ graph TB
 ```
 
 These threads are independent, parallel loopers, not stages of a pipeline.
-Nothing forwards work from one to the next in a fixed order: each service
-picks the thread whose priority matches the work it is posting, so the same
+Nothing forwards work from one to the next in a fixed order. Each service
+picks the thread whose priority matches the work it is posting. As a result, the same
 service may post a display update to `DisplayThread`, a disk write to
-`IoThread`, and a periodic cleanup to `BackgroundThread` without any of those
-threads talking to each other.
+`IoThread`, and a periodic cleanup to `BackgroundThread`. None of those
+threads talk to each other.
 
 ### 20.6.2 ServiceThread Base Class
 
@@ -1626,7 +1626,7 @@ public class ServiceThread extends HandlerThread {
 
 The `allowIo` parameter controls StrictMode enforcement. Threads that should
 not perform disk or network I/O (like the display and animation threads)
-set this to `false`, causing StrictMode violations if I/O occurs.
+set this to `false`. As a result, StrictMode violations occur if I/O occurs.
 
 The `makeSharedHandler()` factory method creates handlers with `shared=true`,
 allowing multiple components to safely post to the same handler without
@@ -1812,22 +1812,26 @@ Key patterns used in system_server:
 
 `android.os.MessageQueue` is a core OS primitive used everywhere, not specific
 to system_server, so its full treatment belongs in the core threading layer.
+
 The piece that matters here: Android 17 adds a lock-free reimplementation,
 selected at build time by the `release_package_messagequeue_implementation`
 Soong config. The default `CombinedMessageQueue` variant
 (`frameworks/base/core/java/android/os/CombinedMessageQueue/MessageQueue.java`)
-picks the implementation at runtime, falling back to the legacy
-`synchronized`-guarded queue and switching to its concurrent
-"ConcurrentMessageQueue" path for processes that qualify. Qualification is
-gated by the compat change `USE_NEW_MESSAGEQUEUE` (`@EnabledAfter(targetSdkVersion
+picks the implementation at runtime. It falls back to the legacy
+`synchronized`-guarded queue. It switches to its concurrent
+"ConcurrentMessageQueue" path for processes that qualify. The compat change
+`USE_NEW_MESSAGEQUEUE` (`@EnabledAfter(targetSdkVersion
 = BAKLAVA)`, i.e. apps targeting SDK 37+) and the
-`use_concurrent_message_queue_in_apps` aconfig flag, and the concurrent path
-is allowed for system (core-UID) processes such as system_server. A separate
-build-selectable variant, "DeliQueue" (a Treiber stack plus a per-looper
-min-heap, coordinated with `VarHandle` CAS instead of a monitor lock), lives
-in `frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java`
-together with `frameworks/base/core/java/android/os/MessageStack.java`; the
-legacy variant sits under
+`use_concurrent_message_queue_in_apps` aconfig flag gate qualification. The
+concurrent path is allowed for system (core-UID) processes such as
+system_server.
+
+A separate build-selectable variant is "DeliQueue" (a Treiber
+stack plus a per-looper min-heap, coordinated with `VarHandle` CAS instead of
+a monitor lock). It lives in
+`frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java`
+together with `frameworks/base/core/java/android/os/MessageStack.java`.
+The legacy variant sits under
 `frameworks/base/core/java/android/os/LegacyMessageQueue/`.
 
 ### 20.6.6 Binder Threads
@@ -2042,8 +2046,8 @@ PMS depends on:
 - DomainVerificationService (app link verification)
 - DisplayManager (must have display metrics for resource selection)
 
-The Watchdog is explicitly paused during PMS initialization because the
-package scan can take many seconds (or even minutes on first boot with
+The Watchdog is explicitly paused during PMS initialization. This is
+because the package scan can take many seconds (or even minutes on first boot with
 many pre-installed apps). Without the pause, the Watchdog would kill
 `system_server` during a legitimate long operation.
 
@@ -2441,8 +2445,8 @@ Early in `run()`, `system_server` clears its growth limit (line 911):
 VMRuntime.getRuntime().clearGrowthLimit();
 ```
 
-Normal apps have a heap growth limit (typically 256MB or 512MB), but
-`system_server` removes this limit because it needs to manage the entire
+Normal apps have a heap growth limit (typically 256MB or 512MB). But
+`system_server` removes this limit. This is because it needs to manage the entire
 system's state, which can require significant memory.
 
 ### 20.10.3 Binder Performance
@@ -2657,8 +2661,9 @@ final SystemService cshs = mSystemServiceManager
 ```
 
 The `CarServiceHelperService` bridges the system server to the Car
-Service, which runs in a separate process and manages automotive-specific
-features like vehicle HAL, cabin controls, and driving safety.
+Service. The Car Service runs in a separate process. It manages
+automotive-specific features like vehicle HAL, cabin controls, and
+driving safety.
 
 ### 20.12.4 TV-Specific Services
 
@@ -2691,10 +2696,10 @@ if (RoSystemFeatures.hasFeatureEmbedded(context)) {
 
 ### 20.13.1 The Final Step
 
-After all services are running (the boot phases up to
-`PHASE_THIRD_PARTY_APPS_CAN_START` have run at this point), the very
-last step of `startOtherServices()` before entering the main loop is
-launching SystemUI (lines 3655-3661):
+All services are now running, and the boot phases up to
+`PHASE_THIRD_PARTY_APPS_CAN_START` have run. The very last step of
+`startOtherServices()` before the main loop is to launch SystemUI
+(lines 3655-3661):
 
 ```java
 // frameworks/base/services/java/com/android/server/SystemServer.java, line 3655
@@ -2706,8 +2711,8 @@ try {
 }
 ```
 
-SystemUI is a separate app process (not a service within `system_server`),
-but it is started by `system_server` because it provides the status bar,
+SystemUI is a separate app process (not a service within `system_server`).
+`system_server` starts it because it provides the status bar,
 navigation bar, notification shade, quick settings, and other critical
 UI elements.
 
@@ -2827,8 +2832,8 @@ and waiting for each other. The thread dump will show:
   at ActivityManagerService.doSomethingElse()
 ```
 
-This shows thread 12 waiting for a lock held by thread 15, while
-thread 15 waits for a lock held by thread 12 -- a classic deadlock.
+This shows thread 12 waiting for a lock held by thread 15. Thread 15
+waits for a lock held by thread 12. This is a classic deadlock.
 
 ### 20.14.4 Analyzing Boot Timing
 
@@ -2992,16 +2997,16 @@ environment.
 
 After `startOtherServices()` completes, `SystemServer` enters the fourth
 and final startup method: `startApexServices()`. This phase handles
-services that are defined in APEX modules: the list is discovered via
+services that are defined in APEX modules. The list is discovered via
 `ApexManager.getInstance().getApexSystemServices()` (populated from APEX
-manifests) and each entry is started through
+manifests). Each entry is started through
 `mSystemServiceManager.startService(name)` when the manifest entry has no
-jar path, or `mSystemServiceManager.startServiceFromJar(name, jarPath)`
-when it does.
+jar path. It is started through
+`mSystemServiceManager.startServiceFromJar(name, jarPath)` when it has one.
 
 The key difference from the `startServiceFromJar()` calls in
-`startOtherServices()` is that the name/jar pair here comes from the APEX
-manifest rather than being hardcoded in `SystemServer.java`. This allows
+`startOtherServices()` is the source of the name/jar pair. Here it comes
+from the APEX manifest. It is not hardcoded in `SystemServer.java`. This allows
 APEX modules to add system services without modifying `SystemServer.java`
 at all.
 
@@ -3069,9 +3074,9 @@ LockGuard.installLock(this, LockGuard.INDEX_WINDOW);
 LockGuard.guard(LockGuard.INDEX_POWER); // warns if holding WINDOW lock
 ```
 
-When a thread acquires locks out of order, LockGuard logs a warning
-that helps developers identify potential deadlock scenarios before they
-become actual deadlocks in the field.
+When a thread acquires locks out of order, LockGuard logs a warning.
+The warning helps developers identify potential deadlock scenarios
+before they become actual deadlocks in the field.
 
 ### 20.17.3 ThreadPriorityBooster
 
@@ -3376,10 +3381,10 @@ if (android.app.contentrestriction.flags.Flags.contentRestrictionApi()) {
 ```
 
 Some services that earlier releases gated behind a flag have since
-graduated: in Android 17 `AdvancedProtectionService` (line 1867) is
-gated only by form factor (`!isWatch && !isTv && !isAutomotive`) and no
-longer requires the `android.security.Flags.aapmApi()` check it carried
-when the API was being stabilized.
+graduated. In Android 17 `AdvancedProtectionService` (line 1867) is
+gated only by form factor (`!isWatch && !isTv && !isAutomotive`). It no
+longer requires the `android.security.Flags.aapmApi()` check that it
+carried while the API was stabilizing.
 
 ### 20.21.2 FeatureFlagsService
 
@@ -3399,10 +3404,9 @@ the latest flag values.
 
 ### 20.21.3 Crash Recovery as a Module
 
-In earlier releases the crash recovery logic was guarded by a
-`refactorCrashrecovery()` flag, with the in-platform `RescueParty` and
-`PackageWatchdog` reached through a `CrashRecoveryAdaptor` shim when the
-flag was off. That migration has completed: in Android 17 crash recovery
+In earlier releases a `refactorCrashrecovery()` flag guarded the crash
+recovery logic. When the flag was off, the in-platform `RescueParty` and
+`PackageWatchdog` were reached through a `CrashRecoveryAdaptor` shim. That migration has completed: in Android 17 crash recovery
 runs unconditionally as a module. `SystemServer` references the
 implementation only by a string class name so the code can live in a
 mainline-style module rather than in the platform JAR:
@@ -3666,9 +3670,9 @@ updatable, but it all runs in the same process.
 
 ## 20.25 BackupManagerService
 
-The Android backup framework enables applications to back up their data to
-cloud or local storage and restore it after device reset, migration, or app
-reinstallation. `BackupManagerService` (BMS) is the system service that
+The Android backup framework lets applications back up their data to
+cloud or local storage. Applications can restore the data after device
+reset, migration, or app reinstallation. `BackupManagerService` (BMS) is the system service that
 orchestrates this entire process -- managing backup transports, scheduling
 key-value and full-data backups, and coordinating restore operations.
 
@@ -3969,7 +3973,7 @@ BMS handles edge cases around multi-user devices:
 - The main user might not exist at boot time (first boot), tracked via
   `mDidMainUserExistAtBoot`
 - Non-system user backup state is stored in both the user's directory
-  and the system directory -- when a user is removed, BMS cleans up the
+  and the system directory. When a user is removed, BMS cleans up the
   system-dir portion via `onRemovedNonSystemUser()`
 - Each user gets an independent `UserBackupManagerService` with its own
   transports, schedules, and state
@@ -3978,9 +3982,10 @@ BMS handles edge cases around multi-user devices:
 
 ## 20.26 CrashRecoveryModule and RescueParty
 
-When Android detects persistent crashes -- whether from apps, system services,
-or boot loops -- the crash recovery subsystem progressively escalates through
-increasingly aggressive mitigations to restore the device to a functional state.
+Android detects persistent crashes from apps, system services, or boot
+loops. When it does, the crash recovery subsystem progressively escalates
+through increasingly aggressive mitigations. These restore the device to a
+functional state.
 This system is built on three cooperating components: `PackageWatchdog`,
 `RescueParty`, and `CrashRecoveryModule`.
 
@@ -3988,8 +3993,8 @@ This system is built on three cooperating components: `PackageWatchdog`,
 
 In Android 17 the crash recovery code has moved out of `frameworks/base`
 and into a standalone mainline module under
-`packages/modules/CrashRecovery/`, so the previous platform paths no
-longer exist:
+`packages/modules/CrashRecovery/`. For that reason, the previous platform
+paths no longer exist:
 
 | File | Description |
 |------|-------------|
@@ -4150,10 +4155,10 @@ flowchart TB
 
 Normal failures escalate directly from a warm reboot (first mitigation)
 to a factory reset (second and later mitigations). Boot loops get one
-extra step: when the CrashRecovery module's `flag_reset_enabled` flag is
+extra step. When the CrashRecovery module's `flag_reset_enabled` flag is
 on (and `flag_reset_disabled` is off), the first mitigation resets all
-DeviceConfig flags before escalating to warm reboot and then factory
-reset; otherwise boot loops follow the normal path.
+DeviceConfig flags. Then the escalation goes to warm reboot and then
+factory reset. Otherwise, boot loops follow the normal path.
 
 The escalation constants:
 
@@ -4212,15 +4217,17 @@ Boot loop detection:
 ```
 
 Because there is no package to blame, boot loops run a separate escalation
-ladder in RescueParty: `getRescueLevelForBootLoop()` (RescueParty.java, lines
+ladder in RescueParty. `getRescueLevelForBootLoop()` (RescueParty.java, lines
 274-285) inserts an extra all-DeviceConfig-reset step ahead of the warm
-reboot, so attempt 1 resets every DeviceConfig namespace, attempt 2 warm
-reboots, and attempt 3 or later factory resets. That extra step only applies
-when the flag-reset feature is enabled; otherwise the boot-loop path falls
+reboot. So attempt 1 resets every DeviceConfig namespace, attempt 2 warm
+reboots, and attempt 3 or later factory resets.
+
+That extra step only applies
+when the flag-reset feature is enabled. Otherwise, the boot-loop path falls
 back to the ordinary `getRescueLevel()` ladder (warm reboot, then factory
-reset). The mitigation count itself is passed through unchanged -- there is
-no offset -- and the scoped DeviceConfig reset level, which would need a
-target package, is never returned by either function.
+reset). The mitigation count itself is passed through unchanged. There is
+no offset. Neither function ever returns the scoped DeviceConfig reset
+level, which would need a target package.
 
 ### 20.26.6 Factory Reset Throttling
 
@@ -4295,8 +4302,8 @@ sequenceDiagram
     end
 ```
 
-The key principle is **least user impact**: rollback (restoring the previous
-version) is always preferred over settings resets or factory reset because
+The key principle is **least user impact**. Rollback (restoring the previous
+version) is always preferred over settings resets or factory reset, because
 it is less disruptive.
 
 ---
@@ -4305,8 +4312,8 @@ it is less disruptive.
 
 The `ClipboardService` manages the system clipboard -- the mechanism that
 enables copy-and-paste across applications. What seems like a trivial
-feature involves deep security considerations: cross-app data leakage,
-content URI permission grants, multi-user isolation, virtual device
+feature involves deep security considerations. These include cross-app data
+leakage, content URI permission grants, multi-user isolation, virtual device
 clipboard silos, automatic clipboard clearing, and access notification
 toasts.
 
@@ -4426,16 +4433,16 @@ private static final long ACCESS_NOTIFICATION_SUPPRESSION_TIMEOUT_MILLIS = 1000L
 
 This constant is the window (1 second) during which access notifications are
 suppressed for a UID after a trusted component calls
-`ClipboardManagerInternal.notifyUserAuthorizedClipAccess()` -- meaning the
+`ClipboardManagerInternal.notifyUserAuthorizedClipAccess()`. This means the
 user has already explicitly authorized the paste, so there is no need to
 toast about it. It is not a debounce against repeated toasts for the same
 UID. The feature is controlled by a per-user setting
 (`CLIPBOARD_SHOW_ACCESS_NOTIFICATIONS`) and a server-side `DeviceConfig` flag.
 
-Right after calling `showAccessNotificationLocked()`, `getPrimaryClip()`
+Right after `getPrimaryClip()` calls `showAccessNotificationLocked()`, it
 also sends the clipboard content to the `TextClassifier` for content-type
-logging via `notifyTextClassifierLocked()`, which classifies up to
-`mMaxClassificationLength` (default 400) characters.
+logging. It does this through `notifyTextClassifierLocked()`, which classifies
+up to `mMaxClassificationLength` (default 400) characters.
 
 ### 20.27.5 Automatic Clipboard Clearing
 
@@ -4566,11 +4573,11 @@ The key components are:
 ### 20.28.2 The Download Database
 
 DownloadProvider uses a SQLite database (`downloads.db`, version 114). The
-schema has two tables, both created in `onCreate()`: the main `downloads`
-table (`createDownloadsTable()`, line 528), which tracks every download's
+schema has two tables, both created in `onCreate()`. The main `downloads`
+table (`createDownloadsTable()`, line 528) tracks every download's
 URI, file path, status, bytes downloaded, MIME type, notification
-visibility, retry count, ETag, and more; and `request_headers`
-(`createHeadersTable()`, line 568), which stores the extra HTTP request
+visibility, retry count, ETag, and more. The `request_headers` table
+(`createHeadersTable()`, line 568) stores the extra HTTP request
 headers a caller attached to a download.
 
 ```java
@@ -4706,20 +4713,22 @@ TrafficStats.setThreadStatsUid(mInfo.mUid);
 Android 17 reworks serial-port support into a proper, app-facing API.
 Earlier releases exposed a small `SerialService` inside `system_server`
 that could only open the handful of UART paths an OEM listed in
-`config_serialPorts`, callable only by privileged apps holding the
-`SERIAL_PORT` permission. The new wired Serial API enumerates real USB
-serial adapters, asks the user for consent per port, and hands the app a
-file descriptor it can read and write -- the platform piece behind the
-Web Serial API on Android. The whole feature is gated by the
+`config_serialPorts`. Only privileged apps holding the
+`SERIAL_PORT` permission could call it.
+
+The new wired Serial API enumerates
+real USB serial adapters and asks the user for consent per port. It then
+hands the app a file descriptor it can read and write. This is the platform
+piece behind the Web Serial API on Android. The whole feature is gated by the
 `android.hardware.serial.flags.enable_wired_serial_api` flag.
 
 ### 20.29.1 Three-Layer Architecture
 
-The feature spans three processes: the app's `SerialManager` client, the
-`SerialManagerService` facade in `system_server`, and a separate Rust
-daemon (`serialservice`) that does the actual device enumeration and
+The feature spans three processes. They are the app's `SerialManager` client,
+the `SerialManagerService` facade in `system_server`, and a separate Rust
+daemon (`serialservice`). The daemon does the actual device enumeration and
 file-descriptor work. `SerialManagerService` owns user consent and
-policy; it never touches `/dev` itself, instead proxying open requests to
+policy. It never touches `/dev` itself. Instead, it proxies open requests to
 the native daemon over a Binder interface named `native_serial`.
 
 The following diagram shows how an app reaches a physical serial port.
@@ -4773,8 +4782,8 @@ if (android.hardware.serial.flags.Flags.enableWiredSerialApi()) {
 }
 ```
 
-The service is a `SystemService` via its inner `Lifecycle` class, which
-publishes the binder under `Context.SERIAL_SERVICE` in `onStart()` and
+The service is a `SystemService` via its inner `Lifecycle` class. The class
+publishes the binder under `Context.SERIAL_SERVICE` in `onStart()`. It also
 forwards `onUserUnlocking()` / `onUserStopping()` so per-user access state
 can be loaded and torn down (used only when the `persistent_access` flag
 is on):
@@ -4795,9 +4804,9 @@ public static class Lifecycle extends SystemService {
 
 `SerialManagerService` connects to the native daemon lazily. The first
 call that needs a device (`getSerialPorts()`, `requestOpen()`, a listener
-registration, or a shell command) runs `connectToNativeService()`, which
-calls `ServiceManager.waitForService("native_serial")`, builds a
-`SerialDeviceFilter` over that binder, and starts listening for
+registration, or a shell command) runs `connectToNativeService()`. That method
+calls `ServiceManager.waitForService("native_serial")` and builds a
+`SerialDeviceFilter` over that binder. Then it starts to listen for
 connect/disconnect events. The constant for the daemon name and the
 lazy-connect logic live together:
 
@@ -4814,21 +4823,22 @@ daemon:
 - `SerialUserAccessManager`
   (`frameworks/base/services/serial/java/com/android/server/serial/SerialUserAccessManager.java`)
   is created per user. When an app calls `requestOpen()`, the service
-  routes through `requestAccess()`, which shows the consent dialog named
-  by `config_portAccessDialogComponent` and only proceeds with the open
+  routes through `requestAccess()`. That method shows the consent dialog named
+  by `config_portAccessDialogComponent`. It proceeds with the open only
   once the user grants access. `grantSerialPortAccess()` /
   `revokeSerialPortAccess()` (guarded by the `MANAGE_SERIAL_PORTS`
-  permission) let a manager app pre-authorize or withdraw access, and the
+  permission) let a manager app pre-authorize or withdraw access. The
   `persistent` flag determines whether a grant survives a reboot.
 - `SerialDeviceFilter`
   (`frameworks/base/services/serial/java/com/android/server/serial/SerialDeviceFilter.java`)
-  maintains the set of currently available `SerialPortInfo` entries,
-  dropping any USB IDs listed in `config_blockedUsbSerialIds`, and fans
+  maintains the set of currently available `SerialPortInfo` entries. It
+  drops any USB IDs listed in `config_blockedUsbSerialIds`. It also fans
   port add/remove events out to registered `ISerialPortListener` clients.
 
-`requestOpen()` also verifies, via `PackageManagerInternal.isSameApp()`,
-that the supplied package name actually belongs to the calling UID before
-any consent or open happens, so an app cannot impersonate another. The
+`requestOpen()` also verifies that the supplied package name actually
+belongs to the calling UID. It does this through
+`PackageManagerInternal.isSameApp()`, before any consent or open happens.
+So an app cannot impersonate another. The
 public flags (`SerialPort.OPEN_FLAG_*`) are translated to `open(2)` flags
 in `toOsConstants()`, always adding `O_NOCTTY` so a port never becomes the
 process's controlling terminal.
@@ -4854,16 +4864,18 @@ binder::register_lazy_service(
 
 The daemon is declared in `serialservice.rc` as a `late_start`,
 `oneshot`, `disabled` service that runs as the `system` user from
-`/system_ext/bin/serialservice`; the `disabled` plus lazy-service
-registration means init only spawns it on demand. Its
+`/system_ext/bin/serialservice`. The `disabled` option plus lazy-service
+registration means init only spawns it on demand.
+
+Its
 `android.hardware.serialservice.ISerialManager` AIDL is intentionally
 narrow -- `getSerialPorts()`, listener register/unregister, and
 `requestOpen()` returning a `ParcelFileDescriptor`. The Rust
 implementation (`rust/serial_manager.rs`) watches `ueventd` device nodes
 to keep the port list current and applies `TIOCEXCL` for exclusive opens.
-Splitting enumeration and file I/O into a separate, sandboxed Rust process
-keeps that USB-driven, memory-unsafe-prone code out of `system_server`
-while the privileged consent and policy logic stays in the framework.
+Enumeration and file I/O live in a separate, sandboxed Rust process. This
+keeps that USB-driven, memory-unsafe-prone code out of `system_server`.
+The privileged consent and policy logic stays in the framework.
 
 ### 20.29.5 Client API and Backward Compatibility
 
@@ -4871,8 +4883,8 @@ Apps talk to the feature through `SerialManager`
 (`frameworks/base/core/java/android/hardware/serial/SerialManager.java`),
 obtained from `Context.getSystemService(Context.SERIAL_SERVICE)`. The new
 class extends the old `android.hardware.SerialManager` so existing
-callers keep compiling: `getPorts()` returns rich `SerialPort` objects for
-the new flow, while the legacy `getSerialPorts()` and
+callers keep compiling. `getPorts()` returns rich `SerialPort` objects for
+the new flow. The legacy `getSerialPorts()` and
 `openSerialPort(path, speed)` methods are overridden to route the old
 config-port behavior through the new service. `SystemServiceRegistry`
 picks which manager to register based on the same flag:
@@ -4889,8 +4901,8 @@ if (enableWiredSerialApi()) {
 }
 ```
 
-So with the flag off, the platform behaves exactly as before; with it on,
-both the modern and legacy `SerialManager` class names resolve to the new,
+So with the flag off, the platform behaves exactly as before. With the flag
+on, both the modern and legacy `SerialManager` class names resolve to the new,
 consent-gated implementation backed by the `native_serial` daemon.
 
 ---
@@ -4924,14 +4936,14 @@ under `Context.CONTENT_RESTRICTION_SERVICE` and starts when
 
 `PccSandboxManagerService`
 (`frameworks/base/services/core/java/com/android/server/privatecompute/PccSandboxManagerService.java`)
-manages components running in the Private Compute Core sandbox (see
-Chapter 51 for PCC itself), publishing both a Binder interface and a native
+manages components that run in the Private Compute Core sandbox (see
+Chapter 51 for PCC itself). It publishes both a Binder interface and a native
 service interface for sandbox communication. It registers under
 `Context.PCC_SANDBOX_SERVICE`, gated by
 `android.app.privatecompute.flags.Flags.enablePccFrameworkSupport()`; the
 service re-checks the same flag in `onStart()` before publishing.
 
-None of the three is a stub: each has a working implementation, but all three
+None of the three is a stub. Each has a working implementation, but all three
 stay unstarted on a stock build until their flag is turned on.
 
 ---
@@ -5239,10 +5251,10 @@ system progresses through eight boot phases from
 `PHASE_WAIT_FOR_DEFAULT_DISPLAY` (100) to `PHASE_BOOT_COMPLETED` (1000).
 
 The threading model uses eight shared singleton threads (plus the main
-looper and a pool of 31 Binder threads), each with a specific priority
+looper and a pool of 31 Binder threads). Each has a specific priority
 level and purpose. The Watchdog monitors all critical threads every 15
-seconds and kills `system_server` if any thread remains unresponsive for
-60 seconds, triggering a runtime restart rather than leaving the device
+seconds. It kills `system_server` if any thread remains unresponsive for
+60 seconds. This triggers a runtime restart rather than leaving the device
 frozen.
 
 Service communication uses a dual-interface pattern: Binder services
@@ -5258,9 +5270,9 @@ loading mechanism allows services to be delivered and updated through
 mainline modules without modifying `SystemServer.java`.
 
 Understanding `system_server` is essential for AOSP development because
-virtually every framework API passes through it. Whether you are adding
-a new system service, debugging a boot hang, optimizing startup time,
-or investigating a Watchdog timeout, the concepts in this chapter --
-service lifecycle, boot phases, threading model, Watchdog monitoring,
-lock ordering, and the dual-interface communication pattern -- provide
-the foundation for working effectively with the Android framework.
+virtually every framework API passes through it. You may add a new system
+service, debug a boot hang, optimize startup time, or investigate a Watchdog
+timeout. In each case, the concepts in this chapter give you the foundation
+for work on the Android framework. These concepts are service lifecycle,
+boot phases, threading model, Watchdog monitoring, lock ordering, and the
+dual-interface communication pattern.

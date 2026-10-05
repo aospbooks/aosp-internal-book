@@ -1,14 +1,17 @@
 # Chapter 36: Telephony and RIL
 
 Android's telephony subsystem is one of the most complex and heavily layered pieces of
-the platform.  It spans from public SDK APIs that any application can call
-(`TelephonyManager`, `SmsManager`) through a privileged system service
-(`PhoneInterfaceManager`), an internal "phone" object hierarchy, the Radio
-Interface Layer (RIL) that serialises requests to the cellular modem, and finally
-an AIDL HAL that hardware vendors implement.  This chapter traces every hop of
-that chain in the AOSP source, explains the SIM, SMS, IMS, carrier
-configuration, and data-connection machinery, and provides hands-on exercises to
-explore the stack on a real device or emulator.
+the platform.  It spans several layers.  At the top are public SDK APIs that any
+application can call (`TelephonyManager`, `SmsManager`).  Below them are a
+privileged system service (`PhoneInterfaceManager`) and an internal "phone"
+object hierarchy.  Next is the Radio Interface Layer (RIL), which serializes
+requests to the cellular modem.  Finally, an AIDL HAL that hardware vendors
+implement sits at the bottom.
+
+This chapter traces every hop of
+that chain in the AOSP source.  It explains the SIM, SMS, IMS, carrier
+configuration, and data-connection machinery.  It also provides hands-on
+exercises to explore the stack on a real device or emulator.
 
 ---
 
@@ -16,7 +19,7 @@ explore the stack on a real device or emulator.
 
 ### 36.1.1 The Big Picture
 
-Android telephony is organised into four major layers, each running in a
+Android telephony is organized into four major layers, each running in a
 different process or address space:
 
 1. **Application layer** -- third-party or system apps that use the public
@@ -55,7 +58,7 @@ AOSP tree.  The key source locations are:
 | Public API | `frameworks/base/telephony/java/android/telephony/` | `TelephonyManager`, `SubscriptionManager`, `SmsManager`, `CarrierConfigManager` |
 | Internal framework | `frameworks/opt/telephony/src/java/com/android/internal/telephony/` | `Phone`, `GsmCdmaPhone`, `RIL`, `ServiceStateTracker`, `CommandsInterface` |
 | Phone process | `packages/services/Telephony/src/com/android/phone/` | `PhoneInterfaceManager`, `PhoneGlobals`, `CarrierConfigLoader` |
-| Telephony module | `packages/modules/Telephony/` | Mainline-modularised telephony code (apex, framework, libs) |
+| Telephony module | `packages/modules/Telephony/` | Mainline-modularized telephony code (apex, framework, libs) |
 | Radio HAL | `hardware/interfaces/radio/aidl/` | AIDL-based HAL interfaces: modem, sim, network, data, voice, messaging, ims |
 | Telecom | `packages/services/Telecomm/` | `CallsManager`, call routing, `InCallService` binding |
 
@@ -314,7 +317,7 @@ protected static final int EVENT_SECURITY_ALGORITHM_UPDATE   = 74;
 protected static final int EVENT_LAST = EVENT_SET_ALLOWED_NETWORK_TYPES_FOR_2G_DISABLED_DONE;
 ```
 
-The event numbering extends to 77 as of the current codebase, reflecting
+The event numbering extends to 77 as of the current codebase.  It reflects
 decades of accumulation from the original GSM-only phone through CDMA support,
 IMS integration, security notifications, and 5G NR capabilities.
 
@@ -440,7 +443,7 @@ graph TD
 
 ### 36.1.10 The Telephony Module (Mainline)
 
-Starting with Android 12, parts of the telephony stack are modularised as a
+Starting with Android 12, parts of the telephony stack are modularized as a
 Mainline module:
 
 ```
@@ -1481,7 +1484,7 @@ the USIM application, identified by its AID (Application Identifier).
 ```
 
 The PIN is stored encrypted in memory and automatically supplied to the SIM
-after a reboot, so the device can reconnect to the network without user
+after a reboot. As a result, the device can reconnect to the network without user
 intervention.  This is critical for devices that receive OTA updates overnight.
 
 ### 36.3.13 Carrier Restriction (SIM Lock)
@@ -1852,7 +1855,7 @@ graph TD
 ### 36.5.2 ImsResolver -- Finding the Right ImsService
 
 `ImsResolver` discovers and binds to `ImsService` implementations.  It
-prioritises carrier-configured packages over device defaults:
+prioritizes carrier-configured packages over device defaults:
 
 ```java
 // frameworks/opt/telephony/src/java/com/android/internal/telephony/ims/ImsResolver.java
@@ -1991,7 +1994,8 @@ in DSDS scenarios:
 ### 36.5.7 SRVCC (Single Radio Voice Call Continuity)
 
 SRVCC handles the handover of an active IMS voice call from LTE/NR to a legacy
-circuit-switched network (2G/3G) when the device moves out of VoLTE coverage:
+circuit-switched network (2G/3G). This happens when the device moves out of
+VoLTE coverage:
 
 ```mermaid
 sequenceDiagram
@@ -2145,7 +2149,7 @@ frameworks/opt/telephony/src/java/com/android/internal/telephony/imsphone/ImsReg
 ### 36.6.1 CarrierConfigManager
 
 `CarrierConfigManager` provides per-carrier configuration overrides that
-control the behaviour of the telephony stack.  This is how carriers customise
+control the behavior of the telephony stack.  This is how carriers customize
 Android telephony without modifying the platform code:
 
 ```java
@@ -2269,7 +2273,7 @@ protected static final int EVENT_CARRIER_CONFIG_CHANGED = 43;
 ```
 
 When carrier config changes (e.g., after a SIM swap), the entire telephony
-stack re-evaluates its configuration: data APNs are reloaded, IMS settings
+stack re-evaluates its configuration. Data APNs are reloaded, IMS settings
 are re-checked, and network preferences are updated.
 
 ### 36.6.6 Configuration Reload Sequence
@@ -2299,7 +2303,7 @@ sequenceDiagram
 ```
 
 This cascade ensures that every component picks up the new carrier-specific
-behaviour.
+behavior.
 
 ### 36.6.7 Per-SIM Configuration
 
@@ -2406,8 +2410,8 @@ with the static defaults and XML overlays, with the dynamic values taking
 highest priority.
 
 The carrier can also signal network changes to the platform through
-`notifyCarrierNetworkChange()`, which temporarily changes the network icon in
-the status bar to indicate carrier-specific network events.
+`notifyCarrierNetworkChange()`. This call temporarily changes the network icon
+in the status bar to indicate carrier-specific network events.
 
 ---
 
@@ -2693,9 +2697,10 @@ static final int USSD_MODE_REQUEST       = 1;  // Further user action needed
 static final int USSD_MODE_NW_RELEASE    = 2;  // Network terminated session
 ```
 
-The flow: user dials a USSD code (e.g., `*123#`) -> GsmCdmaPhone sends
-`sendUssd()` through RIL -> IRadioVoice.sendUssd() -> modem sends to network
--> response arrives as unsolicited indication -> displayed to user.
+The flow is as follows. The user dials a USSD code (e.g., `*123#`). GsmCdmaPhone
+sends `sendUssd()` through RIL -> IRadioVoice.sendUssd() -> modem sends to
+network. The response arrives as an unsolicited indication and is displayed to
+the user.
 
 ### 36.7.10 DTMF Tones
 
@@ -2743,15 +2748,17 @@ flowchart TD
 ### 36.7.12 Integrated VoIP Call Logs
 
 Until Android 17 the system call log was effectively a cellular log. A VoIP app
-managing its own calls through Telecom (a self-managed `ConnectionService` or
-the `CallControl` API) had to keep its own in-app history; its calls did not
+that manages its own calls through Telecom (a self-managed `ConnectionService`
+or the `CallControl` API) had to keep its own in-app history. Its calls did not
 appear in the system dialer's recents alongside cellular calls. Android 17 adds
-*integrated call logs* so a VoIP call can be written into the shared
-`CallLog.Calls` provider and shown by the system dialer, with a user opt-out and
-a per-call avatar. The work is gated by two aconfig flags that live in different
-git projects and packages: the stage-1 flag `integrated_call_logs`
+*integrated call logs*. A VoIP call can now be written into the shared
+`CallLog.Calls` provider and shown by the system dialer. The feature has a user
+opt-out and a per-call avatar.
+
+Two aconfig flags gate the work. They live in different
+git projects and packages. The stage-1 flag is `integrated_call_logs`
 (`packages/services/Telecomm/flags/telecom_integrated_call_log.aconfig`, package
-`com.android.server.telecom.flags`) and the stage-2 flag
+`com.android.server.telecom.flags`). The stage-2 flag is
 `integrated_call_logs_stage2` (`packages/modules/Telephony/telecom/flags/26Q2_migration_flags.aconfig`,
 package `android.telecom.flags`).
 
@@ -2765,23 +2772,24 @@ The builder gains:
   (flag `FLAG_INTEGRATED_CALL_LOGS_STAGE2`) -- mark group/conference calls and
   callback-style messaging calls.
 - `setContactUri(Uri)` (flag `FLAG_INTEGRATED_CALL_LOGS_STAGE2`) -- a URI into
-  the app's VoIP contact directory or a CP2 contact, which is how the dialer
-  resolves the participant's display name and avatar image for the log entry.
+  the app's VoIP contact directory or a CP2 contact. The dialer uses it to
+  resolve the participant's display name and avatar image for the log entry.
 
 The call-log contract picks up matching additions in `CallLog.Calls`
-(`frameworks/base/core/java/android/provider/CallLog.java`): a `UUID` column
-keyed to the Telecom call (flag `FLAG_INTEGRATED_CALL_LOGS`), a
-`FEATURES_GROUP_CALL` feature bit, and a separate query surface for VoIP rows so
-older dialers are not disturbed -- `CONTENT_VOIP_URI`, the
+(`frameworks/base/core/java/android/provider/CallLog.java`). The additions are a
+`UUID` column keyed to the Telecom call (flag `FLAG_INTEGRATED_CALL_LOGS`) and a
+`FEATURES_GROUP_CALL` feature bit. There is also a separate query surface for
+VoIP rows, so older dialers are not disturbed. It has `CONTENT_VOIP_URI`, the
 `INCLUDE_VOIP_CALLS_PARAM_KEY` query parameter, and the pre-built
-`CONTENT_URI_WITH_VOIP_CALLS` (the latter two under `FLAG_FILTER_VOIP_CALL_LOGS`).
+`CONTENT_URI_WITH_VOIP_CALLS`. The latter two are under
+`FLAG_FILTER_VOIP_CALL_LOGS`.
 A dialer that understands integrated logs queries with VoIP calls included; one
 that does not keeps seeing only cellular rows.
 
 The user preference is plumbed through `TelecomManager`
 (`frameworks/base/telecomm/framework/java/android/telecom/TelecomManager.java`).
 `ACTION_CONFIGURE_CALL_LOG_INTEGRATION` launches the settings surface where the
-user enables or disables logging for a VoIP app, and when that choice changes,
+user enables or disables logging for a VoIP app. When that choice changes,
 Telecom broadcasts `ACTION_VOIP_CALL_LOG_PREFERENCE` to the affected app with the
 new state in `EXTRA_VOIP_CALL_LOG_PREFERENCE_STATUS`. The app re-reads the
 preference and stops or resumes contributing entries accordingly. All three are
@@ -3322,17 +3330,17 @@ private static final int EVENT_SLICE_CONFIG_CHANGED = 24;
 ```
 
 URSP (UE Route Selection Policy) rules map traffic descriptors to network
-slices, allowing different apps or traffic types to use different network
+slices. Different apps or traffic types can then use different network
 slices for QoS guarantees.
 
 ### 36.8.20 Auto-Routing OTT Calls onto a Premium Slice (Android 17)
 
 Network slicing (Section 36.8.19) gives the platform a way to put specific
-traffic on a dedicated 5G connection, but it leaves open the question of *which*
-traffic should get a slice. Android 17 wires up one concrete answer: when an
+traffic on a dedicated 5G connection. It leaves open the question of *which*
+traffic should get a slice. Android 17 wires up one concrete answer. When an
 over-the-top (OTT) voice or video call is in progress, the system can request a
-premium slice on the calling app's behalf so the call gets a low-latency path
-without the app having to plumb slice requests itself.
+premium slice on the calling app's behalf. The call then gets a low-latency
+path, and the app does not have to plumb slice requests itself.
 
 The mechanism lives in the Connectivity Mainline module
 (`packages/modules/Connectivity`), not in the telephony stack, but it sits on
@@ -3341,23 +3349,26 @@ top of the same URSP/slice plumbing. The key capability is a new
 `NET_CAPABILITY_PRIORITIZE_UNIFIED_COMMUNICATIONS` (value 38, in
 `packages/modules/Connectivity/framework/src/android/net/NetworkCapabilities.java`).
 Its javadoc states that the network "may offer a dedicated slice for
-high-priority, low-latency data paths" and that the capability can be requested
-either by an OTT app directly through `ConnectivityManager.requestNetwork()`
-or by the system on the app's behalf when it detects an active OTT call.
+high-priority, low-latency data paths". The javadoc also states that an OTT app
+can request the capability directly through
+`ConnectivityManager.requestNetwork()`. The system can also request it on the
+app's behalf when it detects an active OTT call.
 
 The system-driven path is the new part. A `ConnectivityCallListenerService`
 (`packages/modules/Connectivity/framework/src/android/net/ConnectivityCallListenerService.java`)
 listens for Telecom call events and decides, in `isCallEligibleForSlicing()`,
-whether a call qualifies. A call is eligible when it is a transactional,
-self-managed VoIP call (it carries `Call.Details.PROPERTY_IS_TRANSACTIONAL` and
-is self-managed) and the app has not set the
-`PhoneAccount.CAPABILITY_OPT_OUT_OF_PREMIUM_NETWORK` flag
+whether a call qualifies. A call is eligible when two conditions are true. First, it is a
+transactional, self-managed VoIP call (it carries
+`Call.Details.PROPERTY_IS_TRANSACTIONAL` and is self-managed). Second, the app
+has not set the `PhoneAccount.CAPABILITY_OPT_OUT_OF_PREMIUM_NETWORK` flag
 (`frameworks/base/telecomm/framework/java/android/telecom/PhoneAccount.java`,
-value `0x200000`). When such a call starts, the service resolves the app's UID
+value `0x200000`).
+
+When such a call starts, the service resolves the app's UID
 and calls `ConnectivityManager.onOttCallStateChanged(uid, true)`; when the call
-ends it calls the same method with `false`. The whole behaviour is gated behind
+ends it calls the same method with `false`. The whole behavior is gated behind
 the `ConnectivityManager.FEATURE_OTT_NETWORK_SLICING` feature bit, so a build or
-module that does not enable it keeps the prior behaviour.
+module that does not enable it keeps the prior behavior.
 
 Inside `ConnectivityService` the UID is tracked by
 `AppOptInDefaultNetworkController`, which tags the UID with a `POLICY_OTT` flag
@@ -3383,14 +3394,16 @@ new NetworkCapabilities.Builder()
 
 The two-layer request prefers an unmetered network when one is present and falls
 back to the cellular slice otherwise. The cellular leg carries the unified-
-communications capability, which the data stack maps onto a slice through the
-URSP machinery already described: the modem's URSP rules and
+communications capability. The data stack maps this capability onto a slice
+through the URSP machinery already described. The modem's URSP rules and the
 `TrafficDescriptor` connection capability `CONNECTION_CAPABILITY_UNIFIED_COMMUNICATIONS`
 (`frameworks/base/telephony/java/android/telephony/data/TrafficDescriptor.java`)
-select the route, and `DataNetworkController` brings up the matching data
-network. As the capability javadoc notes, this is a hint: a carrier that has not
-provisioned a unified-communications slice simply serves the request on its best
-available network.
+select the route. `DataNetworkController` brings up the matching data
+network.
+
+The capability javadoc notes that this is a hint. A carrier that has
+not provisioned a unified-communications slice simply serves the request on its
+best available network.
 
 ```mermaid
 graph TD
@@ -3415,19 +3428,19 @@ graph TD
 ## 36.9 ImsMedia -- RTP/RTCP for VoLTE and VoWiFi
 
 The ImsMedia module provides the real-time media transport layer for IMS voice
-and video calls. Where the IMS framework (Section 36.5) handles call signalling
-via SIP, ImsMedia handles the actual audio and video data -- encoding,
-packetisation into RTP, quality monitoring via RTCP, and DTMF tone generation.
+and video calls. The IMS framework (Section 36.5) handles call signaling
+via SIP. ImsMedia handles the actual audio and video data -- encoding,
+packetization into RTP, quality monitoring via RTCP, and DTMF tone generation.
 It ships as a separate system app (`ImsMediaService`, added to the build via
-`PRODUCT_PACKAGES` from `packages/modules/ImsMedia/imsmedia.mk`) that runs in
-its own process -- not as an updatable APEX -- communicating with
+`PRODUCT_PACKAGES` from `packages/modules/ImsMedia/imsmedia.mk`). The app runs
+in its own process -- not as an updatable APEX. It communicates with
 vendor-provided RTP stack hardware through an AIDL HAL interface.
 
 ### 36.9.1 Architecture Overview
 
 **Module root:** `packages/modules/ImsMedia/`
 
-ImsMedia is structured as a three-layer stack: a framework API layer, a Java
+ImsMedia has a three-layer stack. The layers are a framework API layer, a Java
 service layer, and a native C++ media engine backed by a vendor HAL:
 
 ```mermaid
@@ -3870,10 +3883,10 @@ graph LR
 ## 36.10 WAP Push
 
 WAP Push is a legacy but still actively used mechanism for delivering small
-data payloads over SMS to mobile devices. Despite the name referencing the
-Wireless Application Protocol, WAP Push's most important modern role is
-delivering **MMS notification indicators** -- the SMS-borne messages that tell
-the device an MMS message is waiting for download. Every time you receive a
+data payloads over SMS to mobile devices. The name refers to the
+Wireless Application Protocol. Its most important modern role, however, is to
+deliver **MMS notification indicators**. These are the SMS-borne messages that
+tell the device an MMS message is waiting for download. Every time you receive a
 picture message, a WAP Push PDU arrives first.
 
 ### 36.10.1 What is WAP Push?
@@ -3902,9 +3915,9 @@ Common WAP Push content types:
 
 ### 36.10.2 Architecture
 
-WAP Push processing in AOSP involves three components: the inbound SMS
-handler that identifies WAP Push PDUs, the `WapPushOverSms` class that
-decodes and dispatches them, and the optional `WapPushManager` service for
+WAP Push processing in AOSP involves three components. The inbound SMS
+handler identifies WAP Push PDUs. The `WapPushOverSms` class decodes and
+dispatches them. The optional `WapPushManager` service does
 application-ID-based routing:
 
 ```mermaid
@@ -4145,7 +4158,7 @@ AbortMmsWapPushReceiver.java      // Aborts WAP push for non-default apps
 
 The `MmsWapPushDeliverReceiver` parses the MMS notification indicator and
 initiates the actual MMS download over HTTP from the carrier's MMSC
-(Multimedia Messaging Service Centre).
+(Multimedia Messaging Service Center).
 
 ### 36.10.9 End-to-End MMS Flow via WAP Push
 
@@ -4189,12 +4202,13 @@ sequenceDiagram
 ## 36.11 Satellite and Non-Terrestrial Networks (NTN)
 
 Android 17 carries a full satellite messaging and connectivity stack. The work
-started as an emergency SOS feature on a single OEM device and has grown into a
-general framework: a public `SatelliteManager` API, a large internal controller
-graph in `frameworks/opt/telephony`, a vendor-facing `SatelliteService` HAL, and
-carrier-roaming "non-terrestrial network" (NTN) modes where a normal SIM camps
-on a satellite the carrier has provisioned. This section walks the architecture
-top to bottom and calls out what 17 added on top of 16.
+started as an emergency SOS feature on a single OEM device. It grew into a
+general framework. The framework has a public `SatelliteManager` API, a large
+internal controller graph in `frameworks/opt/telephony`, and a vendor-facing
+`SatelliteService` HAL. It also has carrier-roaming "non-terrestrial network"
+(NTN) modes, where a normal SIM camps on a satellite that the carrier has
+provisioned. This section walks the architecture top to bottom and calls out
+what 17 added on top of 16.
 
 ### 36.11.1 Two Flavours of Satellite: OEM-Provisioned vs Carrier-Roaming
 
@@ -4206,12 +4220,13 @@ branches on which one is active:
   satellite mode and exchanges *datagrams* (SOS, SMS-shaped, or keep-alive)
   rather than IP. This is the original emergency-messaging path.
 - **Carrier-roaming NTN.** A regular carrier SIM lists satellite PLMNs in its
-  carrier config; when terrestrial coverage drops, the device "roams" onto the
-  carrier's satellite network and can carry SMS, MMS, and in some
-  configurations data and voice. The connect behaviour is governed by
-  `CarrierConfigManager.KEY_CARRIER_ROAMING_NTN_CONNECT_TYPE_INT`, whose values
-  are `CARRIER_ROAMING_NTN_CONNECT_AUTOMATIC`, `CARRIER_ROAMING_NTN_CONNECT_MANUAL`,
-  and (new) `CARRIER_ROAMING_NTN_CONNECT_HYBRID`
+  carrier config. When terrestrial coverage drops, the device "roams" onto the
+  carrier's satellite network. The device can then carry SMS and MMS, and in
+  some configurations data and voice. The connect behavior depends on
+  `CarrierConfigManager.KEY_CARRIER_ROAMING_NTN_CONNECT_TYPE_INT`. Its values
+  are `CARRIER_ROAMING_NTN_CONNECT_AUTOMATIC`,
+  `CARRIER_ROAMING_NTN_CONNECT_MANUAL`, and (new)
+  `CARRIER_ROAMING_NTN_CONNECT_HYBRID`
   (`frameworks/base/telephony/java/android/telephony/CarrierConfigManager.java`).
 
 The non-terrestrial radio technology in use is one of
@@ -4281,15 +4296,17 @@ public class SatelliteController extends Handler {
 }
 ```
 
-Its responsibilities include: tracking provisioning state per subscription;
-loading and validating the satellite carrier config (`SatelliteConfig` /
-`SatelliteConfigParser`, refreshable through the config updater in 17); resolving
-which PLMNs are allowed and which connect type applies; driving NTN signal-strength
-reporting; and serialising enable requests. Android 17 reworked enablement into a
-**strategy pattern** with bitmask-based arbitration — `SatelliteEnablementController`,
-`SatelliteEnablementStrategy`, plus `AutoEnablementController` and
-`ManualEnablementController` — so that an automatic carrier-roaming trigger and an
-explicit user toggle no longer fight over the modem
+It has several responsibilities. It tracks provisioning state per subscription.
+It loads and validates the satellite carrier config (`SatelliteConfig` /
+`SatelliteConfigParser`, which can be refreshed through the config updater in 17). It
+resolves which PLMNs are allowed and which connect type applies. It drives NTN
+signal-strength reporting. It also serializes enable requests.
+
+Android 17 reworked enablement into a **strategy pattern** with bitmask-based
+arbitration. The pattern uses `SatelliteEnablementController`,
+`SatelliteEnablementStrategy`, `AutoEnablementController`, and
+`ManualEnablementController`. As a result, an automatic carrier-roaming trigger
+and an explicit user toggle no longer fight over the modem
 (`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteEnablementController.java`).
 
 ### 36.11.3 The Session State Machine
@@ -4314,13 +4331,15 @@ stateDiagram-v2
     Disabling --> PowerOff : modem off
 ```
 
-The `Suspended` state is new in Android 17, gated by the `satellite_suspend`
-flag: it lets the framework park a carrier-roaming NTN session (for example, to
-let a higher-priority terrestrial network take over) without tearing the modem
-down (`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteSessionController.java`).
+The `Suspended` state is new in Android 17. It is behind the `satellite_suspend`
+flag. The state lets the framework park a carrier-roaming NTN session. The modem
+is not torn down. For example, the framework can park a session so that a
+higher-priority terrestrial network can take over
+(`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteSessionController.java`).
+
 The `Listening` state exists because satellite links are half-duplex and
-expensive; after a send or receive the modem stays in a short listening window
-(`DEFAULT_SATELLITE_STAY_AT_LISTENING_FROM_SENDING_MILLIS`) before dropping back
+expensive. After a send or receive, the modem stays in a short listening window
+(`DEFAULT_SATELLITE_STAY_AT_LISTENING_FROM_SENDING_MILLIS`). It then drops back
 to idle.
 
 ### 36.11.4 Datagrams: Dispatch and Receive
@@ -4331,7 +4350,7 @@ Satellite messaging does not use the normal SMS/data paths. Payloads are
 - `DatagramController` — the front door; tracks send/receive transfer state and
   the active datagram type (`DATAGRAM_TYPE_SOS_MESSAGE`, `DATAGRAM_TYPE_SMS`,
   `DATAGRAM_TYPE_KEEP_ALIVE`, `DATAGRAM_TYPE_CHECK_PENDING_INCOMING_SMS`).
-- `DatagramDispatcher` — queues and sends outbound datagrams, retrying as the
+- `DatagramDispatcher` — queues and sends outbound datagrams. It retries as the
   link allows.
 - `DatagramReceiver` — polls the modem for pending inbound datagrams and fans
   them out to registered `SatelliteDatagramCallback`s.
@@ -4348,7 +4367,7 @@ public class DatagramController {
 }
 ```
 
-The flow for sending an SOS message:
+The flow to send an SOS message:
 
 ```mermaid
 sequenceDiagram
@@ -4373,12 +4392,12 @@ sequenceDiagram
 
 Satellites in the NB-IoT-NTN profile are not geostationary from the handset's
 point of view; the user often has to aim the phone. `PointingAppController`
-launches the OEM pointing UI and streams `PointingInfo` (antenna azimuth/
-elevation derived from `AntennaPosition` and `AntennaDirection`) so the UI can
-show an arrow guiding the user toward the satellite
+launches the OEM pointing UI and streams `PointingInfo`. This data holds the
+antenna azimuth/elevation. It comes from `AntennaPosition` and
+`AntennaDirection`. The UI can then show an arrow that guides the user toward
+the satellite
 (`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/PointingAppController.java`).
-The launch intent attributes are described by
-`PointingUiAppLaunchIntentAttributes`
+`PointingUiAppLaunchIntentAttributes` describes the launch intent attributes
 (`frameworks/base/telephony/java/android/telephony/satellite/PointingUiAppLaunchIntentAttributes.java`).
 
 ### 36.11.6 NTN Signal Strength
@@ -4394,9 +4413,11 @@ carrier config: `KEY_NTN_LTE_RSRP_THRESHOLDS_INT_ARRAY`,
 `KEY_NTN_LTE_RSRQ_THRESHOLDS_INT_ARRAY`, and `KEY_NTN_LTE_RSSNR_THRESHOLDS_INT_ARRAY`,
 selected by `KEY_PARAMETERS_USED_FOR_NTN_LTE_SIGNAL_BAR_INT`
 (`frameworks/base/telephony/java/android/telephony/CarrierConfigManager.java`).
+
 `NtnCapabilityResolver` decides, for a given network registration, whether the
-serving cell is terrestrial or non-terrestrial and which NT radio technology it
-is using when the modem does not report it directly
+serving cell is terrestrial or non-terrestrial. It also decides which NT radio
+technology the cell uses. It does both when the modem does not report these
+facts directly
 (`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/NtnCapabilityResolver.java`).
 
 ### 36.11.7 The SatelliteService HAL and the Public API
@@ -4406,22 +4427,22 @@ the `android.telephony.satellite.SatelliteService` action, with
 `SatelliteImplBase` as the convenience base class
 (`frameworks/base/telephony/java/android/telephony/satellite/stub/SatelliteService.java`,
 `SatelliteImplBase.java`). On the framework side, `SatelliteModemInterface`
-wraps that binding and, for older HAL versions, routes newer requests such as
-`SatelliteNetworkInfo` and prioritized network scans through compatibility paths
+wraps that binding. For older HAL versions, it routes newer requests through
+compatibility paths. Such requests include `SatelliteNetworkInfo` and
+prioritized network scans
 (`frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/SatelliteModemInterface.java`).
 
-Apps reach all of this through `SatelliteManager`, whose entry points are
-enforced and dispatched by `PhoneInterfaceManager`
+Apps reach all of this through `SatelliteManager`. `PhoneInterfaceManager`
 (`packages/services/Telephony/src/com/android/phone/PhoneInterfaceManager.java`)
-behind the `SATELLITE_COMMUNICATION` permission — for example
-`requestSatelliteEnabled`, `provisionSatelliteService`, `sendDatagram`,
-`pollPendingDatagrams`, and the registration calls.  (The similarly named
-`sendSatelliteDatagram` / `pollPendingSatelliteDatagrams` belong to the
-vendor-facing `ISatellite` HAL, not to the manager surface.) Android 17 adds the
-carrier-enablement entry points (`requestEnableSatelliteForCarrier`, automatic
-carrier mode, and `getManualConnectSatellitePlmnsForCarrier`) plus a richer
-metrics surface (`ControllerMetricsStats`, `CarrierRoamingSatelliteSessionStats`,
-separate Rx/Tx data-usage metrics) under
+enforces and dispatches its entry points behind the `SATELLITE_COMMUNICATION`
+permission. Examples are `requestSatelliteEnabled`, `provisionSatelliteService`,
+`sendDatagram`, `pollPendingDatagrams`, and the registration calls. (The
+similarly named `sendSatelliteDatagram` / `pollPendingSatelliteDatagrams` belong
+to the vendor-facing `ISatellite` HAL, not to the manager surface.) Android 17
+adds the carrier-enablement entry points (`requestEnableSatelliteForCarrier`,
+automatic carrier mode, and `getManualConnectSatellitePlmnsForCarrier`). It also
+adds a richer metrics surface (`ControllerMetricsStats`,
+`CarrierRoamingSatelliteSessionStats`, separate Rx/Tx data-usage metrics) under
 `frameworks/opt/telephony/src/java/com/android/internal/telephony/satellite/metrics/`.
 
 ---
@@ -4440,9 +4461,9 @@ open source.
 ### 36.12.1 Packaging: a Privileged system_ext App with a Native SIP Engine
 
 The module builds the `ImsStack` APK as a privileged, platform-signed,
-`system_ext` app that declares the native engine as a `required` install
-dependency, so `libimsstack` is installed alongside the APK rather than being
-bundled into it via `jni_libs`
+`system_ext` app. The app declares the native engine as a `required` install
+dependency. As a result, `libimsstack` is installed alongside the APK. It is not
+bundled into the APK via `jni_libs`
 (`packages/modules/ImsStack/java/Android.bp`):
 
 ```
@@ -4460,13 +4481,14 @@ android_app {
 }
 ```
 
-Its manifest declares the package `com.android.imsstack`, runs `persistent` in
-its own process, and is `directBootAware` so IMS can come up before the user
-unlocks (important for emergency calling). It requests a broad set of
-privileged permissions — `MODIFY_PHONE_STATE`, `READ_PRIVILEGED_PHONE_STATE`,
+Its manifest declares the package `com.android.imsstack` and runs `persistent`
+in its own process. The app is `directBootAware`, so IMS can come up before the
+user unlocks (important for emergency calling). It requests a broad set of
+privileged permissions that an ordinary app could never hold. These include
+`MODIFY_PHONE_STATE`, `READ_PRIVILEGED_PHONE_STATE`,
 `CONNECTIVITY_USE_RESTRICTED_NETWORKS`, `USE_ICC_AUTH_WITH_DEVICE_IDENTIFIER`,
-`com.android.telephony.permission.USE_IMSMEDIA`, and more — that an ordinary app
-could never hold (`packages/modules/ImsStack/java/AndroidManifest.xml`).
+`com.android.telephony.permission.USE_IMSMEDIA`, and more
+(`packages/modules/ImsStack/java/AndroidManifest.xml`).
 
 ### 36.12.2 Plugging into the IMS Framework
 
@@ -4528,33 +4550,34 @@ graph TD
     ENG --> PLAT
 ```
 
-The Java side splits into `imsservice` (the framework-facing features),
-`enabler` (feature enablers: always-on session, MT call setup, SMS-over-IP, UCE
-presence, media), and `core` (config and the data-connection agents). The
-`jni` package (`JniIms`, `NativeCommands`,
+On the Java side, the `imsservice` package holds the framework-facing features.
+The `enabler` package holds the feature enablers: always-on session, MT call
+setup, SMS-over-IP, UCE presence, and media. The `core` package holds config and
+the data-connection agents. The `jni` package (`JniIms`, `NativeCommands`,
 `packages/modules/ImsStack/java/src/com/android/imsstack/jni/`) marshals calls
 across to the native library.
 
 ### 36.12.4 libimsstack -- the Native SIP Engine
 
 The heavy lifting lives in C++ under
-`packages/modules/ImsStack/native/libimsstack`, built as a single
-`cc_library_shared` named `libimsstack` that statically links the engine,
-protocol, config, enabler, platform, and JNI sublibraries
+`packages/modules/ImsStack/native/libimsstack`. It is built as a single
+`cc_library_shared` named `libimsstack`. This library statically links the
+engine, protocol, config, enabler, platform, and JNI sublibraries
 (`packages/modules/ImsStack/native/libimsstack/Android.bp`). `JNI_OnLoad` in
 `libimsstack.cpp` wires the native commands to the Java `jni` package
 (`packages/modules/ImsStack/native/libimsstack/libimsstack.cpp`). The two most
 important subtrees are:
 
-- **protocol** — a from-scratch SIP and SDP implementation: header parsers
-  (`SipCSeqHeader`, `SipContentTypeHeader`, `SipGeolocationRoutingHeader`, …),
-  an SDP model (`SdpDescription`, `SdpMediaDescription`, `SdpAvCodec`), and a DOM
-  XML parser used for IMS XML bodies
+- **protocol** — a from-scratch SIP and SDP implementation. It has header
+  parsers (`SipCSeqHeader`, `SipContentTypeHeader`,
+  `SipGeolocationRoutingHeader`, …), an SDP model (`SdpDescription`,
+  `SdpMediaDescription`, `SdpAvCodec`), and a DOM XML parser for IMS XML bodies
   (`packages/modules/ImsStack/native/libimsstack/protocol/sip/`,
   `.../protocol/sip/SipStackManager.cpp`).
 - **engine** — the SIP transaction and dialog state machines that turn those
-  messages into call/registration logic: `SipStack`, `SipStackTransaction`,
-  `SipForkedTransactionManager`, plus the `CoreService`/`Connection` call model
+  messages into call/registration logic. The main classes are `SipStack`,
+  `SipStackTransaction`, and `SipForkedTransactionManager`, plus the
+  `CoreService`/`Connection` call model
   (`packages/modules/ImsStack/native/libimsstack/engine/sipcore/SipStack.cpp`).
 
 A `platform` layer abstracts sockets, timers, and TLS so the engine can run on
@@ -4563,11 +4586,11 @@ the Android networking stack
 
 ### 36.12.5 Where It Fits
 
-Because `ImsStack` is just another `ImsService` discovered by `ImsResolver`
-(§36.5.2), a device that ships it gets working VoLTE, VoWiFi, and RCS without a
-proprietary blob, while a carrier override can still point `ImsResolver` at a
-vendor implementation. The IMS *media* plane (RTP/RTCP) is still handled by the
-separate `ImsMedia` service covered in §36.9; `ImsStack` requests it through the
+`ImsStack` is just another `ImsService` that `ImsResolver` discovers (§36.5.2).
+As a result, a device that ships it gets working VoLTE, VoWiFi, and RCS without
+a proprietary blob. A carrier override can still point `ImsResolver` at a vendor
+implementation. The separate `ImsMedia` service, covered in §36.9, still handles
+the IMS *media* plane (RTP/RTCP). `ImsStack` requests it through the
 `USE_IMSMEDIA` permission and the enabler's media package.
 
 ---
@@ -4576,24 +4599,26 @@ separate `ImsMedia` service covered in §36.9; `ImsStack` requests it through th
 
 A handful of IMS and carrier services (XCAP/Ut for supplementary-service
 provisioning, some MBMS and entitlement servers) authenticate the device against
-the operator network using 3GPP **Generic Bootstrapping Architecture**: the
-SIM's AKA credentials are bootstrapped with the operator's Bootstrapping Server
-Function (BSF) to derive a shared key (Ks) and a bootstrapping transaction
-identifier (B-TID), from which per-application keys (Ks_NAF) are computed for
-each Network Application Function (NAF). Android 17 ships an AOSP default
-implementation of this as a standalone module,
+the operator network. They use the 3GPP **Generic Bootstrapping Architecture**.
+The SIM's AKA credentials are bootstrapped with the operator's Bootstrapping
+Server Function (BSF). The result is a shared key (Ks) and a bootstrapping
+transaction identifier (B-TID). From these, per-application keys (Ks_NAF) are
+computed for each Network Application Function (NAF). Android 17 ships an AOSP
+default implementation of this as a standalone module,
 `packages/modules/GenericBootstrappingArchitecture`.
 
 ### 36.13.1 The GbaService Contract
 
-The framework defines an extensible service contract: a `GbaService` bound on
-`android.telephony.gba.GbaService`, guarded by the `BIND_GBA_SERVICE`
-permission, that receives `onAuthenticationRequest` and replies with
-`reportKeysAvailable(token, gbaKey, btId, …)` or `reportAuthenticationFailure`
+The framework defines an extensible service contract. The contract is a
+`GbaService` bound on `android.telephony.gba.GbaService` and guarded by the
+`BIND_GBA_SERVICE` permission. The service receives `onAuthenticationRequest`
+and replies with `reportKeysAvailable(token, gbaKey, btId, …)` or
+`reportAuthenticationFailure`
 (`frameworks/base/telephony/java/android/telephony/gba/GbaService.java`). On the
-telephony side, `GbaManager` is the client: it binds the configured GBA service,
+telephony side, `GbaManager` is the client. It binds the configured GBA service,
 forwards `GbaAuthRequest`s, and tracks the binding across deaths and config
-changes (`frameworks/opt/telephony/src/java/com/android/internal/telephony/GbaManager.java`).
+changes
+(`frameworks/opt/telephony/src/java/com/android/internal/telephony/GbaManager.java`).
 
 ```mermaid
 sequenceDiagram
@@ -4616,43 +4641,45 @@ sequenceDiagram
 
 ### 36.13.2 The DefaultGbaService Module
 
-The module builds a privileged, platform-signed app, `com.android.gbaservice`,
-that runs as `android.uid.system`, is `directBootAware`, and declares its
+The module builds a privileged, platform-signed app, `com.android.gbaservice`.
+The app runs as `android.uid.system` and is `directBootAware`. It declares its
 service on the GBA action behind `BIND_GBA_SERVICE`
 (`packages/modules/GenericBootstrappingArchitecture/Android.bp`,
 `AndroidManifest.xml`). `DefaultGbaService` extends
-`android.telephony.gba.GbaService` and serialises requests through a
+`android.telephony.gba.GbaService` and serializes requests through a
 single-threaded executor, since each bootstrap touches the SIM
 (`packages/modules/GenericBootstrappingArchitecture/src/com/android/gbaservice/DefaultGbaService.java`).
 
-The real protocol work is in `GbaAuthManagerImpl`, which builds a
-`GbaNetworkTask` parameterised for either `3GPP-bootstrapping` (GBA_ME) or the
-UICC-based variant (GBA_U), runs the HTTP Digest-AKA exchange against the BSF,
-and returns a `GbaResult` carrying Ks_NAF, the B-TID, and the key lifetime
+The real protocol work is in `GbaAuthManagerImpl`. It builds a `GbaNetworkTask`
+parameterized for either `3GPP-bootstrapping` (GBA_ME) or the UICC-based variant
+(GBA_U). It runs the HTTP Digest-AKA exchange against the BSF. It returns a
+`GbaResult` that carries Ks_NAF, the B-TID, and the key lifetime
 (`packages/modules/GenericBootstrappingArchitecture/src/com/android/gbaservice/GbaAuthManagerImpl.java`,
-`GbaNetworkTask.java`). The AKA challenge itself is answered by the SIM through
-`TelephonyManager` ICC authentication (`TelephonyManagerGbaMe` /
-`TelephonyManagerGbaU`), which is why the app holds the
-`USE_ICC_AUTH_WITH_DEVICE_IDENTIFIER`-class privileges. Derived bootstrap keys
-are cached in a small SQLite database (`GbaDbHelper`) keyed by NAF id so repeat
-requests can skip the round trip until the key lifetime expires.
+`GbaNetworkTask.java`).
 
-The default service can be overridden: a vendor GBA service named in the
-relevant config replaces `DefaultGbaService` while keeping the same framework
-contract, exactly as the IMS service can be overridden in §36.5.2.
+The SIM itself answers the AKA challenge through `TelephonyManager` ICC
+authentication (`TelephonyManagerGbaMe` / `TelephonyManagerGbaU`). This is why
+the app holds the `USE_ICC_AUTH_WITH_DEVICE_IDENTIFIER`-class privileges.
+Derived bootstrap keys are cached in a small SQLite database (`GbaDbHelper`),
+keyed by NAF id. Repeat requests can then skip the round trip until the key
+lifetime expires.
+
+A vendor GBA service named in the relevant config can replace
+`DefaultGbaService`. The vendor service keeps the same framework contract. The
+IMS service can be overridden in the same way (§36.5.2).
 
 ---
 
 ## 36.14 Additional Telephony Services and Libraries
 
 The sections above traced the core stack and several of its larger appendages
-(`ImsStack`, the satellite controller, GBA). Around that core sit a ring of
-smaller libraries and standalone apps/services that the chapter has referenced
-in passing but not opened up: the in-process IMS client library that everything
-IMS links against, the transport-selection service behind
-`AccessNetworksManager`, the opportunistic-network service, the cell-broadcast
-emergency-alert app, and the TS.43 entitlement pieces. This section fills those
-gaps so the binding story is complete.
+(`ImsStack`, the satellite controller, GBA). Around that core sits a ring of
+smaller libraries and standalone apps/services. The chapter mentions them in
+passing but does not open them up. They are the in-process IMS client library
+that everything IMS links against and the transport-selection service behind
+`AccessNetworksManager`. They also include the opportunistic-network service,
+the cell-broadcast emergency-alert app, and the TS.43 entitlement pieces. This
+section fills those gaps so the binding story is complete.
 
 ### 36.14.1 ims-common -- the In-Process IMS Client Library
 
@@ -4660,25 +4687,28 @@ Sections 36.5 and 36.12 talked about the IMS *framework* (`ImsResolver`) and an
 *IMS service* (`ImsStack`, or a vendor APK) that the framework binds. The glue
 between them is a separate library, `ims-common`, built from
 `frameworks/opt/net/ims` (a `java_library` declared in
-`frameworks/opt/net/ims/Android.bp`). It carries the `com.android.ims` package
-and is the in-process client that runs inside whatever process needs to talk to
-the bound `ImsService` — most importantly the phone process for `ImsPhone` /
-`ImsPhoneCallTracker`, but also Settings and `QualifiedNetworksService`.
+`frameworks/opt/net/ims/Android.bp`). It carries the `com.android.ims` package.
+It is the in-process client that runs inside whatever process needs to talk to
+the bound `ImsService`. The main such process is the phone process for
+`ImsPhone` / `ImsPhoneCallTracker`. Settings and `QualifiedNetworksService` are
+also such processes.
 
 The two classes that matter most are `ImsManager` and the feature connections.
-`ImsManager` is the MMTel entry point that the telephony stack programs against;
-its own javadoc flags it as "for internal use ONLY"
-(`frameworks/opt/net/ims/src/java/com/android/ims/ImsManager.java`), with the
-public `android.telephony.ims.ImsMmTelManager` layered on top of it.
-`ImsCall` represents an active IMS session with its SIP/`ImsCallProfile` state
-(`frameworks/opt/net/ims/src/java/com/android/ims/ImsCall.java`). The actual
-cross-process plumbing lives in a small connection hierarchy: `FeatureConnection`
-is the base that holds the feature binder (`IImsMmTelFeature` / `IImsRcsFeature`,
-set via `setBinder()`) plus the `IImsRegistration` and `IImsConfig` binders, and
-`MmTelFeatureConnection` / `RcsFeatureConnection` are the MMTel and RCS
-specialisations that expose the typed `IImsMmTelFeature` / `IImsRcsFeature`
-interfaces and keep callback registration in sync across the binder
-boundary (`frameworks/opt/net/ims/src/java/com/android/ims/FeatureConnection.java`,
+`ImsManager` is the MMTel entry point that the telephony stack programs against.
+Its own javadoc flags it as "for internal use ONLY"
+(`frameworks/opt/net/ims/src/java/com/android/ims/ImsManager.java`). The public
+`android.telephony.ims.ImsMmTelManager` sits on top of it. `ImsCall` represents
+an active IMS session with its SIP/`ImsCallProfile` state
+(`frameworks/opt/net/ims/src/java/com/android/ims/ImsCall.java`).
+
+The actual cross-process plumbing lives in a small connection hierarchy.
+`FeatureConnection` is the base that holds the feature binder
+(`IImsMmTelFeature` / `IImsRcsFeature`, set via `setBinder()`) plus the
+`IImsRegistration` and `IImsConfig` binders. `MmTelFeatureConnection` /
+`RcsFeatureConnection` are the MMTel and RCS specializations. They expose the
+typed `IImsMmTelFeature` / `IImsRcsFeature` interfaces and keep callback
+registration in sync across the binder boundary
+(`frameworks/opt/net/ims/src/java/com/android/ims/FeatureConnection.java`,
 `MmTelFeatureConnection.java`, `RcsFeatureConnection.java`).
 
 ```mermaid
@@ -4708,24 +4738,25 @@ graph TD
     RFC -->|"Binder (IImsRcsFeature)"| SVC
 ```
 
-The RCS side carries a substantial subtree of its own: `com.android.ims.rcs.uce`
-implements RCS User Capability Exchange — the presence publish/subscribe, the SIP
-OPTIONS exchange, and the Enhanced Address Book cache, coordinated by
-`UceController` (`frameworks/opt/net/ims/src/java/com/android/ims/rcs/uce/UceController.java`
+The RCS side carries a substantial subtree of its own. `com.android.ims.rcs.uce`
+implements RCS User Capability Exchange. This covers the presence
+publish/subscribe, the SIP OPTIONS exchange, and the Enhanced Address Book
+cache. `UceController` coordinates them
+(`frameworks/opt/net/ims/src/java/com/android/ims/rcs/uce/UceController.java`
 and the `presence/`, `options/`, `eab/`, and `request/` subpackages beneath it).
-Because `ims-common` is an ordinary `java_library`, both the AOSP `ImsStack`
-module and a vendor's IMS service link it (the dependency appears in
+
+`ims-common` is an ordinary `java_library`. As a result, both the AOSP
+`ImsStack` module and a vendor's IMS service link it. The dependency appears in
 `packages/modules/ImsStack/java/Android.bp` and
-`frameworks/opt/telephony/Android.bp`, among others), which is what makes the
-client API uniform regardless of which `ImsService` implementation a device
-binds.
+`frameworks/opt/telephony/Android.bp`, among others. This makes the client API
+uniform regardless of which `ImsService` implementation a device binds.
 
 ### 36.14.2 QualifiedNetworksService -- Per-APN Transport Selection
 
 Section 36.8.12 noted that `AccessNetworksManager` decides whether a given APN's
 traffic flows over cellular (WWAN) or IWLAN (Wi-Fi). It does not make that
-decision itself: `AccessNetworksManager` is a *client* that binds a
-`QualifiedNetworksService` and asks it for a prioritised list of access networks
+decision itself. `AccessNetworksManager` is a *client* that binds a
+`QualifiedNetworksService` and asks it for a prioritized list of access networks
 per APN type. The framework base class and binding action are
 `android.telephony.data.QualifiedNetworksService`
 (`frameworks/base/telephony/java/android/telephony/data/QualifiedNetworksService.java`,
@@ -4734,13 +4765,14 @@ constant `QUALIFIED_NETWORKS_SERVICE_INTERFACE`), and the bind happens through a
 `frameworks/opt/telephony/src/java/com/android/internal/telephony/data/AccessNetworksManager.java`.
 
 AOSP ships a default, vendor-extensible implementation as a standalone service,
-`packages/services/QualifiedNetworksService` (package `com.android.telephony.qns`,
-declared in `packages/services/QualifiedNetworksService/AndroidManifest.xml` on
-the `android.telephony.data.QualifiedNetworksService` action behind
-`BIND_TELEPHONY_DATA_SERVICE`). Its core, `QualifiedNetworksServiceImpl` extends
-the framework base class, and `AccessNetworkEvaluator` produces the ordered
-cellular-vs-IWLAN-vs-NR-SA list per APN by combining cellular service state, the
-IWLAN reachability tracked by `IwlanNetworkStatusTracker`, and carrier policy
+`packages/services/QualifiedNetworksService` (package
+`com.android.telephony.qns`, declared in
+`packages/services/QualifiedNetworksService/AndroidManifest.xml` on the
+`android.telephony.data.QualifiedNetworksService` action behind
+`BIND_TELEPHONY_DATA_SERVICE`). Its core, `QualifiedNetworksServiceImpl`,
+extends the framework base class. `AccessNetworkEvaluator` produces the ordered
+cellular-vs-IWLAN-vs-NR-SA list per APN. It combines cellular service state, the
+IWLAN reachability that `IwlanNetworkStatusTracker` tracks, and carrier policy
 (`packages/services/QualifiedNetworksService/src/com/android/telephony/qns/QualifiedNetworksServiceImpl.java`,
 `AccessNetworkEvaluator.java`, `IwlanNetworkStatusTracker.java`).
 
@@ -4762,134 +4794,149 @@ sequenceDiagram
 
 Two extra responsibilities live in this service. `RestrictManager` applies
 throttling and handover-guard restrictions so the device does not thrash between
-transports (`packages/services/QualifiedNetworksService/src/com/android/telephony/qns/RestrictManager.java`),
-and a Wi-Fi-calling activation path under
+transports
+(`packages/services/QualifiedNetworksService/src/com/android/telephony/qns/RestrictManager.java`).
+A Wi-Fi-calling activation path under
 `packages/services/QualifiedNetworksService/src/com/android/telephony/qns/wfc/`
-(`WfcActivationActivity`, `WfcActivationHelper`) drives the ePDG/WFC connectivity
-check that has to succeed before IWLAN can be offered as a voice transport.
+(`WfcActivationActivity`, `WfcActivationHelper`) drives the ePDG/WFC
+connectivity check. That check has to succeed before IWLAN can be offered as a
+voice transport.
 
 ### 36.14.3 AlternativeNetworkAccess -- the Opportunistic Network Service (ONS)
 
-`packages/services/AlternativeNetworkAccess` is the Opportunistic Network Service
-(ONS), package `com.android.ons`. Its job is the eSIM/multi-SIM "opportunistic
-data" feature: scanning for, selecting, and activating a secondary
-(opportunistic) subscription that carries data in areas served by a partner
-network — for example a CBRS profile — without disturbing the user's primary SIM
-for voice. `OpportunisticNetworkService` is the bound service whose javadoc
-states it "scans network and matches the results with opportunistic
-subscriptions … to provide user opportunistic data in areas with corresponding
-networks" (`packages/services/AlternativeNetworkAccess/src/com/android/ons/OpportunisticNetworkService.java`).
+`packages/services/AlternativeNetworkAccess` is the Opportunistic Network
+Service (ONS), package `com.android.ons`. Its job is the eSIM/multi-SIM
+"opportunistic data" feature. The feature scans for, selects, and activates a
+secondary (opportunistic) subscription. This subscription carries data in areas
+served by a partner network, for example a CBRS profile. The feature does not
+disturb the user's primary SIM for voice.
 
-The work splits across three helpers:
-`ONSNetworkScanCtlr` runs the network scans and reports availability,
-`ONSProfileSelector` matches scan results to candidate opportunistic profiles and
-picks one, and `ONSProfileActivator` ensures the chosen CBRS/eSIM profile is
-downloaded, activated, and grouped when an opportunistic-data pSIM is inserted
+`OpportunisticNetworkService` is the bound service. Its javadoc states it "scans
+network and matches the results with opportunistic subscriptions … to provide
+user opportunistic data in areas with corresponding networks"
+(`packages/services/AlternativeNetworkAccess/src/com/android/ons/OpportunisticNetworkService.java`).
+
+The work splits across three helpers. `ONSNetworkScanCtlr` runs the network
+scans and reports availability. `ONSProfileSelector` matches scan results to
+candidate opportunistic profiles and picks one. `ONSProfileActivator` makes sure
+the chosen CBRS/eSIM profile is downloaded, activated, and grouped when an
+opportunistic-data pSIM is inserted
 (`packages/services/AlternativeNetworkAccess/src/com/android/ons/ONSNetworkScanCtlr.java`,
-`ONSProfileSelector.java`, `ONSProfileActivator.java`). Selecting an
-opportunistic subscription ties back into the data switching covered in §36.8.15:
-once ONS activates a profile, `PhoneSwitcher` / `AutoDataSwitchController` can
+`ONSProfileSelector.java`, `ONSProfileActivator.java`). Opportunistic
+subscription selection ties back into the data switching covered in §36.8.15.
+Once ONS activates a profile, `PhoneSwitcher` / `AutoDataSwitchController` can
 route data over it.
 
 ### 36.14.4 CellBroadcastReceiver -- the Emergency-Alert App
 
-Section 36.4.10 covered the framework `CellBroadcastService` that parses 3GPP and
-3GPP2 cell-broadcast PDUs. What it does *not* cover is the app that turns a parsed
-alert into the full-screen warning, siren, and vibration a user actually sees.
-That is `packages/apps/CellBroadcastReceiver` (package
-`com.android.cellbroadcastreceiver`), an updatable Mainline module — it ships in
-the `com.android.cellbroadcast` APEX (`packages/apps/CellBroadcastReceiver/apex/Android.bp`),
-the same APEX that carries the `CellBroadcastService` module and which Chapter 54's
-Mainline catalog lists as module 6 (R-launched, "Emergency alert message handling
-(CMAS/ETWS)").
+Section 36.4.10 covered the framework `CellBroadcastService` that parses 3GPP
+and 3GPP2 cell-broadcast PDUs. What it does *not* cover is the app that turns a
+parsed alert into the full-screen warning, siren, and vibration a user actually
+sees.
 
-The division is clean: the service decodes the bytes, the app presents the alert.
+That app is `packages/apps/CellBroadcastReceiver` (package
+`com.android.cellbroadcastreceiver`). It is an updatable Mainline module. It
+ships in the `com.android.cellbroadcast` APEX
+(`packages/apps/CellBroadcastReceiver/apex/Android.bp`). The same APEX carries
+the `CellBroadcastService` module. Chapter 54's Mainline catalog lists the APEX
+as module 6 (R-launched, "Emergency alert message handling (CMAS/ETWS)").
+
+The division is clean. The service decodes the bytes, and the app presents the
+alert.
+
 On the app side, `CellBroadcastReceiver` is the broadcast receiver for incoming
-alert intents, `CellBroadcastAlertService` decides whether and how to alert,
-`CellBroadcastAlertDialog` is the full-screen warning activity,
-`CellBroadcastAlertAudio` plays the standardised alert tone and drives vibration,
-and `CellBroadcastContentProvider` persists received alerts for the history view
-(all under
-`packages/apps/CellBroadcastReceiver/src/com/android/cellbroadcastreceiver/`). The
-alert categories it renders are the regulated emergency standards — CMAS
-(Commercial Mobile Alert System: presidential, imminent-threat, and AMBER alerts)
-and ETWS (Earthquake and Tsunami Warning System) — with the type constants and
-strings resolved in `CellBroadcastResources.java`.
+alert intents. `CellBroadcastAlertService` decides whether and how to alert.
+`CellBroadcastAlertDialog` is the full-screen warning activity.
+`CellBroadcastAlertAudio` plays the standardized alert tone and drives
+vibration. `CellBroadcastContentProvider` persists received alerts for the
+history view (all under
+`packages/apps/CellBroadcastReceiver/src/com/android/cellbroadcastreceiver/`).
+
+The alert categories it renders are the regulated emergency standards. These are
+CMAS (Commercial Mobile Alert System: presidential, imminent-threat, and AMBER
+alerts) and ETWS (Earthquake and Tsunami Warning System). The type constants and
+strings are resolved in `CellBroadcastResources.java`.
 
 ### 36.14.5 ImsServiceEntitlement -- TS.43 Entitlement and WFC Activation
 
 Before a carrier will let a device use Wi-Fi calling, VoLTE, or VoNR, the device
-usually has to *check in* with the carrier's entitlement server using the GSMA
-**TS.43** protocol and obtain a service entitlement. `packages/apps/ImsServiceEntitlement`
-(package `com.android.imsserviceentitlement`) is the AOSP app that does this. It
-polls the entitlement server, parses the TS.43 status documents
+usually has to *check in* with the carrier's entitlement server. The check-in
+uses the GSMA **TS.43** protocol, and the device gets a service entitlement.
+`packages/apps/ImsServiceEntitlement` (package
+`com.android.imsserviceentitlement`) is the AOSP app that does this. It polls
+the entitlement server and parses the TS.43 status documents
 (`ts43/Ts43VowifiStatus`, `Ts43VolteStatus`, `Ts43VonrStatus`,
-`Ts43SmsOverIpStatus`), and where the carrier requires interactive provisioning it
+`Ts43SmsOverIpStatus`). Where the carrier requires interactive provisioning, it
 drives a WebView-based activation flow in `WfcActivationActivity` /
-`WfcWebPortalFragment`, whose javadoc cites "TS.43 v5.0 section 3.4"
+`WfcWebPortalFragment`. Their javadoc cites "TS.43 v5.0 section 3.4"
 (`packages/apps/ImsServiceEntitlement/src/com/android/imsserviceentitlement/`).
 
-Polling is carrier-config driven: an `ImsEntitlementReceiver` listens for
+Polling is carrier-config driven. An `ImsEntitlementReceiver` listens for
 `android.telephony.action.CARRIER_CONFIG_CHANGED`
-(`packages/apps/ImsServiceEntitlement/AndroidManifest.xml`) and, when the active
-carrier config enables TS.43 entitlement, schedules `ImsEntitlementPollingService`
-to (re)query the server. The HTTP exchange and result handling go through
-`ImsEntitlementApi` and `EntitlementConfiguration`. The outcome ultimately gates
-whether the IMS features described in §36.5 are offered to the user.
+(`packages/apps/ImsServiceEntitlement/AndroidManifest.xml`). When the active
+carrier config enables TS.43 entitlement, the receiver schedules
+`ImsEntitlementPollingService` to (re)query the server. The HTTP exchange and
+result handling go through `ImsEntitlementApi` and `EntitlementConfiguration`.
+The outcome ultimately gates whether the IMS features described in §36.5 are
+offered to the user.
 
 ### 36.14.6 gsma_services -- SatelliteClient and the TS.43 Auth Library
 
 Two reusable libraries that the entitlement and satellite paths build on live
-under `frameworks/libs/gsma_services`. `SatelliteClient` (module `SatelliteClient`,
-`frameworks/libs/gsma_services/satellite_client/Android.bp`) is a *versioned
-wrapper* around the satellite framework API in `SatelliteManagerWrapper`,
-exposing numbered callback variants so a client can compile against a stable
-surface across platform versions for the satellite stack of §36.11.
-`Ts43AuthenticationLibrary` (module `Ts43AuthenticationLibrary`,
+under `frameworks/libs/gsma_services`. `SatelliteClient` (module
+`SatelliteClient`, `frameworks/libs/gsma_services/satellite_client/Android.bp`)
+is a *versioned wrapper* around the satellite framework API in
+`SatelliteManagerWrapper`. It exposes numbered callback variants. A client can
+then compile against a stable surface across platform versions for the satellite
+stack of §36.11. `Ts43AuthenticationLibrary` (module
+`Ts43AuthenticationLibrary`,
 `frameworks/libs/gsma_services/ts43authentication/src/com/android/libraries/ts43authentication/Ts43AuthenticationLibrary.java`)
-provides the TS.43 carrier-entitlement authentication (EAP-AKA and OIDC) that the
-entitlement flow in §36.14.5 relies on to obtain an authenticated token from the
+provides the TS.43 carrier-entitlement authentication (EAP-AKA and OIDC). The
+entitlement flow in §36.14.5 relies on it to get an authenticated token from the
 carrier's entitlement server.
 
 ### 36.14.7 Stk -- the SIM Application Toolkit App
 
-The SIM Application Toolkit (STK, the 3GPP "card application toolkit" / CAT) lets
-the SIM itself drive the UI: the card can ask the phone to show text, present a
-menu, prompt for input, place a call, send an SMS, play a tone, or open a browser.
-The card issues these as **proactive commands**, and the phone executes each one
-and returns a *terminal response*. Two pieces split the work: a framework-side
-service that parses the card's command bytes, and a standalone app that renders
-them.
+The SIM Application Toolkit (STK, the 3GPP "card application toolkit" / CAT)
+lets the SIM itself drive the UI. The card can ask the phone to show text,
+present a menu, or prompt for input. It can also ask the phone to place a call,
+send an SMS, play a tone, or open a browser. The card issues these as
+**proactive commands**, and the phone executes each one and returns a *terminal
+response*. Two pieces split the work: a framework-side service that parses the
+card's command bytes, and a standalone app that renders them.
 
 The parser is `CatService` in the `com.android.internal.telephony.cat` package
 (`frameworks/opt/telephony/src/java/com/android/internal/telephony/cat/CatService.java`),
 constructed per UICC profile by `UiccProfile` (`CatService.getInstance(...)` in
 `frameworks/opt/telephony/src/java/com/android/internal/telephony/uicc/UiccProfile.java`).
 It registers for `RIL_UNSOL_STK_PROACTIVE_COMMAND` (handled as
-`MSG_ID_PROACTIVE_COMMAND`) and decodes the raw APDU into a typed `CatCmdMessage`
-using the BER-TLV / comprehension-TLV parsers and `CommandParamsFactory` in the
-same package. The command kinds are the `AppInterface.CommandType` enum —
-`DISPLAY_TEXT` (0x21), `GET_INKEY` (0x22), `GET_INPUT` (0x23), `SET_UP_MENU`
-(0x25), `SELECT_ITEM`, `SET_UP_CALL` (0x10), `SEND_SMS`, `PLAY_TONE`,
-`LAUNCH_BROWSER`, `REFRESH`, and the rest
+`MSG_ID_PROACTIVE_COMMAND`). It decodes the raw APDU into a typed
+`CatCmdMessage`. For this it uses the BER-TLV / comprehension-TLV parsers and
+`CommandParamsFactory` in the same package. The command kinds are the
+`AppInterface.CommandType` enum. They include `DISPLAY_TEXT` (0x21), `GET_INKEY`
+(0x22), `GET_INPUT` (0x23), `SET_UP_MENU` (0x25), `SELECT_ITEM`, `SET_UP_CALL`
+(0x10), `SEND_SMS`, `PLAY_TONE`, `LAUNCH_BROWSER`, `REFRESH`, and the rest
 (`frameworks/opt/telephony/src/java/com/android/internal/telephony/cat/AppInterface.java`).
 
 `CatService` does not draw anything. For commands that need UI it calls
-`broadcastCatCmdIntent`, which sends `CAT_CMD_ACTION`
-(`com.android.internal.stk.command`) carrying the `CatCmdMessage` to the default
-STK app, guarded by the `RECEIVE_STK_COMMANDS` permission
-(`AppInterface.STK_PERMISSION`). The app is `Stk` (package `com.android.stk`,
-`packages/apps/Stk`), which runs inside the phone process
-(`android:process="com.android.phone"` in `packages/apps/Stk/AndroidManifest.xml`).
+`broadcastCatCmdIntent`. That method sends `CAT_CMD_ACTION`
+(`com.android.internal.stk.command`) with the `CatCmdMessage` to the default STK
+app. The `RECEIVE_STK_COMMANDS` permission (`AppInterface.STK_PERMISSION`)
+guards the broadcast. The app is `Stk` (package `com.android.stk`,
+`packages/apps/Stk`). It runs inside the phone process
+(`android:process="com.android.phone"` in
+`packages/apps/Stk/AndroidManifest.xml`).
+
 `StkCmdReceiver` receives the broadcast and forwards it to `StkAppService` (a
-long-lived `Service`); `StkAppService.handleCmd` switches on the `CommandType` and
-launches the matching UI — `StkDialogActivity` for `DISPLAY_TEXT`,
-`StkMenuActivity` for `SET_UP_MENU` / `SELECT_ITEM`, `StkInputActivity` for
-`GET_INPUT` / `GET_INKEY`, the tone player for `PLAY_TONE`, and so on
+long-lived `Service`). `StkAppService.handleCmd` switches on the `CommandType`
+and launches the matching UI. The matching UI is `StkDialogActivity` for
+`DISPLAY_TEXT`, `StkMenuActivity` for `SET_UP_MENU` / `SELECT_ITEM`,
+`StkInputActivity` for `GET_INPUT` / `GET_INKEY`, the tone player for
+`PLAY_TONE`, and so on
 (`packages/apps/Stk/src/com/android/stk/StkAppService.java`). When the user
 answers (or a command completes), the result flows back through `StkAppService`
-to `CatService.sendTerminalResponse`, which encodes the terminal response and
-returns it to the card over RIL.
+to `CatService.sendTerminalResponse`. That method encodes the terminal response
+and returns it to the card over RIL.
 
 ```mermaid
 sequenceDiagram
@@ -4913,15 +4960,16 @@ sequenceDiagram
 ```
 
 The app's launcher entry point is `StkMain`, the activity that carries the
-MAIN/LAUNCHER intent filter; it is the icon the user taps to open the card's
-top-level menu (delivered earlier by a `SET_UP_MENU` command), and it routes
-into the separate `StkLauncherActivity`. Because not every SIM provides a
-toolkit menu, `StkAppInstaller` enables or disables the `StkMain` component with
-`PackageManager.setComponentEnabledSetting` so the icon only appears when the card
-has registered a main menu (`packages/apps/Stk/src/com/android/stk/StkAppInstaller.java`,
-`StkMain.java`). The result is a clean split: `CatService` owns the protocol
-(parsing commands and emitting terminal responses), and the `Stk` app owns the
-presentation.
+MAIN/LAUNCHER intent filter. It is the icon the user taps to open the card's
+top-level menu (delivered earlier by a `SET_UP_MENU` command). It routes into
+the separate `StkLauncherActivity`.
+
+Not every SIM provides a toolkit menu, so `StkAppInstaller` enables or disables
+the `StkMain` component with `PackageManager.setComponentEnabledSetting`.
+Because of this, the icon only appears when the card has registered a main menu
+(`packages/apps/Stk/src/com/android/stk/StkAppInstaller.java`, `StkMain.java`).
+The result is a clean split. `CatService` owns the protocol: it parses commands
+and emits terminal responses. The `Stk` app owns the presentation.
 
 ---
 
@@ -5342,7 +5390,7 @@ Follow the code path of an outgoing voice call through the AOSP source:
 5. **RIL request**: `GsmCdmaCallTracker` calls `mCi.dial()` on the
    `CommandsInterface`
 
-6. **HAL call**: `RIL.dial()` serialises the request to
+6. **HAL call**: `RIL.dial()` serializes the request to
    `IRadioVoice.dial(serial, Dial{address, clir})`
 
 7. **Modem response**: The HAL responds via `IRadioVoiceResponse.dialResponse()`
@@ -5457,18 +5505,19 @@ themes:
   and `InboundSmsHandler` classes all extend `Handler` and drive state machines
   through message passing.
 - **AIDL HAL stability**: the radio HAL's migration from HIDL to AIDL with
-  `@VintfStability` ensures vendor implementations survive platform upgrades.
-- **Domain decomposition**: the monolithic `IRadio` was split into seven
-  focused interfaces (`IRadioModem`, `IRadioSim`, `IRadioNetwork`,
-  `IRadioData`, `IRadioVoice`, `IRadioMessaging`, `IRadioIms`), each with its
+  `@VintfStability` makes sure that vendor implementations survive platform
+  upgrades.
+- **Domain decomposition**: the monolithic `IRadio` was split into seven focused
+  interfaces. They are `IRadioModem`, `IRadioSim`, `IRadioNetwork`,
+  `IRadioData`, `IRadioVoice`, `IRadioMessaging`, and `IRadioIms`. Each has its
   own response and indication callbacks.
-- **Carrier customisation**: the `CarrierConfigManager` system allows hundreds
-  of per-carrier behaviour overrides without modifying platform code.
+- **Carrier customization**: the `CarrierConfigManager` system allows hundreds
+  of per-carrier behavior overrides without modifying platform code.
 
-The telephony stack is among the oldest code in Android, and its evolution from
-a simple GSM phone layer to a multi-SIM, IMS-capable, 5G-slicing-aware system
-demonstrates how the platform's modular architecture supports incremental
-modernisation of even the most critical subsystems.
+The telephony stack is among the oldest code in Android. It evolved from a
+simple GSM phone layer to a multi-SIM, IMS-capable, 5G-slicing-aware system.
+This shows how the platform's modular architecture supports incremental
+modernization of even the most critical subsystems.
 
 ### The Complete Telephony Flow -- from Dial to Modem
 
@@ -5498,22 +5547,22 @@ graph TD
     S --> T["20. Telecom notifies InCallService (Dialer UI)"]
 ```
 
-This 20-step path spans four processes (the dialer app, Telecom in
-system_server, the phone process hosting both Telephony and RIL Java, and the
-vendor HAL) and multiple Binder boundaries, yet completes in under 200ms
-on modern hardware.
+This 20-step path spans four processes and multiple Binder boundaries. The
+processes are the dialer app, Telecom in system_server, the phone process that
+hosts both Telephony and RIL Java, and the vendor HAL. Even so, the path
+completes in under 200ms on modern hardware.
 
 ### Design Principles
 
 The telephony stack embodies several design principles worth noting:
 
 1. **Separation of Telecom and Telephony**: Call routing (Telecom) is separated
-   from radio control (Telephony), allowing VoIP and other call sources to
+   from radio control (Telephony). VoIP and other call sources can then
    integrate through the same `ConnectionService` interface.
 
 2. **Per-SIM Isolation**: Each SIM slot gets its own `Phone`, `RIL`,
-   `ServiceStateTracker`, `DataNetworkController`, and `ImsPhone`.  This
-   ensures multi-SIM correctness through structural isolation rather than
+   `ServiceStateTracker`, `DataNetworkController`, and `ImsPhone`. This makes
+   sure of multi-SIM correctness through structural isolation rather than
    conditional logic.
 
 3. **Asynchronous Everything**: Every modem operation is asynchronous (the RIL
@@ -5521,19 +5570,19 @@ The telephony stack embodies several design principles worth noting:
    any single slow modem response from blocking the entire telephony stack.
 
 4. **Feature Flags**: The `FeatureFlags` interface (package
-   `com.android.internal.telephony.flags`, generated at build time by aconfig
-   from the flag declarations in `frameworks/opt/telephony/flags/*.aconfig`)
-   allows individual telephony features to be enabled/disabled per build, which
-   is essential for the incremental rollout of complex telephony changes.
+   `com.android.internal.telephony.flags`) lets each build enable or disable
+   individual telephony features. aconfig generates the interface at build time
+   from the flag declarations in `frameworks/opt/telephony/flags/*.aconfig`.
+   This is essential for the incremental rollout of complex telephony changes.
 
 5. **Carrier Extensibility**: The `CarrierConfigManager` + `CarrierService`
-   system allows any carrier to customise hundreds of telephony behaviours
+   system allows any carrier to customize hundreds of telephony behaviors
    without modifying or forking the platform code.
 
 6. **HAL Stability Contract**: The `@VintfStability` annotation on every radio
-   HAL interface ensures that vendor modem implementations survive Android
-   version upgrades -- a critical requirement for the cellular ecosystem where
-   modem firmware development cycles are independent of Android releases.
+   HAL interface makes sure that vendor modem implementations survive Android
+   version upgrades. This is a critical requirement for the cellular ecosystem,
+   where modem firmware development cycles are independent of Android releases.
 
 ### Key Source File Reference
 
@@ -5577,7 +5626,7 @@ The telephony stack embodies several design principles worth noting:
 
 ### Directory Structure Reference
 
-The telephony source tree follows a logical organisation:
+The telephony source tree follows a logical organization:
 
 ```
 frameworks/

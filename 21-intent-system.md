@@ -367,8 +367,8 @@ browserIntent.setSelector(selector);
 startActivity(browserIntent);
 ```
 
-This launches the browser via its MAIN/LAUNCHER entry point rather than a VIEW intent,
-avoiding task confusion if the user has previously launched the browser normally.
+This launches the browser via its MAIN/LAUNCHER entry point rather than a VIEW intent.
+This avoids task confusion if the user launched the browser normally before.
 
 ### 21.1.8 ClipData and URI Permission Grants
 
@@ -589,10 +589,10 @@ flowchart TD
 **Test 1: Action Match** (`matchAction()`):
 
 The Intent's action must be listed in the filter's action set. If the filter specifies
-no actions, it only matches Intents that carry no action -- the action test in `match()`
-is skipped entirely when the Intent's action is null. If the Intent's action is null, modern Android
-(targeting V+) blocks the match via the `BLOCK_NULL_ACTION_INTENTS` compatibility change
-(change ID `293560872`, declared at `IntentFilter.java` line 202). The server-side hook
+no actions, it only matches Intents that carry no action. The action test in `match()`
+is skipped entirely when the Intent's action is null. In that case, modern Android
+(targeting V+) blocks the match via the `BLOCK_NULL_ACTION_INTENTS` compatibility
+change (change ID `293560872`, declared at `IntentFilter.java` line 202). The server-side hook
 that applies this is in `SaferIntentUtils` (Section 21.10).
 
 ```java
@@ -701,8 +701,8 @@ public final String matchCategories(Set<String> categories) {
 ```
 
 The critical implication: any activity that wants to be reachable via `startActivity()`
-with an implicit Intent must declare `CATEGORY_DEFAULT` in its filter, because
-`startActivity()` resolves with `PackageManager.MATCH_DEFAULT_ONLY`, which makes the
+with an implicit Intent must declare `CATEGORY_DEFAULT` in its filter. The reason is that
+`startActivity()` resolves with `PackageManager.MATCH_DEFAULT_ONLY`. This makes the
 resolver keep only filters that declare `CATEGORY_DEFAULT`.
 
 ### 21.2.4 ResolveInfo: The Resolution Result
@@ -775,8 +775,8 @@ public final int match(String action, String type, String scheme,
 Note the fourth test: extras matching. While still a hidden API, this allows system
 services to create IntentFilters that match against specific extra values. The
 `matchExtras()` method (line ~1942) checks that every key-value pair in the filter's
-extras exists with an identical value in the Intent's extras, returning the `NO_MATCH_EXTRAS`
-sentinel (`-5`, defined at line 303) on a mismatch.
+extras exists with an identical value in the Intent's extras. On a mismatch, it returns
+the `NO_MATCH_EXTRAS` sentinel (`-5`, defined at line 303).
 
 The convenience method that most client code uses:
 
@@ -792,9 +792,9 @@ public final int match(ContentResolver resolver, Intent intent,
 }
 ```
 
-The `resolve` parameter is important: when true, the type is determined by calling
-`intent.resolveType(resolver)`, which queries the ContentResolver for the MIME type
-of the data URI if no explicit type is set. When false, only `intent.getType()` is
+The `resolve` parameter is important. When true, the type is determined by calling
+`intent.resolveType(resolver)`. If no explicit type is set, this call queries the
+ContentResolver for the MIME type of the data URI. When false, only `intent.getType()` is
 used (returns the explicitly-set type or null).
 
 ### 21.2.6 The Predicate API
@@ -946,8 +946,9 @@ sequenceDiagram
 
 ### 21.2.10 Scheme-Based Matching Details
 
-A subtle but important behavior: when a filter declares no schemes, it will implicitly
-match intents with no data URI, or with `content:` or `file:` scheme URIs. This
+A subtle but important behavior: when a filter declares no schemes, it implicitly
+matches two kinds of intents. These are intents with no data URI, and intents with
+`content:` or `file:` scheme URIs. This
 allows MIME-type-only filters to work with ContentProviders. From `matchData()`:
 
 ```java
@@ -1053,7 +1054,7 @@ The flags control both the behavior of the PendingIntent and its identity:
 
 ### 21.3.4 Mutable vs. Immutable PendingIntents
 
-Starting with Android 12 (API 31), apps must explicitly choose mutability. The
+From Android 12 (API 31), apps must explicitly choose mutability. The
 compatibility change `PENDING_INTENT_EXPLICIT_MUTABILITY_REQUIRED` (change ID
 `160794467`) enforces this:
 
@@ -1078,7 +1079,7 @@ private static void checkPendingIntent(int flags, @NonNull Intent intent,
 }
 ```
 
-Starting with Android 14 (API 34), creating a mutable PendingIntent with an implicit
+From Android 14 (API 34), creating a mutable PendingIntent with an implicit
 Intent is blocked via `BLOCK_MUTABLE_IMPLICIT_PENDING_INTENT` (change ID `236704164`):
 
 ```java
@@ -1549,8 +1550,8 @@ with no involvement of `ActivityManagerService`.
 
 The modern replacement is to use `LiveData`, `Flow`, or other reactive patterns for
 in-process communication. The framework's broadcast machinery (`ActivityManagerService`,
-`BroadcastQueue`) has no knowledge of `LocalBroadcastManager` -- though platform code such
-as SettingsLib and bundled apps (Stk, Contacts) do use the library themselves.
+`BroadcastQueue`) has no knowledge of `LocalBroadcastManager`. Some platform code, such
+as SettingsLib and bundled apps (Stk, Contacts), does use the library itself.
 
 ### 21.4.9 Broadcast Delivery Prioritization
 
@@ -1734,7 +1735,7 @@ intent filter with the matching URI pattern but do not require verification. If 
 apps handle the same URI, the user sees a disambiguation dialog.
 
 **App Links** (Android 6.0+) are verified deep links. The app proves ownership of the
-web domain through Digital Asset Links, and the system automatically opens verified links
+web domain through Digital Asset Links. The system automatically opens verified links
 in the app without a disambiguation dialog.
 
 ```mermaid
@@ -1907,8 +1908,8 @@ The verification has several important timing characteristics:
 3. **Retry behavior**: If verification fails due to network issues, the system may
    retry at a later time
 4. **Multi-domain handling**: Under the modern `DomainVerificationManager` (Android 12+),
-   each declared domain is verified and approved independently -- links for a domain that
-   verified successfully open directly in the app even when other declared domains failed
+   each declared domain is verified and approved independently. Links for a domain that
+   verified successfully open directly in the app, even when other declared domains failed
    verification. (The old all-or-nothing behavior applied only to the legacy pre-S
    `IntentFilterVerifier`.)
 5. **Re-verification**: When an app is updated, verification may be re-triggered if
@@ -1969,7 +1970,7 @@ https://digitalassetlinks.googleapis.com/v1/statements:list?source.web.site=http
 ### 21.5.8 Verification State Management
 
 The verification state itself (the `STATE_*` values below) is kept per package and per
-domain and is user-independent; only the user's link-handling selections (which hosts
+domain and is user-independent. Only the user's link-handling selections (which hosts
 are enabled, whether link handling is allowed at all) are stored per user. The most
 common states are:
 
@@ -1984,7 +1985,7 @@ common states are:
 
 `DomainVerificationState` also defines `STATE_LEGACY_FAILURE` (a failure carried over
 from the legacy verifier), `STATE_SYS_CONFIG` (approval granted by system config), and
-`STATE_PRE_VERIFIED` (verified ahead of install); values at or above
+`STATE_PRE_VERIFIED` (verified ahead of install). Values at or above
 `STATE_FIRST_VERIFIER_DEFINED` (`0b10000000000`) are agent-defined error codes.
 
 Users can also manually manage App Link settings through Settings, which can override
@@ -2172,7 +2173,7 @@ The truncation happens during package scanning, not at dispatch time, and it is 
 When a package's components are registered, `addAllComponents()` collects the
 package's *activity* intent filters and runs `adjustPriority()` over each one
 (`ComponentResolver.java:202`). The method only ever lowers a priority, never raises
-it: a filter that already declares `priority <= 0` is left alone, and the rules for the
+it. A filter that already declares `priority <= 0` is left alone. The rules for the
 rest are:
 
 - **Non-privileged apps.** Any filter with a positive priority is clamped to `0`. An
@@ -2181,15 +2182,16 @@ rest are:
   `PROTECTED_ACTIONS` set (`ACTION_SEND`, `ACTION_SENDTO`, `ACTION_SEND_MULTIPLE`,
   `ACTION_VIEW`), even a privileged app's filter is capped to `0`. The one exception is
   the setup wizard, identified by `CATEGORY_SETUP_WIZARD`, which keeps whatever priority
-  it asks for. Because the setup wizard cannot be identified until every system package
-  has been scanned, protected filters are parked in `mProtectedFilters` and re-evaluated
-  in a later pass.
+  it asks for. The setup wizard cannot be identified until every system package
+  has been scanned. For this reason, protected filters are parked in
+  `mProtectedFilters` and re-evaluated in a later pass.
 - **Privileged apps on the system image.** A privileged app that ships on the system
   partition keeps the priority it requests for non-protected actions.
 - **Unbundled updates to privileged apps.** When a privileged system app is updated off
   the system image, the update's filter is compared against the original system version.
-  If no equivalent filter is found, or the actions, categories, schemes, or authorities
-  don't form a subset of a system filter, the priority is clamped to `0`. Otherwise it is
+  If no equivalent filter is found, the priority is clamped to `0`. The same clamp
+  applies if the actions, categories, schemes, or authorities do not form a
+  subset of a system filter. Otherwise it is
   capped to the maximum priority the matching system filter declared, so an update cannot
   quietly escalate its own priority.
 
@@ -2262,8 +2264,8 @@ An intent filter in the manifest maps to the internal data structures:
 ```
 
 Each `<action>` adds to `mActions`. Each `<category>` adds to `mCategories`. The
-`<data>` element's attributes are distributed across multiple internal collections:
-scheme to `mDataSchemes`, host+port to `mDataAuthorities`, path/pathPrefix/pathPattern
+`<data>` element's attributes are distributed across multiple internal collections.
+The scheme goes to `mDataSchemes`, host+port to `mDataAuthorities`, path/pathPrefix/pathPattern
 to `mDataPaths`, and mimeType to `mDataTypes`.
 
 **Important**: Multiple `<data>` elements within a single `<intent-filter>` are
@@ -2373,20 +2375,21 @@ The `PatternMatcher` class (used for path and SSP matching) supports five patter
 The `PATTERN_SIMPLE_GLOB` is the most commonly used. Unlike regex, `*` does not mean
 "any sequence" -- it means zero or more repetitions of the character immediately before
 it. An unescaped `.` is a single-character wildcard on its own, whether or not a `*`
-follows it (`matchGlobPattern()` skips the literal comparison for any unescaped `.`,
-`frameworks/base/core/java/android/os/PatternMatcher.java:303-304`); only an escaped
-`\\.` matches a literal dot. Combining the two, `.*` is the way to match an arbitrary
-sequence. Examples:
+follows it. `matchGlobPattern()` skips the literal comparison for any unescaped `.`
+(`frameworks/base/core/java/android/os/PatternMatcher.java:303-304`). Only an escaped
+`\\.` matches a literal dot.
+
+Together, `.*` is the way to match an arbitrary sequence. Examples:
 
 - `"/products/.*"` matches `/products/`, `/products/123`, and `/products/123/details`,
-  while `"/products/*"` matches `/products/`, `/products//`, ... but *not* `/products`:
-  a trailing `X*` still requires the match string not to be exhausted, and the
+  while `"/products/*"` matches `/products/`, `/products//`, ... but *not* `/products`.
+  A trailing `X*` still requires the match string not to be exhausted. The
   end-of-pattern fallback at `PatternMatcher.java:316-319` tolerates only a leftover
   `.*`
 - `"/items/.*\\.json"` matches `/items/data.json` and `/items/list.json`
 - As a `PATTERN_SUFFIX`, the pattern is a plain `String.endsWith()` check with no glob
-  interpretation (`PatternMatcher.java:236-237`), so the suffix that matches any string
-  ending in `.pdf` is `".pdf"` -- writing `"*.pdf"` would only match strings that
+  interpretation (`PatternMatcher.java:236-237`). The suffix that matches any string
+  that ends in `.pdf` is `".pdf"`. Writing `"*.pdf"` would match only strings that
   literally end in the five characters `*.pdf`
 
 ---
@@ -2501,9 +2504,9 @@ These classes implement the algorithm for:
 
 ## 21.8 Protected Broadcasts
 
-Protected broadcasts are actions that only system-side callers can send -- root, system,
-phone, bluetooth, NFC, secure element and network-stack UIDs, plus any caller whose
-process is persistent. They are a security mechanism to prevent apps from spoofing
+Protected broadcasts are actions that only system-side callers can send. The allowed
+senders are root, system, phone, bluetooth, NFC, secure element and network-stack UIDs,
+plus any caller whose process is persistent. They are a security mechanism to prevent apps from spoofing
 critical system events.
 
 ### 21.8.1 Declaration
@@ -2673,10 +2676,10 @@ flowchart TD
 
 ### 21.9.4 Intent Redirect Prevention
 
-The `prevent_intent_redirect` feature, surfaced through `FLAG_PREVENT_INTENT_REDIRECT`
-and the `preventIntentRedirect()` flag accessor, defends against the confused-deputy
-class of attacks where one app embeds an Intent inside another Intent's extras and a
-privileged receiver blindly relaunches it. The flag is imported into `Intent.java`:
+The `prevent_intent_redirect` feature defends against the confused-deputy
+class of attacks. In these attacks, one app embeds an Intent inside another Intent's
+extras and a privileged receiver blindly relaunches it. The feature is surfaced through
+`FLAG_PREVENT_INTENT_REDIRECT` and the `preventIntentRedirect()` flag accessor. The flag is imported into `Intent.java`:
 
 ```java
 // frameworks/base/core/java/android/content/Intent.java, lines 22-23
@@ -2686,10 +2689,10 @@ import static android.security.Flags.preventIntentRedirect;
 
 In the Android 17 tree this is no longer a single boolean: it is a wired-up
 **creator-token** system. When an Intent carries nested Intents in its extras or
-ClipData, the system stamps each nested Intent with a token identifying the creator and
-records which extra keys hold those nested Intents, so that when the inner Intent is
-later launched the platform can re-check the original creator's permissions instead of
-the relaunching app's. The flag definition lives at
+ClipData, the system stamps each nested Intent with a token that identifies the creator.
+The system also records which extra keys hold those nested Intents. When the inner
+Intent is later launched, this lets the platform re-check the original creator's
+permissions instead of the relaunching app's. The flag definition lives at
 `frameworks/base/core/java/android/security/responsible_apis_flags.aconfig`
 (`name: "prevent_intent_redirect"`, bug `361143368`, `is_fixed_read_only: true`). The
 full token mechanism and its `EXTENDED_FLAG_*` markers are covered in Section 21.11.
@@ -2748,8 +2751,8 @@ flowchart TD
 ### 21.9.7 The CATEGORY_DEFAULT Requirement
 
 A frequently misunderstood security-relevant behavior: `Context.startActivity()` resolves
-implicit Intents with `PackageManager.MATCH_DEFAULT_ONLY`, which makes the resolver keep
-only filters that declare `CATEGORY_DEFAULT` -- the category is a filter-side requirement,
+implicit Intents with `PackageManager.MATCH_DEFAULT_ONLY`. This makes the resolver keep
+only filters that declare `CATEGORY_DEFAULT`. The category is a filter-side requirement,
 not something added to the Intent. Any activity that wants to be discoverable via
 implicit intents must therefore include `CATEGORY_DEFAULT` in its filter.
 
@@ -2759,9 +2762,10 @@ This is documented in the Intent class (line ~406):
 > Context.startActivity method to resolve your activity when its component name is not
 > explicitly specified."
 
-The practical implication: if you omit `CATEGORY_DEFAULT`, your activity can still
-be found via `PackageManager.queryIntentActivities()` (when called without
-`MATCH_DEFAULT_ONLY`) but cannot be launched via `startActivity()` with an implicit intent. This
+The practical implication is this. If you omit `CATEGORY_DEFAULT`,
+your activity can still be found via `PackageManager.queryIntentActivities()` when it is
+called without `MATCH_DEFAULT_ONLY`. However, the activity cannot be launched via
+`startActivity()` with an implicit intent. This
 provides a mechanism for "queryable but not directly launchable" activities.
 
 ### 21.9.8 Intent Validation at Process Boundaries
@@ -2805,9 +2809,9 @@ broadcast away from receivers holding a particular permission. The in-tree use i
 Wi-Fi P2P, which fans one event out over several sends and uses exclusions to stop any
 app from receiving it twice. `sendBroadcastWithExcludedPermissions()`
 (`packages/modules/Wifi/service/java/com/android/server/wifi/p2p/WifiP2pServiceImpl.java:6163-6199`)
-first sends the legacy location-gated copy, then sends a second copy to holders of the
-newer `NEARBY_WIFI_DEVICES` permission with `ACCESS_FINE_LOCATION` excluded, so apps
-already served by the first send are skipped. Callers layer on their own exclusions the
+first sends the legacy location-gated copy. Then it sends a second copy to holders of
+the newer `NEARBY_WIFI_DEVICES` permission with `ACCESS_FINE_LOCATION` excluded. As a
+result, apps already served by the first send are skipped. Callers layer on their own exclusions the
 same way: `sendP2pConnectionChangedBroadcast()` delivers directly to the
 `MAINLINE_NETWORK_STACK` holders, then excludes that permission from the general send.
 
@@ -2949,8 +2953,8 @@ flag {
 }
 ```
 
-Both generations share the same exemptions: the pass is skipped entirely when the caller
-is system or root (`ActivityManager.canAccessUnexportedComponents()`), and per-component
+Both generations share the same exemptions. The pass is skipped entirely when the caller
+is system or root (`ActivityManager.canAccessUnexportedComponents()`). Per component,
 it is skipped when the caller is the same app as the target (`computer.isCallerSameApp()`).
 This keeps intra-app navigation and system traffic untouched.
 
@@ -2962,9 +2966,9 @@ both visible in `enforceIntentFilterMatchingWithIntentMatchingFlags()`:
 1. **An explicit Intent must actually match the target component's intent filters.** For
    each candidate the code walks `comp.getIntents()` and calls
    `IntentResolver.intentMatchesFilter(intentFilter, intent, resolvedType)`. If no filter
-   matches, the candidate is dropped. This closes the historical gap where naming a
-   component by class name let a caller reach it even if the Intent's action/data did not
-   match any declared filter.
+   matches, the candidate is dropped. This closes a historical gap.
+   A caller could name a component by class name and reach it, even if the Intent's
+   action/data did not match any declared filter.
 
 2. **An Intent with a null action does not match any filter.** A missing action is treated
    as a non-match unless the component explicitly opts back in (see 21.10.3).
@@ -2989,17 +2993,17 @@ flowchart TD
 
 When a mismatch is detected and `Flags.enforceIntentFilterMatch()` is enabled, the system
 also stamps the Intent with `EXTENDED_FLAG_FILTER_MISMATCH` (the marker bit examined in
-Section 21.11) so downstream code can tell that the Intent reached a component it did not
-formally match. Every mismatch and every null-action match is also reported through
-`FrameworkStatsLog` (`UNSAFE_INTENT_EVENT_REPORTED`) with a boolean recording whether the
-access was actually blocked, which lets the platform measure breakage before fully
-enforcing.
+Section 21.11). This lets downstream code tell that the Intent reached a component it did
+not formally match. Every mismatch and every null-action match is also reported through
+`FrameworkStatsLog` (`UNSAFE_INTENT_EVENT_REPORTED`) with a boolean that records whether
+the access was actually blocked. This lets the platform measure breakage before it fully
+enforces the rules.
 
 ### 21.10.3 The intentMatchingFlags Manifest Attribute
 
 The Android 17 generation reads its policy from a new per-component manifest attribute,
-`android:intentMatchingFlags`, declared in
-`frameworks/base/core/res/res/values/attrs_manifest.xml` (line ~2073) and accepted on
+`android:intentMatchingFlags`. The attribute is declared in
+`frameworks/base/core/res/res/values/attrs_manifest.xml` (line ~2073). It is accepted on
 `<activity>`, `<activity-alias>`, `<receiver>`, `<service>`, and `<provider>`:
 
 ```xml
@@ -3021,9 +3025,10 @@ The values map to constants in
 | `allowNullAction` | `INTENT_MATCHING_FLAGS_ALLOW_NULL_ACTION` (`1 << 2`) | Used with `enforceIntentFilter` to let null-action intents through |
 
 The reader fetches the component's value via `comp.getIntentMatchingFlags()`
-(`ParsedMainComponentImpl.getIntentMatchingFlags()`, line ~118) and computes two booleans:
-`enforceIntentFilter` (default-on when the feature flag is set, but turned off when the
-component declares `none` or omits `enforceIntentFilter`) and `allowNullAction`. The block
+(`ParsedMainComponentImpl.getIntentMatchingFlags()`, line ~118). It then computes two
+booleans: `enforceIntentFilter` and `allowNullAction`. The first is on by default when
+the feature flag is set. It is turned off when the component declares `none` or omits
+`enforceIntentFilter`. The block
 decision is then simply:
 
 ```java
@@ -3036,9 +3041,10 @@ if (enforceIntentFilter) {
 }
 ```
 
-This gives a component three useful postures: strict (`enforceIntentFilter`), strict but
-tolerant of action-less intents (`enforceIntentFilter|allowNullAction`, useful for legacy
-filters that key only on data or category), and fully relaxed (`none`).
+This gives a component three useful postures. The first is strict (`enforceIntentFilter`).
+The second is strict but tolerant of action-less intents (`enforceIntentFilter|allowNullAction`),
+useful for legacy filters that key only on data or category. The third is fully relaxed
+(`none`).
 
 ### 21.10.4 The Intent Firewall Filters
 
@@ -3051,17 +3057,18 @@ flag { name: "enable_intent_firewall_component_class_filter"  ... bug: "42873310
 flag { name: "enable_intent_firewall_extra_key_value_filter"  ... bug: "428733109" }
 ```
 
-The component-class filter lets a firewall rule match on the target component's class, and
-the extra-key/value filter lets a rule match on a specific key/value pair inside the
-Intent's extras. These complement the existing action/category/data matchers the firewall
-already supports and let a device policy block, for example, intents carrying a particular
-sensitive extra key regardless of action.
+The component-class filter lets a firewall rule match on the target component's class.
+The extra-key/value filter lets a rule match on a specific key/value pair inside the
+Intent's extras. These complement the existing action/category/data matchers that the
+firewall already supports. They let a device policy block, for example, intents that carry
+a particular sensitive extra key regardless of action.
 
 ## 21.11 Intent Creator Tokens and Redirect Hardening (Android 17)
 
 Section 21.9.4 introduced `prevent_intent_redirect` at a high level. Android 17 turns it
-into a concrete mechanism built on three new pieces of `Intent` state: an extended-flags
-bitmask, a creator-token record, and a set of "nested intent keys." All three live in:
+into a concrete mechanism. The mechanism uses three new pieces of `Intent` state: an
+extended-flags bitmask, a creator-token record, and a set of "nested intent keys." All
+three live in:
 
 ```
 frameworks/base/core/java/android/content/Intent.java
@@ -3114,8 +3121,8 @@ public void removeLaunchSecurityProtection() {
 
 When a foreign embedded Intent arrives without a trusted creator token, the system marks
 it `EXTENDED_FLAG_MISSING_CREATOR_OR_INVALID_TOKEN` (this happens in the read path around
-line 940). At launch time the platform then refuses to honor it, or refuses to let it
-grant URI access to targets the original creator could not reach. `removeLaunchSecurityProtection()`
+line 940). At launch time the platform then refuses to honor it. Or it refuses to let it
+grant URI access to targets that the original creator could not reach. `removeLaunchSecurityProtection()`
 is the documented opt-out for the rare app that genuinely needs the legacy behavior.
 
 ### 21.11.3 Collecting Nested Intent Keys
@@ -3136,8 +3143,8 @@ NESTED_INTENT_KEY_TYPE_CLIP_DATA           = 1 << 3; // an Intent inside ClipDat
 Each key records its type, the extra key string, and an index (for array/list/ClipData
 cases). Once collection runs, the Intent is stamped `EXTENDED_FLAG_NESTED_INTENT_KEYS_COLLECTED`
 so the work is not repeated. The system server has a catch-all: `collectExtraIntentKeys(true)`
-(the `forceUnparcel` overload at line ~12674) re-collects keys server-side if the client
-never did, governed by the
+(the `forceUnparcel` overload at line ~12674). It re-collects keys server-side if the
+client never did. This is governed by the
 `prevent_intent_redirect_collect_nested_keys_on_server_if_not_collected` flag.
 
 ```mermaid
@@ -3153,9 +3160,9 @@ flowchart TD
 
 ### 21.11.4 Rollout Flags
 
-The redirect defense ships behind a family of staged flags in
+The redirect defense ships behind a family of staged flags. The flags are in
 `frameworks/base/core/java/android/security/responsible_apis_flags.aconfig`, all under bug
-`361143368`, so the platform can tune behavior without a code change:
+`361143368`. As a result, the platform can tune behavior without a code change:
 
 | Flag | Behavior when enabled |
 |------|----------------------|
@@ -3165,9 +3172,10 @@ The redirect defense ships behind a family of staged flags in
 | `prevent_intent_redirect_show_toast` | Show a toast when an activity start is blocked |
 | `prevent_intent_redirect_throw_exception_if_nested_keys_not_collected` | Throw if an intent did not collect nested keys |
 
-This staged design lets Google ship token plumbing first (collect-only, toast, metrics)
-and flip to hard enforcement (`abort_or_throw_exception`) once breakage is understood,
-mirroring the metrics-then-block pattern used by Safer Intent matching in Section 21.10.
+This staged design lets Google ship token plumbing first (collect-only, toast, metrics).
+Then it can flip to hard enforcement (`abort_or_throw_exception`) once breakage is
+understood. This mirrors the metrics-then-block pattern that Safer Intent matching uses in
+Section 21.10.
 
 ## 21.12 Try It
 
@@ -3700,10 +3708,11 @@ flowchart TD
 ### Key Takeaways
 
 The Intent system is Android's universal messaging fabric. This chapter traced the full
-lifecycle from the Intent object's fields through the resolution algorithm in
-`ComponentResolverBase`, the broadcast delivery system in `BroadcastQueue` and
-`BroadcastProcessQueue`, the PendingIntent token system, App Links domain verification,
-cross-profile forwarding, and the security mechanisms that protect it all.
+lifecycle. It started with the Intent object's fields. It then covered the resolution
+algorithm in `ComponentResolverBase` and the broadcast delivery system in `BroadcastQueue`
+and `BroadcastProcessQueue`. It also covered the PendingIntent token system, App Links
+domain verification, cross-profile forwarding, and the security mechanisms that protect
+it all.
 
 Key source files examined:
 
@@ -3728,11 +3737,12 @@ modern broadcast system uses per-process queues with delivery state tracking, de
 for cached processes, and classification-based prioritization. PendingIntents delegate
 execution authority through system-managed tokens, with mandatory mutability declarations
 since Android 12 and mandatory explicitness for mutable PendingIntents since Android 14.
-Android 17 layers on Safer Intent matching, where `SaferIntentUtils` drops resolved
-components that an explicit Intent does not actually match (driven by the new
-`intentMatchingFlags` manifest attribute), and a creator-token system that blocks intent
-redirect attacks by re-checking the original creator's identity when a nested Intent is
-relaunched.
+
+Android 17 layers on two more mechanisms. The first is Safer Intent matching. There,
+`SaferIntentUtils` drops resolved components that an explicit Intent does not actually
+match (driven by the new `intentMatchingFlags` manifest attribute). The second is a
+creator-token system. It blocks intent redirect attacks. It does this by re-checking the original
+creator's identity when a nested Intent is relaunched.
 
 ### Version History of Major Intent System Changes
 
@@ -3763,8 +3773,8 @@ The Intent system embodies several fundamental Android design principles:
 2. **Component reuse**: Any app can leverage functionality provided by any other app
    through implicit intents, without direct code dependencies.
 
-3. **Security by default**: Starting from recent Android versions, components are not
-   exported by default, PendingIntents must declare mutability, and implicit broadcasts
+3. **Security by default**: Starting in recent Android versions, components are not
+   exported by default. PendingIntents must declare mutability. Implicit broadcasts
    to manifest receivers are restricted.
 
 4. **User choice**: When multiple apps can handle an intent, the user decides. The
@@ -3774,8 +3784,8 @@ The Intent system embodies several fundamental Android design principles:
    relationships between apps and web domains, replacing user-trust with
    cryptographic verification.
 
-The overarching theme: the Intent system balances openness (any app can participate in
-intent resolution) with security (explicit components, protected broadcasts, permission
-checks, package visibility, and redirect prevention). Understanding both sides of this
+The overarching theme: the Intent system balances openness with security. Openness means
+that any app can participate in intent resolution. Security means explicit components,
+protected broadcasts, permission checks, package visibility, and redirect prevention. Understanding both sides of this
 balance is essential for building robust Android applications and for working on the
 framework itself.

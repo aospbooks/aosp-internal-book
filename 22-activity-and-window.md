@@ -1,19 +1,19 @@
 # Chapter 22: Activity and Window Management Overview
 
 The Activity and Window Management subsystem is the beating heart of
-the Android user experience. Every tap that launches an app, every swipe that
-switches tasks, every split-screen arrangement, and every floating
-picture-in-picture window passes through the intricate machinery of
+the Android user experience. Every tap that launches an app passes through the intricate machinery of
 `ActivityManagerService` (AMS), `ActivityTaskManagerService` (ATMS), and
-`WindowManagerService` (WMS). Together these three services -- all running
-inside `system_server` -- manage the full lifecycle of activities, the
-hierarchy of tasks and windows, the scheduling of process priorities, and the
-choreography of visual transitions that the user sees on screen.
+`WindowManagerService` (WMS). So does every swipe that switches tasks, every
+split-screen arrangement, and every floating picture-in-picture window.
+Together these three services run inside `system_server`. They manage the full
+lifecycle of activities, the hierarchy of tasks and windows, and the scheduling
+of process priorities. They also manage the choreography of visual transitions
+that the user sees on screen.
 
 This chapter provides a comprehensive architectural overview. We will trace
-real code paths through the AOSP source, examine class hierarchies with Mermaid
-diagrams, and dissect the data structures that underpin every visible
-interaction on Android. Chapters 23 and 24 will dive deeper into the Window
+real code paths through the AOSP source. We will examine class hierarchies with
+Mermaid diagrams. We will also dissect the data structures that underpin every
+visible interaction on Android. Chapters 23 and 24 will dive deeper into the Window
 System internals and the Display/Compositor pipeline respectively; here we
 establish the foundations.
 
@@ -24,9 +24,9 @@ establish the foundations.
 ### 22.1.1 Historical Context: The Great Split
 
 Before Android 10 (API 29), `ActivityManagerService` was a single monolithic
-class responsible for *everything*: process management, activity lifecycle,
-task management, broadcast dispatch, service binding, content provider
-tracking, and OOM adjustment. The file had grown to be one of
+class. It was responsible for *everything*: process management, activity
+lifecycle, task management, broadcast dispatch, service binding, content
+provider tracking, and OOM adjustment. The file had grown to be one of
 the most complex classes in all of AOSP.
 
 Starting with Android 10, the AOSP team extracted activity-related and
@@ -87,9 +87,9 @@ final WindowManagerGlobalLock mGlobalLock = new WindowManagerGlobalLock();
 ```
 
 ATMS shares its `WindowManagerGlobalLock` with WMS. This means that activity
-operations and window operations are serialized under the same lock -- a
-deliberate choice since activities and windows are so tightly coupled that
-they almost always need to be modified together.
+operations and window operations are serialized under the same lock. This is a
+deliberate choice. This is because activities and windows are so tightly coupled that they
+almost always need to be modified together.
 
 AMS, on the other hand, has its own `ActivityManagerGlobalLock` plus a
 separate `mProcLock` for process-specific operations. The lock ordering
@@ -250,7 +250,7 @@ The shared lock between ATMS and WMS deserves special attention. When ATMS
 was created, the engineers chose to have it share the WM lock rather than
 maintain a separate lock. This design means:
 
-1. **Activity state changes and window state changes are atomic** -- When an
+1. **Activity state changes and window state changes are atomic.** When an
    activity transitions to RESUMED, the corresponding window visibility
    update happens under the same lock acquisition.
 
@@ -886,9 +886,9 @@ The `TaskDisplayArea` (line 73) is particularly important:
 final class TaskDisplayArea extends DisplayArea<WindowContainer> {
 ```
 
-It manages the set of root tasks on a display and provides methods like
-`getFocusedRootTask()` and `getRootTaskAbove()` that are critical for
-determining which activity is currently focused.
+It manages the set of root tasks on a display. It provides methods like
+`getFocusedRootTask()` and `getRootTaskAbove()`. These methods are critical to
+find out which activity is currently focused.
 
 ### 22.3.8 RootWindowContainer
 
@@ -1092,11 +1092,11 @@ private int addWindowInner(@NonNull WindowState win, @NonNull DisplayPolicy disp
 ```
 
 The IME-attachment path changed in Android 17. Earlier releases stored the
-input-method window directly on the `DisplayContent`; the current code resolves
-an `ImeWindowToken` and only attaches the window when that token matches the
-display's `ImeContainer` token, guarding against a race in which a work-profile
-switch moves the IME away while a stale `InputMethodService` is still adding its
-window.
+input-method window directly on the `DisplayContent`. The current code resolves
+an `ImeWindowToken`. It attaches the window only when that token matches the
+display's `ImeContainer` token. This guards against a race. In the race, a
+work-profile switch moves the IME away while a stale `InputMethodService` is
+still adding its window.
 
 ### 22.4.7 The Session Binder Object
 
@@ -1427,8 +1427,8 @@ static class DefaultFactory implements Factory {
 ```
 
 The pool holds at most 3 instances because at most 3 can be active
-simultaneously: the last completed starter (for logging), the current
-starter, and a re-entrant starter from the current one.
+simultaneously. These are the last completed starter (for logging), the
+current starter, and a re-entrant starter from the current one.
 
 ### 22.6.4 computeLaunchingTaskFlags()
 
@@ -1468,7 +1468,7 @@ Key rules implemented:
    ```
 
 4. **LAUNCH_ADJACENT** -- Requires both `NEW_TASK` and a source record. In
-   Android 17 this branch also honors a per-task opt-out: even with the flags
+   Android 17 this branch also honors a per-task opt-out. Even with the flags
    set, the request is downgraded if the source task (or any ancestor) has
    `isLaunchAdjacentDisabled()`:
    ```java
@@ -1686,8 +1686,8 @@ surfaces).
 Android 17 carved the OOM-adjustment machinery out of the `am` package into a
 new `com.android.server.am.psc` (Process State Controller) sub-package. This is
 the single largest structural change to process management since the AMS/ATMS
-split. The README in that package states its goals plainly: isolate the OOM
-adjuster logic, expose a clear `ProcessStateController` interface, and
+split. The README in that package states its goals plainly. The goals are to isolate the OOM
+adjuster logic, to expose a clear `ProcessStateController` interface, and to
 centralize all process state that affects OOM adjustment.
 
 ```
@@ -1724,8 +1724,8 @@ mOomAdjuster = mProcessStateController.getOomAdjuster();
 (`runUpdate()`, `runPendingUpdate()`, `runFullUpdate()`, `runFollowUpUpdate()`).
 Callers that previously poked the `OomAdjuster` now go through the controller,
 which keeps process-state bookkeeping consistent. The package is still being
-landed incrementally (tracked internally by the AOSP team), so some logic still
-lives in the legacy `am` classes, but the constants, the adjuster, and the new
+landed incrementally (tracked internally by the AOSP team). For that reason, some logic still
+lives in the legacy `am` classes. However, the constants, the adjuster, and the new
 graph model are firmly in `psc`.
 
 ### 22.7.2 OOM Adjustment Values
@@ -1967,14 +1967,16 @@ public abstract class OomAdjuster {
 public class OomAdjusterImpl extends OomAdjuster {
 ```
 
-The implementation models the system as an **importance graph**: each process
-is a `ProcessNode` (embedded in its `ProcessRecordInternal`), and service or
+The implementation models the system as an **importance graph**. Each process
+is a `ProcessNode` (embedded in its `ProcessRecordInternal`). Service or
 provider bindings are `ServiceBindingEdge` / `ProviderBindingEdge` objects
-(subclasses of the abstract `GraphEdge`) connecting a client node to a server
-node, while `ProcessEdge` is the intrinsic system-to-process edge derived from
-the process's own attributes. A `CapabilityController` walks these edges to propagate
-capabilities and importance from clients to the processes they bind. The core
-per-process computation is `OomAdjusterImpl.computeOomAdjLSP()`, reached from
+(subclasses of the abstract `GraphEdge`). They connect a client node to a server
+node. `ProcessEdge` is the intrinsic system-to-process edge derived from
+the process's own attributes.
+
+A `CapabilityController` walks these edges to
+propagate capabilities and importance from clients to the processes they bind.
+The core per-process computation is `OomAdjusterImpl.computeOomAdjLSP()`, reached from
 `performUpdateOomAdjLSP()`.
 
 The computation considers:
@@ -2398,9 +2400,9 @@ sequenceDiagram
     end
 ```
 
-In Android 17 the method delivers the intent immediately (wrapping it in a
-`NewIntentItem` transaction) only when the activity is `RESUMED`, `PAUSED`, or
-the top activity behind the lock screen, and is attached to its process.
+In Android 17 the method delivers the intent immediately, in a `NewIntentItem`
+transaction. It does this only when the activity is `RESUMED`, `PAUSED`, or the
+top activity behind the lock screen, and is attached to its process.
 Otherwise the intent is queued via `addNewIntentLocked()` and delivered the
 next time the activity resumes. The `NewIntentItem` carries a `resume` flag so
 the client returns to `RESUMED` only if it was already resumed, avoiding spurious
@@ -2532,8 +2534,8 @@ graph TB
 
 ### 22.12.1 Purpose and Types
 
-When an activity is being launched but has not yet drawn its first frame, the
-system can display a "starting window" (splash screen) to provide immediate
+An activity is launching and has not yet drawn its first frame. In this case, the
+system can display a "starting window" (splash screen) to give immediate
 visual feedback. There are two types:
 
 ```java
@@ -2630,9 +2632,9 @@ flowchart TD
     Done --> EndTrace["End trace"]
 ```
 
-To handle cascading layout changes, where updating one window's layout
-triggers changes in another, the traversal is re-requested up to 6 times
-(`++mLayoutRepeatCount < 6`) before WMS gives up and logs "Performed 6
+Layout changes cascade: updating one window's layout triggers changes
+in another. To handle this, the traversal is re-requested up to 6 times
+(`++mLayoutRepeatCount < 6`). After that, WMS gives up and logs "Performed 6
 layouts in a row. Skipping". `LAYOUT_REPEAT_THRESHOLD` (4) never bounds the
 loop; it is only the debug-logging threshold at which `debugLayoutRepeats()`
 starts emitting "Layouts looping" log lines.
@@ -2753,15 +2755,17 @@ changed configuration fields, it receives `onConfigurationChanged()` instead
 of being destroyed and recreated.
 
 **Android 17: fewer default relaunches.** Once the
-`enable_less_activity_recreation_on_config_change` flag is on, the system stops
-recreating an activity by default for a set of low-impact configuration changes:
-`CONFIG_KEYBOARD`, `CONFIG_KEYBOARD_HIDDEN`, `CONFIG_NAVIGATION`,
-`CONFIG_TOUCHSCREEN`, and `CONFIG_COLOR_MODE`. Before this change an app
-had to list each of these in `android:configChanges` to avoid a relaunch; now
-the no-relaunch behavior is the default and an app opts *back into* recreation
-with the new `android:recreateOnConfigChanges` manifest attribute. The attribute
-is parsed alongside `configChanges`: at parse time the effective handled-config
-mask is `configChanges | ((~recreateOnConfigChanges) & RECREATE_ON_CONFIG_CHANGES_MASK)`,
+`enable_less_activity_recreation_on_config_change` flag is on, the system does
+not recreate an activity by default for a set of low-impact configuration
+changes. These are `CONFIG_KEYBOARD`, `CONFIG_KEYBOARD_HIDDEN`,
+`CONFIG_NAVIGATION`, `CONFIG_TOUCHSCREEN`, and `CONFIG_COLOR_MODE`. Before this
+change an app had to list each of these in `android:configChanges` to avoid a
+relaunch. Now the no-relaunch behavior is the default. An app opts *back into*
+recreation with the new `android:recreateOnConfigChanges` manifest attribute.
+
+The attribute is parsed alongside `configChanges`. At parse time the effective
+handled-config mask is
+`configChanges | ((~recreateOnConfigChanges) & RECREATE_ON_CONFIG_CHANGES_MASK)`,
 so any bit the app did *not* name in `recreateOnConfigChanges` is treated as
 handled (no relaunch).
 
@@ -2779,7 +2783,7 @@ public static final int RECREATE_ON_CONFIG_CHANGES_MASK =
 the window flag `enable_less_activity_recreation_on_config_change` and the
 compat change `ActivityInfo.SKIP_ACTIVITY_RECREATION_ON_CONFIG_CHANGE`
 (`454795633L`). The compat change carries no `@EnabledAfter`/`@EnabledSince`
-annotation, so it is *not* target-SDK gated: with the flag on, the new
+annotation, so it is *not* target-SDK gated. With the flag on, the new
 no-relaunch default applies to all apps regardless of target SDK. It is,
 however, declared `@Overridable`, so it can be disabled per app -- unlike the
 SDK-37-gated `DISABLE_OPT_OUT_UNIVERSAL_RESIZABLE_BY_DEFAULT` described in
@@ -2789,24 +2793,27 @@ regardless.
 `CONFIG_UI_MODE` is deliberately *not* in this mask. Desk docking is handled by
 a separate runtime path on the client. When a configuration change arrives,
 `ActivityThread.handleActivityConfigurationChanged()` calls
-`shouldSkipActivityRelaunchWhenDocking()` and `onlyDeskInUiModeChanged()`; if the
+`shouldSkipActivityRelaunchWhenDocking()` and `onlyDeskInUiModeChanged()`. If the
 only `uiMode` change is into or out of `UI_MODE_TYPE_DESK`, it ORs
-`CONFIG_UI_MODE` into the activity's `handledConfigChanges` for that one decision
-so the activity gets `onConfigurationChanged()` instead of a relaunch. This is a
+`CONFIG_UI_MODE` into the activity's `handledConfigChanges` for that one
+decision. Then the activity gets `onConfigurationChanged()` instead of a
+relaunch. This is a
 per-event runtime suppression in the client process, not a parse-time mask bit,
 so it stays independent of `recreateOnConfigChanges`.
 
 There is a correctness guard on the server side.
 `AppCompatRecreateOnConfigChangePolicy` (in the `wm` package) inspects the
-package's resources and re-adds a config bit to the recreate mask when the app
+package's resources. It re-adds a config bit to the recreate mask when the app
 actually ships alternate resources qualified by that config. It only ever
-re-adds the five bits the skip set covers, so it looks for the matching
+re-adds the five bits the skip set covers. So it looks for the matching
 qualifiers: a keyboard-hidden directory like `-keyshidden`, or a color-mode one
 like `-widecg`. (`-night` is a `uiMode` qualifier, not `colorMode`, so it does
-not trigger this policy.) The reasoning is that an activity which loads
+not trigger this policy.)
+
+The reasoning is as follows. An activity that loads
 keyboard- or color-mode-specific resources still needs a fresh `onCreate()` to
-pick up the right ones, so skipping the relaunch only happens when there is
-nothing config-specific to reload.
+pick up the right ones. So the relaunch is skipped only when there is nothing
+config-specific to reload.
 
 **Source:** `frameworks/base/core/res/res/values/attrs_manifest.xml` (the
 `recreateOnConfigChanges` attr), `frameworks/base/core/java/android/content/pm/ActivityInfo.java`,
@@ -3041,10 +3048,10 @@ This field is set based on:
 In Android 17 the visibility and occlusion logic was extracted into a
 dedicated `WindowContainerVisibilityHelper` interface
 (`frameworks/base/services/core/java/com/android/server/wm/WindowContainerVisibilityHelper.java`).
-It centralizes three previously-scattered computations: the visibility state of
-a `TaskFragment` (`getTaskFragmentVisibility()`), whether an `ActivityRecord`
-should be visible (`shouldActivityBeVisible()`), and whether a container has
-content that fills it. `ActivityRecord.shouldBeVisible()` and
+It centralizes three computations that were scattered before. They are the
+visibility state of a `TaskFragment` (`getTaskFragmentVisibility()`), whether an
+`ActivityRecord` should be visible (`shouldActivityBeVisible()`), and whether a
+container has content that fills it. `ActivityRecord.shouldBeVisible()` and
 `TaskFragment.getVisibility()` now delegate to this helper rather than carrying
 their own copies of the rules.
 
@@ -3227,8 +3234,9 @@ This chapter provides the architectural overview. The following chapters
 build on these foundations:
 
 - **Chapter 23: The Window System Deep Dive** -- Covers window layout
-  computation, surface management, the ViewRootImpl rendering pipeline,
-  insets handling, and the shell transitions system introduced in Android 13+.
+  computation, surface management, and the ViewRootImpl rendering pipeline.
+  It also covers insets handling and the shell transitions system introduced in
+  Android 13+.
 
 - **Chapter 24: Display and Compositor Pipeline** -- Covers SurfaceFlinger
   internals, hardware composition, multi-display support, virtual displays,
@@ -3930,8 +3938,8 @@ first), with app values typically ranging from 0 (foreground) to 999 (cached).
 
 ### Q: Can two activities from different apps be in the same task?
 
-**A**: Yes. If App A starts an activity in App B without `FLAG_ACTIVITY_NEW_TASK`,
-and App B's activity has a matching `taskAffinity`, the new activity joins
+**A**: Yes. Suppose App A starts an activity in App B without `FLAG_ACTIVITY_NEW_TASK`.
+If App B's activity has a matching `taskAffinity`, the new activity joins
 App A's task. This is the default behavior for explicit intents. It is how
 the share sheet, browser, and many other cross-app flows work.
 
@@ -3998,11 +4006,11 @@ The feature flags themselves are modeled as enums rather than raw booleans:
 The Shell-side gate has also been refactored. The old static helper
 `DesktopModeStatus`
 (`frameworks/base/libs/WindowManager/Shell/shared/src/com/android/wm/shell/shared/desktopmode/DesktopModeStatus.java`)
-is now `@Deprecated(forRemoval = true)` and points callers at two newer shared
-interfaces in the same package: `DesktopState` (which features are available on
-the device and on a given display, such as `canEnterDesktopMode`) and
-`DesktopConfig` (per-feature tuning like the window-decoration view-host pool
-size). Both are shared between WM Shell, SystemUI, and Launcher so the three
+is now `@Deprecated(forRemoval = true)`. It points callers at two newer shared
+interfaces in the same package. `DesktopState` says which features are available
+on the device and on a given display, such as `canEnterDesktopMode`.
+`DesktopConfig` holds per-feature tuning, like the window-decoration view-host
+pool size. Both are shared between WM Shell, SystemUI, and Launcher so the three
 agree on what desktop windowing is enabled.
 
 ### 22.32.2 Where Desktop Windows Land: Launch Params
@@ -4028,7 +4036,7 @@ position desktop windows. The actual geometry comes from
 `DesktopModeBoundsCalculator`
 (`frameworks/base/services/core/java/com/android/server/wm/DesktopModeBoundsCalculator.java`),
 whose `calculateInitialBounds()` derives an "ideal" size from the stable display
-bounds scaled by `DESKTOP_MODE_INITIAL_BOUNDS_SCALE`, leaving
+bounds scaled by `DESKTOP_MODE_INITIAL_BOUNDS_SCALE`. It leaves
 `DESKTOP_MODE_LANDSCAPE_APP_PADDING` for landscape apps.
 
 ```mermaid
@@ -4056,7 +4064,7 @@ mCanEnterDesktopMode = DesktopModeHelper.canEnterDesktopMode(mContext);
 
 `AppCompatUtils.isInDesktopMode()` treats a window as being in desktop mode when
 its parent windowing mode is `WINDOWING_MODE_FREEFORM` and the device can enter
-desktop mode, and `DesktopAppCompatAspectRatioPolicy` constrains how letterboxed
+desktop mode. `DesktopAppCompatAspectRatioPolicy` constrains how letterboxed
 or fixed-aspect-ratio apps are sized inside desktop windows. This keeps legacy
 apps usable when dragged into a freeform window.
 
@@ -4064,29 +4072,33 @@ apps usable when dragged into a freeform window.
 
 Android 17 invests heavily in *connected displays* (driving a desktop session on
 an external monitor) and *multiple desktops* (more than one virtual desktop per
-display). Much of this is flag-gated in `DesktopExperienceFlags`, and the
-server-side plumbing rides on the existing multi-display hierarchy from Section
+display). Much of this is flag-gated in `DesktopExperienceFlags`. The
+server-side plumbing uses the existing multi-display hierarchy from Section
 22.26: each external display is another `DisplayContent` under
-`RootWindowContainer`, with its own `TaskDisplayArea`. Activities are positioned
-into the correct display's task area by the same launch-params pipeline, and
-cross-display moves are coordinated through the transition system (Section
-22.22). The practical effect for the WM core is that the "which display, which
-desktop, what bounds" decision is now a first-class part of activity launch,
-rather than an afterthought handled entirely by the Shell.
+`RootWindowContainer`, with its own `TaskDisplayArea`. The same launch-params
+pipeline positions activities into the task area of the correct display.
+Cross-display moves are coordinated through the transition system (Section 22.22).
+
+The practical effect for the WM core is that the "which display, which desktop,
+what bounds" decision is now a first-class part of activity launch. It is no
+longer an afterthought that the Shell handles entirely.
 
 A display can also default to *desktop-first* rather than phone-first. The Shell
 side of that decision lives in `DesktopDisplayModeController`
-(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/desktopfirst/DesktopDisplayModeController.kt`),
-which sets a display's root windowing mode to freeform so apps launch into a
-desktop session by default, with `DesktopFirstListenerManager` tracking the
-listeners interested in that mode. The behavior is gated by the
+(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/desktopfirst/DesktopDisplayModeController.kt`).
+It sets a display's root windowing mode to freeform, so apps launch into a
+desktop session by default. `DesktopFirstListenerManager` tracks the
+listeners interested in that mode.
+
+The behavior is gated by the
 `enable_desktop_first_*` flag family and, for multi-desk activation on such
 displays, `enable_multiple_desktops_default_activation_in_desktop_first_displays`.
 Per-display desktop layout survives across sessions through
 `DesktopPersistentRepository`
-(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/data/persistence/DesktopPersistentRepository.kt`),
-which serializes the in-memory `DesktopRepository` state to a DataStore-backed
-protobuf so reconnecting a monitor restores its desks and window bounds.
+(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/data/persistence/DesktopPersistentRepository.kt`).
+It serializes the in-memory `DesktopRepository` state to a DataStore-backed
+protobuf. This lets a monitor that reconnects get its desks and window
+bounds back.
 
 ### 22.32.5 SDK 37: No Orientation or Resizability Opt-Out on Large Screens
 
@@ -4106,14 +4118,14 @@ boolean getIgnoreOrientationRequest() {
 }
 ```
 
-When the display ignores orientation requests, the values an app sets through
-`screenOrientation` in the manifest and `setRequestedOrientation()` at runtime
-do not change the window's orientation. What apps could still do, until
-Android 17, was opt out of the matching *resizability* restriction with the
-package property `android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY`,
-which let a non-resizable activity (`resizeableActivity="false"`, or a fixed
-`minAspectRatio`/`maxAspectRatio`) keep its compatibility sizing instead of
-being treated as universally resizable.
+When the display ignores orientation requests, the app sets values through
+`screenOrientation` in the manifest and `setRequestedOrientation()` at runtime.
+These values do not change the window's orientation. Until Android 17, apps
+could still opt out of the matching *resizability* restriction. They used the
+package property `android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY`
+for this. The property let a non-resizable activity (`resizeableActivity="false"`,
+or a fixed `minAspectRatio`/`maxAspectRatio`) keep its compatibility sizing. The
+activity was then not treated as universally resizable.
 
 For apps targeting SDK 37 (`Build.VERSION_CODES.CINNAMON_BUN`), that opt-out is
 disabled. `AppCompatResizeOverrides` carries the compat change:
@@ -4129,16 +4141,16 @@ static final long DISABLE_OPT_OUT_UNIVERSAL_RESIZABLE_BY_DEFAULT = 447301631L;
 SDK 37 and above. When it is enabled, `allowRestrictedResizability()` returns
 `false` before it ever reads the package property, so
 `PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY` has no effect. The activity is
-treated as universally resizable on large screens, and its `resizeableActivity`,
+treated as universally resizable on large screens. Its `resizeableActivity`,
 `minAspectRatio`, and `maxAspectRatio` declarations stop constraining the window
-the way they did on older target SDKs. Combined with the existing
-`getIgnoreOrientationRequest()` default above, an SDK-37 app on a >600dp display
-no longer controls either its orientation or its resizability through the
-manifest and runtime knobs it used before.
+the way they did on older target SDKs. The existing
+`getIgnoreOrientationRequest()` default above also applies. So an SDK-37 app on
+a >600dp display no longer controls its orientation or its resizability through
+the manifest and runtime knobs it used before.
 
-This is the WM-core side of the form-factor work covered in Chapter 62; the
-aspect-ratio and letterboxing policies that decide how a window is finally sized
-live in the sibling `AppCompat*` classes (`AppCompatAspectRatioPolicy`,
+This is the WM-core side of the form-factor work covered in Chapter 62. The
+aspect-ratio and letterboxing policies decide how a window is finally sized.
+They live in the sibling `AppCompat*` classes (`AppCompatAspectRatioPolicy`,
 `AppCompatAspectRatioOverrides`, `AppCompatOrientationPolicy`) in the same `wm`
 package.
 
@@ -4153,12 +4165,14 @@ code. Three of them control treatments that matter on large screens and
 foldables.
 
 The first two govern the *simulate requested orientation* camera-compat
-treatment. When a fixed-orientation activity opens the camera on a display that
-ignores orientation requests, the camera sensor buffer and the app window can
-disagree about which way is up, which shows as a sideways or stretched
+treatment. Suppose a fixed-orientation activity opens the camera on a display that
+ignores orientation requests. Then the camera sensor buffer and the app window
+can disagree about which way is up. The result is a sideways or stretched
 viewfinder. `AppCompatCameraSimReqOrientationPolicy` letterboxes the activity to
-its expected orientation and adjusts the camera and display rotation signals to
-match what the app would see on a portrait phone. Two resources gate it:
+its expected orientation. It also adjusts the camera and display rotation
+signals to match what the app would see on a portrait phone.
+
+Two resources gate it:
 
 ```xml
 <!-- frameworks/base/core/res/res/values/config.xml, line 6781, 6789 -->
@@ -4171,19 +4185,19 @@ match what the app would see on a portrait phone. Two resources gate it:
 `mIsCameraCompatLandscapeTreatmentEnabled`. The first is the master switch for
 the treatment, queried through `isCameraCompatSimReqOrientationTreatmentEnabled()`
 and folded into `isAnyCameraCompatTreatmentEnabled()`. The second extends the
-treatment to landscape cameras (apps that hardcode a portrait sensor): per the
+treatment to landscape cameras (apps that hardcode a portrait sensor). Per the
 `isCameraCompatLandscapeTreatmentEnabled()` doc comment, it only takes effect
-when the first resource is also true, since the same policy applies both. An OEM
-whose camera HAL already returns correctly oriented buffers can turn the
-treatment off in an overlay; a device with landscape sensors can opt into the
+when the first resource is also true, because the same policy applies both. An
+OEM whose camera HAL already returns correctly oriented buffers can turn the
+treatment off in an overlay. A device with landscape sensors can opt into the
 landscape variant.
 
 The third resource controls *self-kill recovery* during display moves.
 `AppCompatDisplayCompatPolicy` detects apps that finish themselves when they
-receive a configuration change while moving between displays and relaunches them
-on the new display to keep the session alive. A move between two internal
-displays (the fold/unfold transition on a foldable) is normally exempt, because
-the two physical panels usually share most of their configuration. When the two
+receive a configuration change while moving between displays. It relaunches
+them on the new display to keep the session alive. A move between two internal
+displays (the fold/unfold transition on a foldable) is normally exempt. This is because the two
+physical panels usually share most of their configuration. When the two
 panels differ enough (for example in density) that the exemption causes
 problems, an OEM can remove it:
 
@@ -4193,13 +4207,13 @@ problems, an OEM can remove it:
 ```
 
 `onMovedToDisplay()` short-circuits when both the previous and new display are
-`TYPE_INTERNAL`, unless
+`TYPE_INTERNAL`. The exception is when
 `AppCompatConfiguration.isSelfKillRecoveryBetweenInternalDisplaysEnabled()`
-(backed by this resource) returns true, in which case the fold transition runs
+(backed by this resource) returns true. Then the fold transition runs
 through the same `SelfKillStateMachine` as a move to an external monitor. The
 same policy class also names a Computer Control compat mode for moves to or from
-a virtual Computer Control display, on top of the display-compat mode used for
-games.
+a virtual Computer Control display. This mode is in addition to the
+display-compat mode used for games.
 
 ---
 
@@ -4429,9 +4443,9 @@ adb shell dumpsys display | grep -E "Display id|mType|flags"
 ```
 
 The `dumpsys activity oom` output still prints the OOM adj buckets
-(`FOREGROUND`, `VISIBLE`, `PERCEPTIBLE`, `CACHED`, ...), but in Android 17 those
-values are computed by `OomAdjusterImpl` inside the
-`com.android.server.am.psc` package and the constants come from
+(`FOREGROUND`, `VISIBLE`, `PERCEPTIBLE`, `CACHED`, ...). But in Android 17,
+`OomAdjusterImpl` computes those values inside the
+`com.android.server.am.psc` package. The constants come from
 `psc/Constants.java`.
 
 ---
@@ -4456,36 +4470,36 @@ window management:
    timeouts protect against hung applications: 500ms pause, 11s stop,
    10s destroy, 10s idle.
 
-3. **The Container Hierarchy**: Built on `WindowContainer`
-   (line 117), the unified tree extends from `RootWindowContainer` through
+3. **The Container Hierarchy**: The unified tree builds on `WindowContainer`
+   (line 117). It extends from `RootWindowContainer` through
    `DisplayContent` (inherits from `RootDisplayArea`), `DisplayArea`,
    `TaskDisplayArea`, `Task` (extends `TaskFragment`), `TaskFragment`
-   (extends `WindowContainer`), `ActivityRecord` (extends `WindowToken`),
+   (extends `WindowContainer`), and `ActivityRecord` (extends `WindowToken`),
    down to `WindowState`. This elegant design means activities ARE window
    tokens, and removing a container automatically removes all descendants.
 
 4. **Window Addition Flow**: The path from
    `WindowManager.addView()` through `ViewRootImpl.setView()`,
-   `Session.addToDisplay()` (Binder IPC), to `WMS.addWindow()` (line 1672)
-   with its extensive validation (token checks for each window type,
-   permission verification, display access control, duplicate detection) and
-   setup (`WindowState` creation, `InputChannel` pair, surface allocation,
-   policy configuration). In Android 17 the IME-window attachment path
+   `Session.addToDisplay()` (Binder IPC), to `WMS.addWindow()` (line 1672).
+   That method does extensive validation (token checks for each window
+   type, permission verification, display access control, duplicate
+   detection). It also does setup (`WindowState` creation, `InputChannel`
+   pair, surface allocation, policy configuration). In Android 17 the IME-window attachment path
    resolves an `ImeWindowToken` to survive work-profile switches.
 
-5. **WMS Architecture**: The service with its
-   `mWindowMap` (global window registry), `mSessions` (per-process
-   connections), display-thread model, five focus update modes, the
-   `WindowSurfacePlacer` layout engine, and the `PriorityDumper` for
-   diagnostic data collection at critical/high/normal priorities.
+5. **WMS Architecture**: The service has `mWindowMap` (global window
+   registry) and `mSessions` (per-process connections). It also has a
+   display-thread model, five focus update modes, and the
+   `WindowSurfacePlacer` layout engine. The `PriorityDumper` collects
+   diagnostic data at critical/high/normal priorities.
 
-6. **Intent Resolution and Launch Pipeline**: From
-   `ATMS.startActivityAsUser()` (line 1302) through the `ActivityStarter`
-   pipeline: `execute()` (line 837, metrics + HeavyWeight check) ->
-   `executeRequest()` (line 1087, validation + permissions + interceptors +
-   BAL check + ActivityRecord creation) -> `startActivityInner()` (line 2015,
-   `computeLaunchingTaskFlags()` + `computeTargetTask()` + task reuse/creation
-   + resume). Five launch modes, the 300-weight task limit, the interceptor
+6. **Intent Resolution and Launch Pipeline**: The flow starts at
+   `ATMS.startActivityAsUser()` (line 1302). It continues through the
+   `ActivityStarter` pipeline. First comes `execute()` (line 837, metrics +
+   HeavyWeight check). Then comes `executeRequest()` (line 1087, validation +
+   permissions + interceptors + BAL check + ActivityRecord creation). Last
+   comes `startActivityInner()` (line 2015, `computeLaunchingTaskFlags()` +
+   `computeTargetTask()` + task reuse/creation + resume). Five launch modes, the 300-weight task limit, the interceptor
    chain, and the move-to-front decision logic.
 
 7. **Process Management (psc refactor)**: In Android 17 the OOM-adjustment
@@ -4503,25 +4517,27 @@ window management:
 8. **Advanced Topics**: The `setState()` side effects
    and battery/usage stats integration. The recursive `resumeTopActivity`
    pipeline and pause-before-resume protocol. The `recycleTask()` mechanism
-   and intent flag processing. Multi-window/TaskFragment architecture. The
-   starting window (splash screen) system. The `WindowSurfacePlacer` layout
-   loop. Configuration change propagation. ANR detection timeouts. Lock task
-   mode enforcement. The recent tasks persistence system. Visibility
-   computation via `ensureActivitiesVisible()`, now refactored into the
-   `WindowContainerVisibilityHelper`. Shell transitions (Android 13+)
-   and their animation controllers. The input dispatch connection via
-   `InputChannel` socket pairs. And the design patterns that recur throughout
-   the system: container trees, object pools, two-phase commits, deferred
-   execution, and unforgeable Binder tokens.
+   and intent flag processing. Multi-window/TaskFragment architecture.
 
-9. **Desktop Windowing (Android 17)**: The maturing desktop-windowing path,
-   gated by `DesktopModeFlags`/`DesktopExperienceFlags` and
-   `DesktopModeHelper.canEnterDesktopMode()`, with server-side launch
-   positioning via the `DesktopModeLaunchParamsModifier` and
-   `DesktopModeBoundsCalculator`, plus the connected-displays and
-   multiple-desktops work tracked through dedicated flag enums.
+    The starting window (splash screen) system. The `WindowSurfacePlacer` layout
+    loop. Configuration change propagation. ANR detection timeouts. Lock task
+    mode enforcement. The recent tasks persistence system.
 
-The next chapter will take a deep dive into the window system mechanics --
-how frames are computed, how surfaces are managed, and how the new shell
-transitions system orchestrates smooth animations between activities and
-tasks.
+    Visibility computation uses `ensureActivitiesVisible()`, now refactored
+    into the `WindowContainerVisibilityHelper`. Shell transitions (Android 13+)
+    have their own animation controllers. The input dispatch connection uses
+    `InputChannel` socket pairs. Design patterns also recur
+    throughout the system: container trees, object pools, two-phase
+    commits, deferred execution, and unforgeable Binder tokens.
+
+9. **Desktop Windowing (Android 17)**: The maturing desktop-windowing path.
+   `DesktopModeFlags`/`DesktopExperienceFlags` and
+   `DesktopModeHelper.canEnterDesktopMode()` gate it. Server-side launch
+   positioning uses the `DesktopModeLaunchParamsModifier` and
+   `DesktopModeBoundsCalculator`. The
+   connected-displays and multiple-desktops work is tracked through dedicated flag enums.
+
+The next chapter will take a deep dive into the window system mechanics. It
+covers how frames are computed and how surfaces are managed. It also covers
+how the new shell transitions system orchestrates smooth animations between
+activities and tasks.

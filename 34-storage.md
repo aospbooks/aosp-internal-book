@@ -1,11 +1,11 @@
 # Chapter 34: Storage and Filesystem
 
 Android's storage subsystem has evolved dramatically from a simple FAT32 SD card
-mount into a multi-layered architecture that manages partitions, enforces
+mount. It is now a multi-layered architecture. It manages partitions, enforces
 per-file encryption, provides scoped access control through FUSE, and abstracts
 physical media through a document-oriented framework. This chapter examines every
-layer -- from the raw partition layout to the Java-level Storage Access
-Framework -- by walking through the actual AOSP source code.
+layer, from the raw partition layout to the Java-level Storage Access
+Framework. It does this by walking through the actual AOSP source code.
 
 ---
 
@@ -15,9 +15,8 @@ Framework -- by walking through the actual AOSP source code.
 
 An Android device's persistent storage is divided into a set of well-known
 partitions.  On modern devices that ship with dynamic partitions, the raw eMMC
-or UFS storage is divided into a small number of physical partitions, with one
-large "super" partition that is subdivided using device-mapper into logical
-partitions.
+or UFS storage is divided into a small number of physical partitions. One large "super"
+partition is subdivided into logical partitions with device-mapper.
 
 The key partitions are:
 
@@ -81,11 +80,12 @@ Dynamic partitions provide several advantages:
 4. **Virtual A/B** -- The system uses copy-on-write (COW) snapshots to avoid
    needing twice the physical space for two complete slot copies.
 
-The `super` partition metadata is managed by `liblp`.  In Android 17 the
+`liblp` manages the `super` partition metadata.  In Android 17 the
 filesystem-management code was carved out of `system/core` into a dedicated
-`system/fs` repository, so `liblp` now lives at `system/fs/fs_mgr/liblp/`
-(alongside `system/fs/fs_mgr/libdm/` and `fs_mgr.cpp` itself).  The partition
-layout is described in the `fstab` file, which vold reads at startup:
+`system/fs` repository. So `liblp` now lives at `system/fs/fs_mgr/liblp/`
+(alongside `system/fs/fs_mgr/libdm/` and `fs_mgr.cpp` itself).
+The partition layout is described in the `fstab`
+file. vold reads this file at startup:
 
 ```cpp
 // system/vold/main.cpp (lines 235-294)
@@ -189,9 +189,9 @@ graph LR
 ```
 
 The `/storage/emulated/0/` path that apps see is a FUSE mount backed by
-`/data/media/0/`.  The FUSE daemon, running inside the MediaProvider process,
-intercepts every file operation and applies permission checks, redaction, and
-transcoding before delegating to the actual filesystem.
+`/data/media/0/`.  The FUSE daemon runs inside the MediaProvider process.
+It intercepts every file operation. It applies permission checks, redaction, and
+transcoding before it delegates to the actual filesystem.
 
 ---
 
@@ -1467,7 +1467,7 @@ with the native FUSE implementation in
 
 A critical optimization for the FUSE-based approach is FUSE passthrough.
 For files that do not require redaction or transcoding, the FUSE daemon can
-set up a passthrough path that allows the kernel to bypass the FUSE daemon
+set up a passthrough path. With this path, the kernel bypasses the FUSE daemon
 entirely for subsequent I/O operations.  This recovers most of the performance
 lost by moving from sdcardfs to FUSE:
 
@@ -1560,8 +1560,8 @@ public final class ExternalStorageServiceImpl
 ### 34.5.6 FUSE Bind Mounts
 
 The emulated volume creates bind mounts for `Android/data` and `Android/obb`
-directories to ensure proper access through the lower filesystem (bypassing
-FUSE for performance-sensitive app data access):
+directories. These make sure that access goes through the lower filesystem. This
+bypasses FUSE for performance-sensitive app data access:
 
 ```cpp
 // system/vold/model/EmulatedVolume.cpp (lines 145-241)
@@ -1600,8 +1600,8 @@ status_t EmulatedVolume::mountFuseBindMounts() {
 
 ### 34.5.7 FUSE BPF Optimization
 
-Modern Android versions introduce FUSE BPF, which attaches BPF programs to
-FUSE operations to short-circuit permission checks in the kernel, avoiding
+Modern Android versions introduce FUSE BPF. It attaches BPF programs to
+FUSE operations to short-circuit permission checks in the kernel. This avoids
 the round-trip to the userspace daemon for common operations:
 
 ```cpp
@@ -1815,8 +1815,8 @@ public String[] readBackedUpFilePaths(String volumeName,
 
 ### 34.7.1 Overview
 
-The Storage Access Framework (SAF), introduced in Android 4.4 (API 19),
-provides a unified API for apps to browse and access documents from any
+The Storage Access Framework (SAF) came in Android 4.4 (API 19).
+It provides a unified API for apps to browse and access documents from any
 document provider.  It became increasingly important with scoped storage,
 as it is now the primary way for apps to access non-media files.
 
@@ -2280,14 +2280,14 @@ constexpr CryptoType supported_crypto_types[] = {
 };
 ```
 
-The `bool use_hw_wrapped_key` flag that earlier releases carried here was
-replaced in Android 17 by a three-valued `KeyType` enum
-(`kRaw`, `kHwWrappedV0`, `kHwWrapped`) shared with file-based encryption
-(`system/extras/libfscrypt/include/fscrypt/fscrypt.h`).  This is the same
-refactor that distinguishes the original hardware-wrapped key format
+Earlier releases carried a `bool use_hw_wrapped_key` flag here.
+Android 17 replaced it with a three-valued `KeyType` enum
+(`kRaw`, `kHwWrappedV0`, `kHwWrapped`).  File-based encryption shares this enum
+(`system/extras/libfscrypt/include/fscrypt/fscrypt.h`).  This same
+refactor distinguishes the original hardware-wrapped key format
 (`wrappedkey_v0` in the fstab metadata-encryption options) from the newer
-`wrappedkey` format that Android 17 parses in
-`MetadataCrypt.cpp`'s option parser.
+`wrappedkey` format.  Android 17 parses the newer format in the option parser
+of `MetadataCrypt.cpp`.
 
 The metadata encryption setup creates a `dm-default-key` device:
 
@@ -2337,10 +2337,11 @@ static bool create_crypto_blk_dev(const std::string& dm_name, const std::string&
 }
 ```
 
-Rather than calling `exportWrappedStorageKey()` inline, Android 17 routes the
+Android 17 does not call `exportWrappedStorageKey()` inline. It routes the
 key through the shared `prepareKeyForUse()` helper
-(`system/vold/KeyUtil.h`), which returns the long-term key unchanged for a raw
-key, or re-wraps it with the ephemeral wrapping key for a hardware-wrapped key.
+(`system/vold/KeyUtil.h`).  For a raw key, the helper returns the long-term key
+unchanged.  For a hardware-wrapped key, it re-wraps the key with the ephemeral
+wrapping key.
 The `switch` on `options.key_type` then decides whether to set the
 `wrappedkey_v0` flag on the `dm-default-key` target.
 
@@ -2386,18 +2387,18 @@ bool prepareKeyForUse(const KeyBuffer& lt_key, android::fscrypt::KeyType type,
 
 `generateStorageKey()` and `prepareKeyForUse()` dispatch on the `KeyType`, and
 the two wrapped formats take different routes in Android 17.  The legacy
-`kHwWrappedV0` format still goes through KeyMint: `generateV0WrappedStorageKey()`
-asks Keystore to generate an AES key tagged `TAG_STORAGE_KEY`, and
-`prepareV0WrappedKeyForUse()` calls `Keystore::exportKey()`, which invokes
-`convertStorageKeyToEphemeral()` on the security level to re-wrap the long-term
-blob with a fresh ephemeral wrapping key
+`kHwWrappedV0` format still goes through KeyMint.
+`generateV0WrappedStorageKey()` asks Keystore to generate an AES key tagged
+`TAG_STORAGE_KEY`.  `prepareV0WrappedKeyForUse()` calls `Keystore::exportKey()`.
+That call invokes `convertStorageKeyToEphemeral()` on the security level to
+re-wrap the long-term blob with a fresh ephemeral wrapping key
 (`system/vold/Keystore.cpp`, lines 153-179).
 
 The newer `kHwWrapped` format drops KeyMint entirely and uses Linux kernel block
 ioctls instead.  `generateWrappedStorageKey()` opens the userdata block device
-and issues `BLKCRYPTOGENERATEKEY` to produce the long-term key, and
+and issues `BLKCRYPTOGENERATEKEY` to produce the long-term key.
 `prepareWrappedKeyForUse()` issues `BLKCRYPTOPREPAREKEY` to turn it into the
-ephemeral key the kernel programs into the inline engine
+ephemeral key.  The kernel programs that key into the inline engine
 (`system/vold/KeyUtil.cpp`, lines 81-199).  This is the same path the upstream
 kernel uses for hardware-wrapped inline encryption keys, so it no longer needs a
 KeyMint round-trip.  Both ioctls operate on the main userdata block device, with
@@ -2678,7 +2679,7 @@ SQLite is the embedded relational database engine at the heart of Android's
 data storage. Every Android device runs hundreds of SQLite databases -- from
 system services (contacts, telephony, settings, downloads, media) to
 application-created databases. The framework provides a layered Java API
-around the native SQLite C library, adding connection pooling, WAL mode
+around the native SQLite C library.  This API adds connection pooling, WAL mode
 management, prepared statement caching, and automatic corruption recovery.
 
 > **Source root:**
@@ -2783,14 +2784,14 @@ Android supports six journal modes:
 | `DELETE` | Delete journal after commit | Traditional mode |
 | `OFF` | No journal | Maximum risk, maximum speed |
 
-**Compatibility WAL** is Android's way of turning on WAL journaling for
-databases whose owners never explicitly set a journal or sync mode, using
+**Compatibility WAL** is Android's way to turn on WAL journaling for
+databases whose owners never explicitly set a journal or sync mode. It uses
 a configurable sync mode (`SQLiteCompatibilityWalFlags.getWALSyncMode()`,
-default `NORMAL`). The disk overhead is bounded by two global resources:
-`db_journal_size_limit` caps the journal/WAL at 512KB, and
+default `NORMAL`). Two global resources bound the disk overhead.
+`db_journal_size_limit` caps the journal/WAL at 512KB.
 `db_wal_autocheckpoint` checkpoints the WAL every 100 pages -- not after
-every transaction. This provides WAL's concurrency benefits while limiting
-the disk space overhead, making it safe as a default.
+every transaction. This gives WAL's concurrency benefits and limits
+the disk space overhead, so it is safe as a default.
 
 ```mermaid
 graph LR
@@ -2846,11 +2847,11 @@ sequenceDiagram
 
 The pool tracks acquired connections via `WeakReference`s. If a connection
 is leaked (the `SQLiteSession` that acquired it is garbage collected), the
-pool detects this through the weak reference and reclaims the connection
-with a warning log.
+pool detects this through the weak reference.  The pool then reclaims the
+connection with a warning log.
 
 Idle connections are managed by an `IdleConnectionHandler` that can close
-connections after a configurable timeout, reducing memory pressure on
+connections after a configurable timeout.  This reduces memory pressure on
 resource-constrained devices.
 
 ### 34.10.5 SQLiteOpenHelper
@@ -3079,8 +3080,8 @@ public void apply() {
 The crucial difference: `apply()` notifies listeners immediately (since
 in-memory state is already updated) and queues the disk write. However,
 `QueuedWork` finishers are drained during `Activity.onStop()` and
-`Service.onStartCommand()`, which means pending `apply()` writes can
-**block the main thread during lifecycle transitions** -- a notorious
+`Service.onStartCommand()`.  This means pending `apply()` writes can
+**block the main thread during lifecycle transitions**.  This is a notorious
 source of ANRs.
 
 ### 34.11.4 Atomic File Write Protocol
@@ -3101,8 +3102,8 @@ flowchart TD
     style F fill:#ff9,stroke:#333
 ```
 
-If the process crashes between steps C/D and G, recovery is simple:
-on the next `loadFromDisk()` call, if `mBackupFile.exists()`, the backup
+If the process crashes between steps C/D and G, recovery is simple.
+On the next `loadFromDisk()` call, if `mBackupFile.exists()`, the backup
 is renamed back to the original:
 
 ```java
@@ -3298,16 +3299,18 @@ android::binder::Status cp_resetCheckpoint();
 }  // namespace android
 ```
 
-Android 17 tightened the concurrency model around this state: `cp_isCheckpointing()`
-returns a `binder::Status`, and the underlying `isCheckpointing` flag is now
-`GUARDED_BY(isCheckpointingLock)` with Clang thread-safety annotations so the
-compiler enforces that callers hold the lock before reading it
-(`system/vold/Checkpoint.cpp`).  The same release records, in the
-`vold.udc.enable_checkpoint.latency.ms` system property, how long the
-commit-time remount took: when `cp_commitChanges()` ends the checkpoint
-window, it remounts each f2fs userdata mount with its original options plus
-`,discard,checkpoint=enable` to re-enable normal f2fs checkpointing, and
-times that remount.
+Android 17 tightened the concurrency model around this state.
+`cp_isCheckpointing()` returns a `binder::Status`. The underlying
+`isCheckpointing` flag is now `GUARDED_BY(isCheckpointingLock)` with Clang
+thread-safety annotations. These annotations make the compiler enforce that
+callers hold the lock before they read the flag (`system/vold/Checkpoint.cpp`).
+
+The same release records, in the `vold.udc.enable_checkpoint.latency.ms`
+system property, how long the commit-time remount took. When
+`cp_commitChanges()` ends the checkpoint window, it remounts each f2fs
+userdata mount with its original options plus `,discard,checkpoint=enable`.
+This re-enables normal f2fs checkpointing. The commit also times that
+remount.
 
 Two checkpoint mechanisms are supported:
 
@@ -3412,8 +3415,8 @@ the Android Keystore (hardware-backed key storage) rather than by a user
 secret.  This is the typical case for DE keys and system-wide keys.
 
 CE keys use the user's credential (derived through a KDF) as their
-authentication secret, ensuring they can only be decrypted after the user
-enters their PIN, password, or pattern.
+authentication secret. So they can be decrypted only after the user enters
+their PIN, password, or pattern.
 
 ### 34.14.3 Key Lifecycle
 
@@ -3449,8 +3452,8 @@ For CE keys specifically:
 ### 34.14.4 Secdiscardable Files
 
 To protect against offline attacks, each key directory contains a
-"secdiscardable" file -- a large file filled with random data that is
-included in the key derivation process.  If this file is securely deleted
+"secdiscardable" file. This is a large file filled with random data. The key
+derivation process includes this file.  If this file is securely deleted
 (e.g., using `fstrim` or `BLKDISCARD`), the key becomes permanently
 unrecoverable even if the encrypted key material is obtained:
 
@@ -3878,9 +3881,9 @@ create encryption keys and prepare storage directories:
    c. Media scan triggered for user's storage
 ```
 
-This lifecycle ensures that each user's data is cryptographically isolated
-from every other user's data on the device, even if they share the same
-physical storage medium.
+This lifecycle makes sure that each user's data is cryptographically isolated
+from every other user's data on the device. This holds even if the users share
+the same physical storage medium.
 
 ---
 
@@ -4255,7 +4258,7 @@ modes:
 The MediaProvider process itself runs with `REMOUNT_MODE_PASS_THROUGH`,
 meaning it can access the underlying filesystem directly without going
 through its own FUSE daemon.  This is essential because the FUSE daemon
-runs inside MediaProvider -- it would create a deadlock if MediaProvider's
+runs inside MediaProvider.  A deadlock would occur if MediaProvider's
 own filesystem access had to go through its own FUSE daemon.
 
 ---
@@ -4293,9 +4296,9 @@ If the FUSE daemon crashes, all pending filesystem operations return
 
 ### 34.24.3 Encryption Key Loss
 
-If a CE encryption key cannot be decrypted (e.g., after too many failed
-password attempts on devices with hardware-enforced limits), the user's
-CE storage becomes permanently inaccessible.  The system handles this by:
+If a CE encryption key cannot be decrypted, the user's CE storage becomes
+permanently inaccessible.  One example is too many failed password attempts
+on devices with hardware-enforced limits.  The system handles this by:
 
 1. Offering to factory reset the device
 2. DE storage remains accessible (Direct Boot apps continue to work)
@@ -4400,11 +4403,11 @@ f2fs-specific optimizations:
 ## 34.26 Android 17 Storage Changes
 
 Android 17 reshaped the storage subsystem in three ways that ripple through the
-rest of this chapter: it split filesystem-management code into a new top-level
-repository, it added a dedicated service to migrate the case-folding state of
-`/data/media` without losing data, and it refactored how vold describes raw
-versus hardware-wrapped encryption keys.  This section gathers those changes and
-the smaller vold API additions in one place.
+rest of this chapter.  First, it split filesystem-management code into a new
+top-level repository.  Second, it added a dedicated service to migrate the
+case-folding state of `/data/media` without losing data.  Third, it refactored
+how vold describes raw versus hardware-wrapped encryption keys.  This section
+gathers those changes and the smaller vold API additions in one place.
 
 ### 34.26.1 The system/fs Repository Split
 
@@ -4412,10 +4415,11 @@ In Android 17 the filesystem-management code that had historically lived under
 `system/core/fs_mgr` was carved out into a new top-level repository,
 `system/fs`.  The new repository holds two subtrees:
 
-- `system/fs/fs_mgr/` -- the fstab parser and mount logic (`fs_mgr.cpp`),
-  `liblp` (the `super` partition metadata library introduced in 34.1.2),
-  `libdm` (the device-mapper wrapper used by metadata encryption and adoptable
-  storage), and the overlayfs control code used by `adb remount`.
+- `system/fs/fs_mgr/` -- the fstab parser and mount logic (`fs_mgr.cpp`).
+  It also holds `liblp`, the `super` partition metadata library introduced in
+  34.1.2.  It holds `libdm` too, the device-mapper wrapper used by metadata
+  encryption and adoptable storage.  The overlayfs control code used by `adb remount`
+  is there too.
 - `system/fs/casefolding_remover/` -- a brand-new service, described below.
 
 For this chapter that means any reference to `liblp`, `libdm`, or `fs_mgr.cpp`
@@ -4427,18 +4431,18 @@ build modules (`libfs_mgr`, `liblp`, `libdm`) keep their names.
 
 Case-folding lets a directory compare filenames case-insensitively at the
 filesystem layer.  vold enables it on emulated and adopted media storage when
-the `external_storage.casefold.enabled` build property is set: the f2fs path
-passes `-O casefold -C utf8` to `mkfs`, and the ext4 path adds `casefold` plus
+the `external_storage.casefold.enabled` build property is set.  The f2fs path
+passes `-O casefold -C utf8` to `mkfs`.  The ext4 path adds `casefold` plus
 `encoding=utf8` (`system/vold/fs/F2fs.cpp`, `system/vold/fs/Ext4.cpp`).  The
 flag is also applied to the `/data/media` tree on adopted private volumes via
 `FS_CASEFOLD_FL` (`system/vold/model/PrivateVolume.cpp`).
 
 The complication is that the case-folding flag (`FS_CASEFOLD_FL`) can only be
 set on an **empty** directory.  `/data/media` is created early in boot and is
-almost never empty after first boot, so flipping the
-`external_storage.casefold.enabled` decision on an existing device (for example
-across an OTA, or via the `persist.sys.casefold.enabled.override` property)
-cannot simply re-flag the existing directory.  The directory contents have to be
+almost never empty after first boot.  So a flip of the
+`external_storage.casefold.enabled` decision on an existing device cannot
+simply re-flag the existing directory.  This applies, for example, across an
+OTA or via the `persist.sys.casefold.enabled.override` property.  The directory contents have to be
 moved into a freshly created, correctly flagged directory.  That migration is
 exactly what the new `casefolding_remover` service performs.
 
@@ -4460,22 +4464,24 @@ service casefolding_remover /system/bin/casefolding_remover
     disabled
 ```
 
-It runs as `media_rw` (the owner of `/data/media`), holds `DAC_OVERRIDE` and
-`CHOWN` so it can relabel the directories it moves, and is `disabled` so init
+It runs as `media_rw` (the owner of `/data/media`).  It holds `DAC_OVERRIDE` and
+`CHOWN` so it can relabel the directories it moves.  It is `disabled`, so init
 starts it explicitly rather than at class start.
 
 The migration logic is in `system/fs/casefolding_remover/src/main.rs`.  When the
-service starts, `adjust_casefolding()` compares the actual `FS_CASEFOLD_FL` on
-`/data/media` (read with the `FS_IOC_GETFLAGS` ioctl) against the desired state
-from `external_storage.casefold.enabled` and the
-`persist.sys.casefold.enabled.override` override.  If they already match, there
+service starts, `adjust_casefolding()` compares two values.  The first is the
+actual `FS_CASEFOLD_FL` on `/data/media` (read with the `FS_IOC_GETFLAGS`
+ioctl).  The second is the desired state from `external_storage.casefold.enabled`
+and the `persist.sys.casefold.enabled.override` override.
+
+If they already match, there
 is nothing to do.  If `/data/media` happens to be empty, it just sets the flag
 directly with `FS_IOC_SETFLAGS`.  Otherwise it performs an atomic directory
 swap:
 
-1. Create `/data/media/temp`, copy `/data/media`'s SELinux label, owner, group,
-   and mode onto it (`copy_directory_metadata()`), then rename it out to
-   `/data/media_temp` and set the desired case-fold flag on that now-empty
+1. Create `/data/media/temp`.  Copy `/data/media`'s SELinux label, owner,
+   group, and mode onto it (`copy_directory_metadata()`).  Then rename it out
+   to `/data/media_temp`.  Set the desired case-fold flag on that now-empty
    directory.
 2. Record the eventual location of the original data in the
    `ro.casefolding.original_folder` property -- `/data/media/uncasefolded` when
@@ -4483,13 +4489,13 @@ swap:
    `persist.sys.casefolding.status` to `Enabling` or `Disabling`.
 3. Rename the original `/data/media` to `/data/media_temp/<(un)casefolded>`,
    then rename `/data/media_temp` back to `/data/media`.  The comment in
-   `main.rs` warns that nothing may run between these two renames: if the first
-   succeeds and the second fails, the device will not boot.
+   `main.rs` warns that nothing may run between these two renames.  If the
+   first succeeds and the second fails, the device will not boot.
 
 After the swap, `/data/media` has the correct SELinux label, owner/group, and
 case-fold flag, and the original (wrongly folded) contents survive under
 `/data/media/(un)casefolded`.  The service then sets `ro.casefolding.adjusted=1`
-to let init continue and, when a migration is pending, registers a binder
+to let init continue.  When a migration is pending, it registers a binder
 service and joins the thread pool instead of exiting.
 
 The migration is described by a one-method AIDL interface,
@@ -4536,20 +4542,22 @@ selects the subtree to move.  vold calls the helper at two points:
   the device policy, so it can be moved as soon as device-encrypted storage is
   ready.
 - For each user's `/data/media/<user_id>` directory, with the leaf
-  `StringPrintf("%u", user_id)`, immediately after the CE policy has been
-  applied during `fscrypt_prepare_user_storage()` (`FsCrypt.cpp` line 1039) --
-  that is, once the user's CE key is installed.
+  `StringPrintf("%u", user_id)`.  The call comes immediately after the CE
+  policy is applied during `fscrypt_prepare_user_storage()` (`FsCrypt.cpp`
+  line 1039), that is, once the user's CE key is installed.
 
 On the service side, `move_folder()` validates that the source lives under
-`ro.casefolding.original_folder` and the destination under `/data/media`, then
-hard-links the subtree across with `link_recursively()` (preserving SELinux
-labels and ownership per directory) and removes the source.  Because both
-directories are on the same filesystem, hard-linking moves the data without
+`ro.casefolding.original_folder` and the destination under `/data/media`.  Then
+it hard-links the subtree across with `link_recursively()`, which preserves
+SELinux labels and ownership per directory.  Last, it removes the source.
+
+Because both directories are on the same filesystem, hard-linking moves the data without
 recopying file contents.  As the original tree empties out it is pruned, and
 when the last subtree is gone `persist.sys.casefolding.status` flips to
 `Enabled` or `Disabled`.  If recursive linking fails, the service falls back to
-a plain `rename` of the subtree (which keeps the wrong case-fold flag but
-preserves the data) and records `Enabling failed` / `Disabling failed`.
+a plain `rename` of the subtree.  This keeps the wrong case-fold flag but
+preserves the data.  The service then records `Enabling failed` /
+`Disabling failed`.
 
 ```mermaid
 sequenceDiagram
@@ -4605,14 +4613,16 @@ struct EncryptionOptions {
 ```
 
 This single enum now flows through `KeyGeneration` (34.14.1), the metadata
-encryption `CryptoOptions` (34.8.9), and file-based encryption.  Two distinct
-hardware-wrapped formats are now expressible: `kHwWrappedV0` corresponds to the
-original `wrappedkey_v0` fstab metadata-encryption flag, while `kHwWrapped`
+encryption `CryptoOptions` (34.8.9), and file-based encryption.  The enum can
+now express two distinct hardware-wrapped formats.  `kHwWrappedV0` corresponds
+to the original `wrappedkey_v0` fstab metadata-encryption flag.  `kHwWrapped`
 corresponds to a new `wrappedkey` flag parsed by `MetadataCrypt.cpp`.  Both
 currently program the `dm-default-key` target with `wrappedkey_v0`, but the type
-distinction lets the platform evolve the two formats independently.  The other
-visible piece of this refactor is `prepareKeyForUse()` (34.8.10), which
-centralizes "leave a raw key alone, re-wrap a hardware-wrapped key" so callers no
+distinction lets the platform evolve the two formats independently.
+
+The other
+visible piece of this refactor is `prepareKeyForUse()` (34.8.10).  It
+centralizes "leave a raw key alone, re-wrap a hardware-wrapped key".  Callers no
 longer branch on a boolean.
 
 ### 34.26.6 New vold Binder Methods
@@ -4643,11 +4653,12 @@ Android 17. The search feature
 queries an on-device AppSearch index of media, capped at
 `MAX_DOCUMENT_COUNT = 50000` documents in
 `packages/providers/MediaProvider/src/com/android/providers/media/appsearch/AppSearchDbManager.java`.
+
 A privileged app can also supply cloud results by implementing the
 `SearchMediaService` SPI
-(`packages/providers/MediaProvider/apex/framework/java/android/provider/SearchMediaService.java`),
-whose `onSearchMedia()` callback returns a `SearchMediaResultPage` and which
-is bound through the `BIND_SEARCH_MEDIA_SERVICE` permission. The category-grid
+(`packages/providers/MediaProvider/apex/framework/java/android/provider/SearchMediaService.java`).
+Its `onSearchMedia()` callback returns a `SearchMediaResultPage`.  The SPI is
+bound through the `BIND_SEARCH_MEDIA_SERVICE` permission. The category-grid
 feature
 (`packages/providers/MediaProvider/photopicker/src/com/android/photopicker/features/categorygrid/`)
 browses albums and categories by provider authority, so it can list media
@@ -4890,9 +4901,9 @@ over more than a decade to balance performance, security, and privacy:
    partition provides flexible, updateable storage layout.
 
 2. **vold** serves as the low-level native daemon that manages the full
-   lifecycle of storage devices -- from hotplug detection through netlink
-   events, to disk partitioning, filesystem formatting, FUSE mounting, and
-   encryption key management.
+   lifecycle of storage devices.  This runs from hotplug detection through
+   netlink events, to disk partitioning, filesystem formatting, FUSE mounting,
+   and encryption key management.
 
 3. **StorageManagerService** bridges the native vold daemon with the Java
    framework, maintaining the in-memory volume model, coordinating
@@ -4907,16 +4918,16 @@ over more than a decade to balance performance, security, and privacy:
    FUSE BPF recovering the performance overhead.
 
 6. **MediaProvider** serves as both the content provider for media metadata
-   and the host process for the FUSE daemon, tightly integrating media
-   scanning, access control, and filesystem presentation.
+   and the host process for the FUSE daemon.  It integrates media scanning,
+   access control, and filesystem presentation in one process.
 
 7. **The Storage Access Framework** provides a document-oriented abstraction
    that allows apps to access files from any provider with explicit user
    consent.
 
-8. **File-Based Encryption** secures user data with per-file keys, enabling
-   the Direct Boot experience where critical services function before user
-   authentication while keeping sensitive data encrypted at rest.
+8. **File-Based Encryption** secures user data with per-file keys.  This
+   enables the Direct Boot experience, where critical services function before
+   user authentication.  Sensitive data stays encrypted at rest.
 
 9. **Adoptable Storage** extends internal storage onto external devices
    through transparent encryption and the same volume management infrastructure.

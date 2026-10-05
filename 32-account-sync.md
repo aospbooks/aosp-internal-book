@@ -1,16 +1,17 @@
 # Chapter 32: Account and Sync Framework
 
 Android's Account and Sync framework provides two tightly coupled
-subsystems: **AccountManager** for credential storage and authentication
-token management, and **SyncManager** for scheduling and executing
-background data synchronization.  Together they form the backbone of every
-application that synchronizes data with a remote server -- from email and
-contacts to enterprise MDM and third-party cloud services.
+subsystems.  **AccountManager** stores credentials and manages
+authentication tokens.  **SyncManager** schedules and runs background data
+synchronization.  Together they form the backbone of every application that
+synchronizes data with a remote server.  Examples are email, contacts,
+enterprise MDM and third-party cloud services.
 
-This chapter traces the entire architecture from the application-facing
-`AccountManager` and `ContentResolver.requestSync()` APIs, through the
-system server implementations (`AccountManagerService` and `SyncManager`),
-down to the underlying database storage and JobScheduler integration.
+This chapter traces the entire architecture.  It starts at the
+application-facing `AccountManager` and `ContentResolver.requestSync()` APIs.
+It continues through the system server implementations (`AccountManagerService`
+and `SyncManager`).  It ends at the underlying database storage and the
+JobScheduler integration.
 
 ---
 
@@ -244,10 +245,10 @@ accountManager.addOnAccountsUpdatedListener(
 );
 ```
 
-Internally, the listener machinery lives on the client side:
+Internally, the listener machinery lives on the client side.
 `AccountManagerService` simply broadcasts
 `AccountManager.LOGIN_ACCOUNTS_CHANGED_ACTION` to the user when accounts
-change, and `AccountManager` (in the app process) keeps the registered
+change.  `AccountManager` (in the app process) keeps the registered
 listeners in its `mAccountsUpdatedListeners` map.  A `BroadcastReceiver`
 registered by `AccountManager` receives the broadcast, re-queries the
 account list, and fans the result out to each registered
@@ -417,9 +418,9 @@ class TokenCache {
 }
 ```
 
-The cache key includes the package signing certificate digest, ensuring that
-a token granted to one app cannot be retrieved by a different app even if
-it has the same package name (protecting against signature spoofing).
+The cache key includes the package signing certificate digest.  This makes
+sure that a different app cannot retrieve a token granted to one app, even if
+it has the same package name.  This protects against signature spoofing.
 
 ### 32.2.6 Authenticator Discovery and Binding
 
@@ -447,7 +448,8 @@ The discovery process scans for services that declare:
 
 When `AccountManagerService` needs to interact with an authenticator
 (e.g., to get a token or add an account), it binds to the authenticator
-service and communicates via the `IAccountAuthenticator` AIDL interface:
+service.  It communicates through the `IAccountAuthenticator` AIDL
+interface:
 
 ```mermaid
 sequenceDiagram
@@ -481,9 +483,9 @@ Source: frameworks/base/services/core/java/com/android/server/accounts/CryptoHel
 It generates an ephemeral in-memory AES key (plus a separate HMAC-SHA256
 key for integrity) via `KeyGenerator` the first time it is used.  The keys
 are not backed by the Android Keystore and never leave `system_server`
-memory, so a session bundle encrypted by `CryptoHelper` can only be
-decrypted by the same running `system_server` instance -- it cannot be
-transferred to another device, and it does not survive a reboot.
+memory.  So only the same running `system_server` instance can decrypt a
+session bundle that `CryptoHelper` encrypted.  The bundle cannot be
+transferred to another device.  It does not survive a reboot.
 
 ### 32.2.8 AccountManagerService Shell Command
 
@@ -566,9 +568,9 @@ the authentication logic:
 Source: frameworks/base/core/java/android/accounts/AbstractAccountAuthenticator.java
 ```
 
-The class uses the **Transport** pattern -- it contains an inner class
+The class uses the **Transport** pattern.  It contains an inner class
 `Transport` that extends `IAccountAuthenticator.Stub` and delegates to the
-abstract methods, adding error handling and logging:
+abstract methods.  This inner class adds error handling and logging:
 
 ```java
 // Simplified from AbstractAccountAuthenticator.java
@@ -651,13 +653,15 @@ sequenceDiagram
     end
 ```
 
-Which store the service consults depends on the authenticator type: a
-standard authenticator's tokens are persisted in the `authtokens` table
-and read back with `readAuthTokenInternal()` -- the in-memory `TokenCache`
+Which store the service consults depends on the authenticator type.  The
+tokens of a standard authenticator are persisted in the `authtokens` table
+and read back with `readAuthTokenInternal()`.  The in-memory `TokenCache`
 is never used for them.  A custom-token authenticator (one that declares
-`customTokens=true`) skips the database entirely; its tokens live only in
-the `TokenCache`, and a cache miss goes straight to the authenticator,
-whose result is cached with `saveCachedToken()`.  The two lookups are
+`customTokens=true`) skips the database entirely.
+
+Its tokens live only in
+the `TokenCache`.  A cache miss goes straight to the authenticator, and
+the result is cached with `saveCachedToken()`.  The two lookups are
 mutually exclusive.
 
 ### 32.3.3 Token Invalidation
@@ -817,11 +821,11 @@ authenticator UI flows (login screens, credential entry):
 Source: frameworks/base/core/java/android/accounts/AccountAuthenticatorActivity.java
 ```
 
-This class is marked `@Deprecated` in the framework: the Javadoc advises
-applications to extend `Activity` directly because the base class is not
-compatible with AppCompat and the behavior it provides (stashing the
-`AccountAuthenticatorResponse` and finishing with a result) is small enough to
-implement by hand. The pattern below is still instructive, but new
+This class is marked `@Deprecated` in the framework.  The Javadoc advises
+applications to extend `Activity` directly.  This is because the base class is not compatible
+with AppCompat.  Also, the behavior it provides (stashing the
+`AccountAuthenticatorResponse` and finishing with a result) is small enough
+to implement by hand. The pattern below is still instructive, but new
 authenticators typically wire the response into a plain `Activity`.
 
 ```java
@@ -1252,7 +1256,7 @@ up to 3600s.
 ### 32.4.10 Sync Monitoring
 
 SyncManager monitors running syncs for progress.  If a sync adapter appears
-hung (no network traffic), it may be cancelled:
+hung (no network traffic), it may be canceled:
 
 ```java
 // From SyncManager.java
@@ -1518,10 +1522,10 @@ Source: frameworks/base/core/java/android/content/ContentResolver.java
 
 The constants live in `ContentResolver` (`SYNC_EXEMPTION_NONE`,
 `SYNC_EXEMPTION_PROMOTE_BUCKET`, `SYNC_EXEMPTION_PROMOTE_BUCKET_WITH_TEMP`).
-Exemptions are computed by `ContentService` per caller (see
-`getSyncExemptionAndCleanUpExtrasForCaller()`) so that a sync requested by a
-foreground app on behalf of a background sync adapter is not throttled by App
-Standby. The `SyncManager.md` design note describes the two levels in detail.
+`ContentService` computes exemptions per caller (see
+`getSyncExemptionAndCleanUpExtrasForCaller()`). This way, App Standby does not
+throttle a sync that a foreground app requests on behalf of a background sync
+adapter. The `SyncManager.md` design note describes the two levels in detail.
 
 ### 32.5.8 ContentResolver to SyncManager Flow
 
@@ -1584,8 +1588,8 @@ graph TD
 ```
 
 ContentService also manages `ContentObserver` registrations, but those
-are separate from the sync framework (they are used for UI updates,
-while sync is used for network synchronization).
+are separate from the sync framework. They are used for UI updates.
+Sync is used for network synchronization.
 
 ### 32.5.10 Sync Configuration Matrix
 
@@ -1767,16 +1771,16 @@ The account and sync framework is one of the oldest subsystems in the
 platform, so its public API surface barely moves between releases. Android 17
 nevertheless reworked the storage path inside `AccountManagerService` and
 hardened the data that crosses the `SyncManager` boundary. The changes below
-all landed in the 17 development branch and ship with no new app-facing API,
-but they change how the system stores credentials and how it tolerates hostile
+all landed in the 17 development branch and ship with no new app-facing API.
+They do change how the system stores credentials and how it tolerates hostile
 sync requests.
 
 ### 32.6.1 Decoupled CE and DE Account Databases
 
-Historically the credential-encrypted (CE) and device-encrypted (DE) account
-databases were treated as one logical store: the CE database was opened by
-attaching it to the DE database with SQLite's `ATTACH DATABASE`, and writes that
-touched both ran inside a single DE-rooted transaction. Android 17 removes that
+Historically, the credential-encrypted (CE) and device-encrypted (DE) account
+databases were treated as one logical store. To open the CE database, it was attached to
+the DE database with SQLite's `ATTACH DATABASE`. Writes that touched both ran
+inside a single DE-rooted transaction. Android 17 removes that
 coupling. The two databases now have independent `SQLiteOpenHelper` instances
 and are no longer attached for normal operation:
 
@@ -1792,15 +1796,17 @@ Source: frameworks/base/services/core/java/com/android/server/accounts/AccountsD
   write does not block on DE locks (and vice versa).
 
 This work was developed behind the `com.android.server.accounts.detach_de_ce`
-aconfig flag and then promoted to the default behavior in 17 when the flag was
-removed, so the decoupled path is the only path on a 17 device. The
-`attachCeDatabase()` method remains the normal entry point for opening a
-user's CE database at unlock: despite its name it no longer performs a
-SQLite `ATTACH`, but simply constructs the `CeDatabaseHelper` and flips
+aconfig flag. It then became the default behavior in 17 when the flag was
+removed. So the decoupled path is the only path on a 17 device.
+
+The
+`attachCeDatabase()` method remains the normal entry point to open a
+user's CE database at unlock. Despite its name, it no longer performs a
+SQLite `ATTACH`. It only constructs the `CeDatabaseHelper` and flips
 the "CE available" flag on the DE helper. The pre-N (Nougat) migration
 into the split layout survives only as a conditional branch inside
-`CeDatabaseHelper.create()`, taken when an old single-database file exists
-and the CE database does not.
+`CeDatabaseHelper.create()`. The branch runs when an old single-database file
+exists and the CE database does not.
 
 ```mermaid
 graph TD
@@ -1820,9 +1826,9 @@ graph TD
     end
 ```
 
-A related optimization tightened `invalidateAuthToken`: the SQL that finds the
+A related optimization tightened `invalidateAuthToken`. The SQL that finds the
 tokens to delete now returns the token type and the owning account name in the
-same query, so the service no longer issues a second round of queries to map
+same query. So the service no longer issues a second round of queries to map
 account IDs back to names. The net effect is fewer database round-trips on a hot
 path that every credential refresh hits.
 
@@ -1856,7 +1862,7 @@ mContext.sendBroadcastAsUser(intent, new UserHandle(userId),
 
 With `DELIVERY_GROUP_POLICY_MOST_RECENT` and a matching key of
 `name/type`, the system keeps only the most recent pending broadcast for a given
-account when several are queued, instead of delivering every intermediate one.
+account when several are queued. It does not deliver every intermediate one.
 This change was developed behind a `coalesce_account_removed_broadcast` aconfig
 flag, whose cleanup makes the coalesced delivery the default on 17.
 
@@ -1887,8 +1893,8 @@ private static final int MAX_SYNC_EXTRA_ARRAY_LENGTH = 10;
 | Unsupported value type | Rejected with `IllegalArgumentException` |
 
 When sanitization throws, `SyncManager` catches the exception during
-`SyncOperation` creation and drops the sync request rather than letting the
-malformed extras reach persistent storage or a sync adapter. This is a
+`SyncOperation` creation. It drops the sync request, so the malformed extras
+do not reach persistent storage or a sync adapter. This is a
 defense-in-depth change: legitimate sync extras (a handful of small booleans and
 strings) are unaffected, while pathological payloads are rejected at the door.
 
@@ -1913,12 +1919,12 @@ mSyncHandler = new SyncHandler(mThread.getLooper());
 ```
 
 The connectivity and user-lifecycle receivers are registered against
-`mSyncHandler` rather than the default main `Looper`, so a slow lock
+`mSyncHandler` rather than the default main `Looper`. So a slow lock
 acquisition during sync scheduling no longer stalls the `system_server` main
 thread. (The shutdown, time-changed, and accounts-updated receivers are still
 registered with a null handler and run on the main `Looper`.) The same change
-also stops repeatedly taking a lock
-just to check whether `JobScheduler` is connected. This was gated by the
+also stops the repeated lock acquisition
+that just checks whether `JobScheduler` is connected. This was gated by the
 `com.android.server.am.syncmanager_off_main_thread` flag, later cleaned up so the
 off-main-thread behavior is the default.
 
@@ -1927,18 +1933,18 @@ off-main-thread behavior is the default.
 Android 17 also fixed a cluster of lock-ordering bugs in
 `AccountManagerService` that could deadlock `system_server`. The fixes touch the
 shared-account rename path (`renameSharedAccountAsUser`) and the permission-grant
-path (`grantAppPermission`), and a separate fix prevents a crash when a user is
+path (`grantAppPermission`). A separate fix prevents a crash when a user is
 removed while account work is in flight:
 
 ```
 Source: frameworks/base/services/core/java/com/android/server/accounts/AccountManagerService.java
 ```
 
-These are not API changes, but they matter for anyone debugging an ANR or
-watchdog kill that traces back into `AccountManagerService`: on 17 the database
-and broadcast paths take their locks in a consistent order, and the CE/DE
-decoupling from 32.6.1 reduces the cross-database locking that those deadlocks
-depended on.
+These are not API changes, but they matter for anyone who debugs an ANR or
+watchdog kill that traces back into `AccountManagerService`. On 17 the database
+and broadcast paths take their locks in a consistent order. The CE/DE
+decoupling from 32.6.1 also reduces the cross-database locking that those
+deadlocks depended on.
 
 ---
 
@@ -2389,14 +2395,14 @@ architectural insights from this chapter:
 5. **Exponential backoff** -- Failed syncs are retried with configurable
    exponential backoff (default 30s initial, 2x factor, 1 hour max).
 
-6. **Sync monitoring** -- Running syncs are monitored for network progress;
-   stalled syncs can be detected and cancelled.
+6. **Sync monitoring** -- SyncManager monitors running syncs for network
+   progress. It can detect and cancel stalled syncs.
 
 7. **Two-level auto-sync** -- Both a global master toggle and per-authority
    toggles must be enabled for automatic syncs to fire.
 
 The Account and Sync framework demonstrates a mature Android subsystem
-pattern: a clean application API backed by a system service that delegates
-heavy lifting to pluggable components (authenticators and sync adapters),
-with persistent state management and integration with platform scheduling
-infrastructure.
+pattern. It has a clean application API. A system service backs this API and
+delegates heavy lifting to pluggable components (authenticators and sync
+adapters). The framework also provides persistent state management and
+integration with platform scheduling infrastructure.

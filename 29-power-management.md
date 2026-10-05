@@ -2,10 +2,11 @@
 
 Power management is one of the most critical subsystems in Android. Every milliampere
 matters when a phone must survive a full day of use. Android achieves its battery life
-through a deeply layered architecture that spans from Linux kernel suspend mechanisms,
-through hardware abstraction layers for power and thermal control, up into framework
-services that track wake locks, enforce Doze and App Standby policies, and attribute
-energy consumption to individual UIDs. This chapter dissects each of those layers using
+through a deeply layered architecture. The lowest layer is the Linux kernel suspend
+mechanisms, and above it are hardware abstraction layers for power and thermal control.
+At the top, framework services track wake locks, enforce Doze and App Standby
+policies, and attribute energy consumption to individual UIDs. This chapter dissects
+each of those layers using
 the actual AOSP source code as the primary reference.
 
 ---
@@ -38,8 +39,8 @@ Linux kernel (cpufreq, suspend, wakeup_sources)
 ```
 
 The framework service, `PowerManagerService`, sits at the center. It receives requests
-from applications (wake locks, user activity events), consults with policy modules (Doze,
-battery saver, display controller), and drives the hardware through the Power HAL and
+from applications (wake locks, user activity events). It consults policy modules (Doze,
+battery saver, display controller). It drives the hardware through the Power HAL and
 native JNI calls into the kernel.
 
 Source file:
@@ -848,9 +849,9 @@ public static final int ON_AFTER_RELEASE = 0x20000000;
 - **`ACQUIRE_CAUSES_WAKEUP`** -- Acquiring the wake lock also turns on the screen.
   A `TURN_SCREEN_ON` permission requirement is gated behind the
   `REQUIRE_TURN_SCREEN_ON_PERMISSION` compat change, currently marked
-  `@EnabledSince(CUR_DEVELOPMENT)`, so it applies to apps targeting the
-  in-development SDK (and can be waived per form factor via the
-  `waive_target_sdk_check_for_turn_screen_on()` power property).
+  `@EnabledSince(CUR_DEVELOPMENT)`. Therefore it applies to apps that target the
+  in-development SDK. It can be waived per form factor via the
+  `waive_target_sdk_check_for_turn_screen_on()` power property.
 - **`ON_AFTER_RELEASE`** -- When the wake lock is released, poke user activity to
   keep the screen on a bit longer.
 
@@ -984,10 +985,11 @@ Key points:
 - Wake locks are identified by their `IBinder` token, not by tag
 - If a wake lock with the same token already exists, its properties are updated
 - `UidState` tracks per-UID wake lock counts
-- `setWakeLockDisabledStateLocked()` may disable the lock if the device is
-  idling and the UID is *not* on the device idle whitelist or temp whitelist,
-  if low power standby is active and the UID is *not* on the low power standby
-  allowlist, or if the process is cached or frozen
+- `setWakeLockDisabledStateLocked()` may disable the lock in three cases.
+  In the first case, the device is idling and the UID is *not* on the device idle
+  whitelist or temp whitelist. In the second case, low power standby is active and
+  the UID is *not* on the low power standby allowlist. In the third case, the process
+  is cached or frozen
 
 ### 29.3.5 Wake Lock Disabling
 
@@ -1021,9 +1023,9 @@ Key points:
 static final long MIN_LONG_WAKE_CHECK_INTERVAL = 60*1000;
 ```
 
-A `MSG_CHECK_FOR_LONG_WAKELOCKS` message is scheduled, and when it fires, any
-wake lock held for more than the threshold is flagged via `mNotifiedLong = true`
-and reported to battery stats.
+A `MSG_CHECK_FOR_LONG_WAKELOCKS` message is scheduled. When it fires, any wake
+lock held for more than the threshold is flagged via `mNotifiedLong = true`.
+It is also reported to battery stats.
 
 ### 29.3.7 Wake Lock Log
 
@@ -1120,8 +1122,8 @@ From the framework implementation, several best practices emerge:
 1. **Always use PARTIAL_WAKE_LOCK**: The screen-level wake locks are deprecated.
    Use `FLAG_KEEP_SCREEN_ON` on your window instead.
 
-2. **Always release in a finally block**: Since wake locks track the owning
-   binder, a leaked wake lock will be released on process death, but the battery
+2. **Always release in a finally block**: Wake locks track the owning
+   binder, so a leaked wake lock is released on process death. But the battery
    drain until then can be significant.
 
 3. **Use timeouts**: `WakeLock.acquire(timeout)` automatically releases after
@@ -1813,9 +1815,9 @@ Apps can enter RESTRICTED state through:
 
 ### 29.5.10 ML-Based Prediction
 
-On devices with a prediction service (typically from the app intelligence module),
-bucket assignments can be made based on machine learning predictions of future
-app usage:
+A device can have a prediction service, typically from the app intelligence
+module. On such a device, bucket assignments can be made based on machine
+learning predictions of future app usage:
 
 ```java
 // AppStandbyController.java imports
@@ -2192,8 +2194,8 @@ Key atoms include:
 ### 29.7.1 Overview
 
 Android's thermal management system monitors device temperatures through the
-Thermal HAL, triggers throttling actions when temperatures rise, and notifies
-applications so they can reduce their workload.
+Thermal HAL. It triggers throttling actions when temperatures rise. It also
+notifies applications so they can reduce their workload.
 
 The framework service `ThermalManagerService` sits between the HAL and
 applications:
@@ -2409,8 +2411,8 @@ that expresses how much of the thermal envelope is in use, anchored on the
   beyond `SEVERE`
 
 The Android 17 `PowerManager` Javadoc is explicit that 1.0 corresponds to
-`THERMAL_STATUS_SEVERE` rather than to a generic, unspecified threshold, and that
-negative values are clamped to 0.0 before returning:
+`THERMAL_STATUS_SEVERE` rather than to a generic, unspecified threshold. It also
+says that negative values are clamped to 0.0 before returning:
 
 ```java
 // frameworks/base/core/java/android/os/PowerManager.java
@@ -2425,8 +2427,8 @@ public @FloatRange(from = 0f) float getThermalHeadroom(
 
 The `@IntRange(from = 0, to = 60)` annotation pins the supported forecast window
 to 0 to 60 seconds. The system needs several temperature samples before it can
-extrapolate, so until enough data has accumulated it returns the current headroom
-regardless of `forecastSeconds`, and calling more often than about once per second
+extrapolate. Until enough data has accumulated, it returns the current headroom
+regardless of `forecastSeconds`. Calling more often than about once per second
 may return `NaN`. The HAL backs forecasting with `forecastSkinTemperature()`:
 
 ```
@@ -2445,8 +2447,8 @@ public static final int HEADROOM_CALLBACK_MIN_INTERVAL_MILLIS = 5000;
 public static final float HEADROOM_CALLBACK_MIN_DIFFERENCE = 0.03f;
 ```
 
-The callback fires at most every 5 seconds and only when the headroom changes
-by at least 0.03 (equivalent to about 0.9 degrees Celsius difference).
+The callback fires at most every 5 seconds. It fires only when the headroom
+changes by at least 0.03 (equivalent to about 0.9 degrees Celsius difference).
 
 ### 29.7.10 Thermal Shutdown
 
@@ -2469,9 +2471,9 @@ The framework's own reaction to rising severity is deliberately narrow:
 | SHUTDOWN | `ThermalManagerService.shutdownIfNeeded()` calls `PowerManager.shutdown()` for an orderly device shutdown |
 
 `ThermalManagerService` itself only notifies listeners and, at
-`THROTTLING_SHUTDOWN`, shuts the device down. All other mitigation --
-CPU/GPU frequency capping, camera or modem limits, and similar throttling --
-happens on the vendor side, below the Thermal HAL (see section 29.7.15).
+`THROTTLING_SHUTDOWN`, shuts the device down. All other mitigation happens on
+the vendor side, below the Thermal HAL (see section 29.7.15). Examples are
+CPU/GPU frequency capping, camera or modem limits, and similar throttling.
 
 ### 29.7.12 Thermal HAL Versions
 
@@ -2523,9 +2525,9 @@ adb shell cmd thermalservice reset
 
 ### 29.7.15 Thermal Mitigation Policy
 
-The actual thermal mitigation policy (deciding which components to throttle
-and by how much at each severity level) is implemented in the vendor's
-Thermal HAL, not in the framework. The framework provides the monitoring
+The actual thermal mitigation policy is implemented in the vendor's Thermal HAL,
+not in the framework. The policy decides which components to throttle and by how
+much at each severity level. The framework provides the monitoring
 and notification infrastructure, while the vendor controls the hardware-level
 response.
 
@@ -2679,10 +2681,10 @@ sequenceDiagram
 
 ### 29.8.6 ADPF (Android Dynamic Performance Framework)
 
-ADPF, introduced in Android 12 and significantly expanded since, provides
-a performance hint session mechanism that allows apps (especially games and
-media applications) to communicate their performance requirements directly
-to the Power HAL.
+ADPF was introduced in Android 12 and has expanded significantly since then. It
+provides a performance hint session mechanism. With this mechanism, apps
+(especially games and media applications) tell the Power HAL their performance
+requirements directly.
 
 #### Hint Session Model
 
@@ -3124,18 +3126,18 @@ task placement decisions.
 
 ### 29.9.9 Power Management QoS
 
-The Linux kernel's PM QoS (Quality of Service) framework allows components to
-specify latency and throughput constraints that must be met even during power
-management transitions:
+The Linux kernel's PM QoS (Quality of Service) framework lets components
+specify latency and throughput constraints. These
+constraints must be met even during power management transitions:
 
 ```
 /dev/cpu_dma_latency    -- Maximum acceptable DMA latency
 /sys/devices/system/cpu/cpu*/power/pm_qos_resume_latency_us
 ```
 
-Android's audio system, for example, uses PM QoS to ensure that audio playback
-can meet its real-time deadlines even when other parts of the system are in
-power-saving modes.
+Android's audio system, for example, uses PM QoS to make sure that audio
+playback can meet its real-time deadlines. This is true even when other parts
+of the system are in power-saving modes.
 
 ### 29.9.10 GPU Power Management
 
@@ -3191,7 +3193,7 @@ When a process is frozen:
 3. The process consumes zero CPU time
 4. Memory pages remain resident but are eligible for reclaim
 
-This is more efficient than the old "cached process" approach because frozen
+This is more efficient than the old "cached process" approach. This is because frozen
 processes cannot run at all, even if they have pending timers or wake locks.
 
 `PowerManagerService` integrates with this through the frozen state callback:
@@ -3385,9 +3387,9 @@ other user-facing subsystems would power down before full system suspend.
 It has been replaced by the standard Linux runtime PM framework and
 the display power controller in `DisplayManagerService`.
 
-The modern equivalent is the display power state machine, which can turn
-off the display while the CPU remains active (for background work) or
-simultaneously with system suspend.
+The modern equivalent is the display power state machine. It can turn off
+the display while the CPU remains active (for background work). It can also
+turn off the display at the same time as system suspend.
 
 ### 29.10.10 Wakeup Count Mechanism
 
@@ -3437,8 +3439,8 @@ and system suspend state. They are independent:
 
 The display state is controlled by `DisplayManagerInternal`, while system
 suspend is controlled by suspend blockers. A device can have its display off
-but CPU active (e.g., during a background download), or display in doze mode
-with the CPU suspended (AOD in doze-suspend state).
+but CPU active (e.g., during a background download). It can also have its
+display in doze mode with the CPU suspended (AOD in doze-suspend state).
 
 ### 29.10.13 Runtime PM
 
@@ -3507,9 +3509,9 @@ adb shell dmesg -w | grep "PM: suspend\|PM: resume"
 The `UsageStatsService` is Android's comprehensive app usage tracking system.
 It records every foreground transition, configuration change, notification
 interaction, standby bucket change, and user interaction event. This data
-powers the App Standby Buckets system (covered in section 29.5), the
-Digital Wellbeing app time limits, and the system's ability to predict which
-app the user will launch next.
+powers three features. The first is the App Standby Buckets system (covered in
+section 29.5). The second is the Digital Wellbeing app time limits. The third
+is the system's ability to predict which app the user will launch next.
 
 > **Source root:**
 > `frameworks/base/services/usage/java/com/android/server/usage/`
@@ -3760,8 +3762,8 @@ case MSG_UID_STATE_CHANGED: {
 ```
 
 This enables the kernel to account for CPU time differently based on whether
-a process is in the foreground (counter 0) or background (counter 1),
-feeding into the battery stats attribution system covered in section 29.6.
+a process is in the foreground (counter 0) or background (counter 1). The
+battery stats attribution system uses this data (covered in section 29.6).
 
 ### 29.11.8 Standby Bucket Change Listener
 
@@ -3784,9 +3786,9 @@ private AppIdleStateChangeListener mStandbyChangeListener =
         };
 ```
 
-The bucket and reason are packed into a single 32-bit integer: the upper 16
-bits hold the bucket (ACTIVE, WORKING_SET, FREQUENT, RARE, RESTRICTED) and
-the lower 16 bits hold the reason code.
+The bucket and reason are packed into a single 32-bit integer. The upper 16
+bits hold the bucket (ACTIVE, WORKING_SET, FREQUENT, RARE, RESTRICTED). The
+lower 16 bits hold the reason code.
 
 ### 29.11.9 App Launch Prediction
 
@@ -3848,10 +3850,9 @@ is the primary consumer of the UsageStats APIs. It:
 3. **Tracks notification counts** using notification usage events
 4. **Displays unlock counts** by tracking `USER_INTERACTION` events
 
-The separation between the framework service (UsageStatsService) and the
-app (Digital Wellbeing) means that the framework provides data collection
-and enforcement, while the app provides the user-facing UI and policy
-configuration.
+The framework service (UsageStatsService) and the app (Digital Wellbeing)
+are separate. The framework provides data collection and enforcement. The app
+provides the user-facing UI and policy configuration.
 
 ```mermaid
 graph LR
@@ -3874,8 +3875,9 @@ static final long TIME_CHANGE_THRESHOLD_MILLIS = 2 * 1000; // Two seconds
 ```
 
 When the system clock changes by more than 2 seconds, the service records
-the delta between `SystemClock.elapsedRealtime()` (which is monotonic and
-not affected by time changes) and `System.currentTimeMillis()`. Usage event
+the delta between `SystemClock.elapsedRealtime()` and
+`System.currentTimeMillis()`. The first is monotonic and time changes do not
+affect it. Usage event
 timestamps are adjusted to maintain consistency across the time change
 boundary.
 
@@ -3909,15 +3911,17 @@ final class WakelockTracer
 ```
 
 The data source name `android.app_wakelocks` is the trace-config key that tracing
-tools target. The tracer reads its behavior from the `AppWakelocksConfig` proto,
-which carries knobs such as `FILTER_DURATION_BELOW_MS` (drop very short locks),
-`WRITE_DELAY_MS` (batch writes), and `DROP_OWNER_PID` (privacy-preserving
-attribution). Events are interned: each distinct wakelock identity (owner UID,
-work UID, tag, flags) is assigned an `INTERN_ID` once and then referenced by id
-in subsequent `AppWakelockBundle` packets, which keeps the trace compact for
-high-churn workloads. Because the events flow through the Perfetto SDK rather
-than a bespoke buffer, app wakelock timelines now line up on the same timebase as
-scheduler, frame, and `android.kernel_wakelocks` tracks.
+tools target. The tracer reads its behavior from the `AppWakelocksConfig` proto.
+The proto carries knobs such as `FILTER_DURATION_BELOW_MS` (drop very short
+locks), `WRITE_DELAY_MS` (batch writes), and `DROP_OWNER_PID`
+(privacy-preserving attribution).
+
+Events are interned: each distinct wakelock
+identity (owner UID, work UID, tag, flags) is assigned an `INTERN_ID` once. The
+following `AppWakelockBundle` packets then reference it by id. This keeps the
+trace compact for high-churn workloads. The events flow through the Perfetto
+SDK and not through a bespoke buffer. So app wakelock timelines now line up on
+the same timebase as scheduler, frame, and `android.kernel_wakelocks` tracks.
 
 ### 29.12.2 UID-to-Wakelock Mapping
 
@@ -3947,10 +3951,10 @@ tune what the mapper does with cached and frozen apps:
 | `remove_cached_uids_from_wakelock` | Drops cached UIDs from a wakelock's attribution set, so a wakelock held on behalf of an app that has gone cached stops being charged to it |
 | `disable_frozen_process_wakelocks` | Disables wakelocks whose owning process has been frozen by the cached-app freezer |
 
-These build on the older `NO_CACHED_WAKE_LOCKS` behavior: rather than only
-disabling a UID's own wakelocks when it caches, Android 17 also corrects the
-*attribution* of shared and `WorkSource`-attributed wakelocks when one of the
-attributed UIDs caches.
+These build on the older `NO_CACHED_WAKE_LOCKS` behavior. That behavior only
+disables a UID's own wakelocks when the UID caches. Android 17 also corrects
+the *attribution* of shared and `WorkSource`-attributed wakelocks when one of
+the attributed UIDs caches.
 
 ### 29.12.3 Batched UID-Change Delivery
 
@@ -3975,22 +3979,23 @@ final class PowerManagerBatchProxy implements PowerManagerInternal.UidChangesBat
 
 The operations are packed into an `IntArray` staging queue (negative op codes
 avoid colliding with the UID and process-state integers that follow each op).
-Batching the changes and replaying them on the power handler reduces lock
-contention between the activity manager and the power service when many UIDs
-transition at once, for example during a large app-switch or a doze entry.
+The changes are batched and replayed on the power handler. This reduces lock
+contention between the activity manager and the power service. This holds
+when many UIDs transition at once, for example during a large
+app-switch or a doze entry.
 
 ### 29.12.4 Wakefulness Session Observation and Screen-Timeout Policy
 
 Two additional classes round out the wakefulness rework:
 
 - `WakefulnessSessionObserver` tracks complete screen-on sessions (from wake to
-  the next sleep) so the platform can attribute *why* the screen stayed on and
-  how it eventually turned off. It distinguishes release reasons such as
+  the next sleep). The platform can then attribute *why* the screen stayed on
+  and how it eventually turned off. It distinguishes release reasons such as
   `RELEASE_REASON_NON_INTERACTIVE`, `RELEASE_REASON_SCREEN_LOCK`, and several
   user-activity reasons defined in `ScreenTimeoutOverridePolicy`.
 - `ScreenTimeoutConstants` and `ScreenTimeoutOverridePolicy` centralize the
-  screen-off timeout defaults and the rules for temporarily overriding them (for
-  example, an accessibility service or attention check extending the timeout).
+  screen-off timeout defaults and the rules for temporarily overriding them. For
+  example, an accessibility service or attention check can extend the timeout.
 
 ```mermaid
 flowchart TD
@@ -4044,18 +4049,18 @@ flag {
 `interactive_doze_experience` lets a device accept user interaction while still in
 a doze power state, instead of forcing a full wake transition first.
 `allow_non_wake_up_deep_alarms` lets `DeviceIdleController` advance its deep-doze
-step machine (section 29.4.2 and 29.4.5) using non-wakeup alarms, so that
-stepping deeper into idle no longer requires pulling the SoC out of suspend with
-a wakeup alarm. A third deviceidle flag,
-`remove_notification_seen_elevation`, stops `AppStandbyController` from promoting
-an app to a more active standby bucket merely because a notification was seen,
-tightening the bucket-promotion logic from section 29.5.
+step machine (section 29.4.2 and 29.4.5) with non-wakeup alarms. As a result, stepping
+deeper into idle no longer requires pulling the SoC out of suspend with a wakeup alarm. A third
+deviceidle flag, `remove_notification_seen_elevation`, stops
+`AppStandbyController` from promoting an app to a more active standby bucket
+merely because a notification was seen. This tightens the bucket-promotion logic
+from section 29.5.
 
 ### 29.13.2 Device-Aware Thermal Status
 
 Section 29.7 describes a single, device-global thermal status. Android 17 adds a
-*device-aware* variant so that a virtual device (for example, a streamed or
-companion display surface) can report its own thermal status distinct from the
+*device-aware* variant. With it, a virtual device (for example, a streamed or
+companion display surface) can report its own thermal status, distinct from the
 physical host. `PowerManager.getCurrentThermalStatus()` now branches on whether a
 custom per-device policy applies:
 
@@ -4075,9 +4080,9 @@ public @ThermalStatus int getCurrentThermalStatus() {
 ```
 
 The branch is gated by the `device_aware_thermal_status` flag
-(`frameworks/base/core/java/android/companion/virtual/flags/flags.aconfig`):
+(`frameworks/base/core/java/android/companion/virtual/flags/flags.aconfig`).
 `hasCustomDeviceThermalPolicy()` returns false for the default device and when the
-flag is off, so existing callers keep the global behavior. On the service side,
+flag is off. So existing callers keep the global behavior. On the service side,
 `ThermalManagerService` keeps a per-device status map and rejects the default and
 invalid device ids:
 
@@ -4105,25 +4110,27 @@ clients register thermal-status callbacks.
 ## 29.14 Process Memory Guardian (pmgd)
 
 Android 17 introduces a brand-new native daemon, the **Process Memory Guardian
-Daemon (pmgd)**, living in its own repository at `system/memory/guardian/`. It is
-written in Rust and addresses a gap left by the system's other memory managers:
-where `lmkd` and `mmd` (the modern memory manager covered in the memory-management
-chapter) make *system-wide* decisions under global memory pressure, pmgd enforces
-*per-process* memory ceilings using cgroup v2 `memory.high` and reacts to
-per-process pressure events. It complements `mmd` rather than replacing it: `mmd`
-manages the device's overall memory budget, while pmgd watches specific named
+Daemon (pmgd)**. It lives in its own repository at `system/memory/guardian/`. It is
+written in Rust and addresses a gap left by the system's other memory managers.
+`lmkd` and `mmd` (the modern memory manager covered in the memory-management
+chapter) make *system-wide* decisions under global memory pressure. pmgd enforces
+*per-process* memory ceilings using cgroup v2 `memory.high`. It also reacts to
+per-process pressure events.
+
+It complements `mmd` rather than replacing it. `mmd`
+manages the device's overall memory budget. pmgd watches specific named
 processes (typically `system_server`) and intervenes when an individual process
 blows through its configured limit.
 
 ### 29.14.1 Why a Per-Process Guardian
 
 A single misbehaving process, especially a long-lived one like `system_server`,
-can slowly leak or balloon its memory without ever pushing the *whole device* into
-the kind of global pressure that would trigger `lmkd`. By the time global pressure
-arrives, the leak may have already destabilized the system. pmgd assigns a
-specific `memory.high` ceiling to such a process and watches its cgroup so that
-the offending process is dealt with in isolation, before it can drag down
-everything else. The `system/memory/guardian/README.md` frames this as preventing
+can slowly leak or balloon its memory. It can do this without ever pushing the
+*whole device* into the kind of global pressure that would trigger `lmkd`. By the
+time global pressure arrives, the leak may have already destabilized the system.
+pmgd assigns a specific `memory.high` ceiling to such a process and watches its
+cgroup. This way the offending process is dealt with in isolation, before it can
+drag down everything else. The `system/memory/guardian/README.md` frames this as preventing
 "misbehaving processes from destabilizing the system."
 
 ### 29.14.2 Process Model and Startup
@@ -4152,9 +4159,9 @@ on post-fs-data
 ```
 
 The daemon is feature-flagged. On startup it checks
-`pmgd_flags::memory_guardian_enabled()` and, if the flag is off, parks itself
-forever with `nix::unistd::pause()` rather than exiting (init would just restart
-a process that exits):
+`pmgd_flags::memory_guardian_enabled()`. If the flag is off, it parks itself
+forever with `nix::unistd::pause()` rather than exiting. (init would just restart
+a process that exits.)
 
 ```rust
 // system/memory/guardian/src/main.rs
@@ -4165,10 +4172,11 @@ if !pmgd_flags::memory_guardian_enabled() {
 ```
 
 The flags are declared in `system/memory/guardian/flags.aconfig` under the
-`android.memory.guardian.flags` package: `memory_guardian_enabled` (master
-switch), `memory_guardian_uses_vendor_config` (whether to read the vendor JSON),
-`process_kill_enabled` (allow killing on a `memory.high` event), and
-`heap_dump_enabled` (capture a Perfetto heap dump before killing).
+`android.memory.guardian.flags` package. These are `memory_guardian_enabled`
+(master switch) and `memory_guardian_uses_vendor_config` (whether to read the
+vendor JSON). The other two are `process_kill_enabled` (allow killing on a
+`memory.high` event) and `heap_dump_enabled` (capture a Perfetto heap dump
+before killing).
 
 ### 29.14.3 Configuration
 
@@ -4199,20 +4207,20 @@ The fields map directly to the documented config:
 | `anon_limit_in_mb` | Hard anonymous-memory ceiling; exceeding it kills immediately |
 | `additional_task_profiles` | Extra task profiles to apply when monitoring starts |
 
-The actual `memory.high` value is not set by pmgd directly; it is expressed as a
-cgroup *task profile* (in `vendor/etc/task_profiles.json`) that writes
-`memory.high` via a `SetAttribute` action, and pmgd applies that profile to the
+pmgd does not set the actual `memory.high` value directly. The value is expressed
+as a cgroup *task profile* (in `vendor/etc/task_profiles.json`) that writes
+`memory.high` via a `SetAttribute` action. pmgd applies that profile to the
 process when it begins monitoring. If the vendor config is missing and
 `memory_guardian_uses_vendor_config` is off, pmgd falls back to a built-in
-default that monitors `system_server` (UID 1000) with the
+default. This default monitors `system_server` (UID 1000) with the
 `SystemServerMemoryHighLimitP99` profile.
 
 ### 29.14.4 The Monitoring Loop
 
 Once configured, pmgd watches the cgroup v2 hierarchy for its targets. It uses
-`inotify` plus `epoll`: it watches `/sys/fs/cgroup/system` for process
-appearance, and for each found target it watches that process's `memory.events`
-file for `MODIFY` events, which fire when the kernel records a new `high` event
+`inotify` plus `epoll`. It watches `/sys/fs/cgroup/system` for process
+appearance. For each found target it watches that process's `memory.events`
+file for `MODIFY` events. These fire when the kernel records a new `high` event
 (the process touched its `memory.high` ceiling):
 
 ```rust
@@ -4251,7 +4259,7 @@ increased, `handle_memory_high_event()` runs a two-stage decision (defined in
    `memory.high`. If `memory.current >= memory.high` right after this first
    grace period, the process is killed and the kill is logged with reason
    `AnonMemoryBreach`. Only when the process has dropped back under the
-   ceiling does pmgd wait a second `reclaim_wait_time_secs` period; a breach
+   ceiling does pmgd wait a second `reclaim_wait_time_secs` period. A breach
    detected after that second wait is killed with reason
    `TotalMemcgMemoryBreach`. If the process stays under the ceiling, pmgd
    returns `ReclaimSuccessful` and throttles itself for five minutes
@@ -4273,8 +4281,8 @@ flowchart TD
     CMP2 -->|no| OK["ReclaimSuccessful<br/>(throttle 300s)"]
 ```
 
-Killing is gated by the `process_kill_enabled` flag; when it is off,
-`handle_memory_high_event()` returns `NoOpDueToDisabledKill` after logging, so the
+The `process_kill_enabled` flag gates killing. When it is off,
+`handle_memory_high_event()` returns `NoOpDueToDisabledKill` after logging. So the
 daemon can run in observe-only mode and surface breaches via statsd without
 terminating anything.
 
@@ -4288,16 +4296,16 @@ pmgd's logging emits two kinds of statsd atoms (defined in
   `KillReason` (`AnonMemoryBreach` or `TotalMemcgMemoryBreach`) alongside the anon,
   file, and swap kilobytes.
 
-When `heap_dump_enabled` is set, pmgd shells out to `/system/bin/perfetto` with a
-heap-dump trace config (`system/memory/guardian/heap_dump.cfg`) before killing,
-so the offending process's heap is captured for offline analysis. It then waits
+When `heap_dump_enabled` is set, pmgd shells out to `/system/bin/perfetto` before
+killing. It uses a heap-dump trace config (`system/memory/guardian/heap_dump.cfg`).
+This captures the offending process's heap for offline analysis. It then waits
 ten seconds (`WAIT_FOR_PERFETTO_INVOCATION_IN_SECONDS`) for the trace to flush
 before issuing the kill.
 
 ### 29.14.7 Reboot Rate Limiting
 
 To avoid turning a leaking critical process into a boot loop, pmgd records every
-kill it performs in `/data/misc/pmgd/history.json` and refuses to kill the same
+kill it performs in `/data/misc/pmgd/history.json`. It refuses to kill the same
 process more than once per device reboot:
 
 ```rust
@@ -4308,9 +4316,9 @@ pub fn was_killed_since_reboot(&mut self, process_name: &str) -> bool {
 ```
 
 At startup, `filter_valid_config_targets()` drops any target already present in
-the history, so a process that pmgd killed during the previous uptime is simply no
-longer monitored until the next reboot (when `pmgd.rc` re-initializes
-`history.json` to `{}` in its `on post-fs-data` block). This makes a single
+the history. So a process that pmgd killed during the previous uptime is simply no
+longer monitored until the next reboot. At that reboot, `pmgd.rc` re-initializes
+`history.json` to `{}` in its `on post-fs-data` block. This makes a single
 guardian-initiated kill per boot the hard ceiling, trading aggressive enforcement
 for system stability.
 
@@ -4337,7 +4345,7 @@ Two attribution refinements are worth noting:
 
 - **PCC (per-component) UID attribution.** Both `BatteryStatsImpl` and
   `WakelockPowerStatsCollector` now attribute "per-client component" usage to the
-  *defining* app's UID rather than to the proxy UID, so battery cost lands on the
+  *defining* app's UID rather than to the proxy UID. So battery cost lands on the
   app that owns the work.
 - **Charging policy.** `BatteryManager` defines the `@BatteryChargingPolicy`
   IntDef (`CHARGING_POLICY_ADAPTIVE_AON`, `_ADAPTIVE_AC`,
@@ -4347,7 +4355,7 @@ Two attribution refinements are worth noting:
   Android 17 fixed it so callers read the correct current policy.
 
 None of these changes alter the `dumpsys batterystats` checkin format used by
-Battery Historian (section 29.6.7 and 29.6.13); they are internal structure and
+Battery Historian (section 29.6.7 and 29.6.13). They are internal structure and
 attribution-correctness improvements.
 
 ---
@@ -4989,15 +4997,15 @@ complex special-casing.
 Light Doze provides quick battery savings without motion detection, making it
 suitable for brief idle periods (e.g., pocket time). Deep Doze requires
 extended stationary idle and provides more aggressive savings. Having two
-independent machines allows the system to save power gradually: light doze
-activates first, and deep doze kicks in only after the device has been truly
+independent machines lets the system save power gradually. Light doze
+activates first. Deep doze starts only after the device has been truly
 idle.
 
 **ADR-5: Why ADPF instead of simple power hints?**
 Simple power hints (boost/mode) are coarse-grained. ADPF's hint sessions
-provide fine-grained, per-thread, per-frame performance management. By
-reporting target and actual work durations, the HAL can make precise frequency
-adjustments rather than blanket boosts, resulting in better power efficiency
+provide fine-grained, per-thread, per-frame performance management. Target and actual work durations are
+reported to the HAL. So it can make precise frequency
+adjustments rather than blanket boosts. This gives better power efficiency
 for the same performance level.
 
 ---

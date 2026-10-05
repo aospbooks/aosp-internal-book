@@ -1,14 +1,15 @@
 # Chapter 31: Multi-User and Profiles
 
 Android is a multi-user operating system. From the moment the device boots, a user
-identity (user 0, the system user) is active, and the entire framework is built to
+identity (user 0, the system user) is active. The entire framework is built to
 isolate data, processes, and permissions along user boundaries. This multi-user
 capability powers not only the "Users" screen in Settings but also work profiles,
 private spaces, guest accounts, restricted profiles, and clone profiles.
 
-This chapter traces the multi-user architecture through the real AOSP source, from
-`UserManagerService` in `system_server` through user type definitions, lifecycle
-management, storage layout, profile isolation, and the user switching mechanism.
+This chapter traces the multi-user architecture through the real AOSP source. It
+starts at `UserManagerService` in `system_server`. It then covers user type
+definitions, lifecycle management, storage layout, profile isolation, and the user
+switching mechanism.
 
 ---
 
@@ -269,9 +270,9 @@ private final RestrictionsSet mBaseUserRestrictions = new RestrictionsSet();
 private final RestrictionsSet mCachedEffectiveUserRestrictions = new RestrictionsSet();
 ```
 
-Important: when changing a restriction, a new `Bundle` is always created rather than
-mutating the existing one, because bundles may be shared between the base and cached
-sets.
+Important: when a restriction changes, a new `Bundle` is always created. The existing
+one is not mutated, because bundles may be shared between the base and
+cached sets.
 
 ---
 
@@ -377,7 +378,8 @@ private static UserTypeDetails.Builder getDefaultTypeFullSystem() {
 
 It is always user ID 0, always exists, cannot be removed, and is the first user to
 start during boot. In headless system user mode (HSUM, used on automotive), user 0
-runs but is not visible to the human operator; an actual human user is started on top.
+runs but is not visible to the human operator. An actual human user is started on
+top.
 
 ### 31.2.4 Secondary Users
 
@@ -902,7 +904,7 @@ graph LR
 Work profiles support "quiet mode" -- a paused state where work apps are suspended:
 
 The public entry point `requestQuietModeEnabled()` validates the caller and
-flags, then delegates to `setQuietModeEnabled()`, which toggles
+flags, then delegates to `setQuietModeEnabled()`. That method toggles
 `FLAG_QUIET_MODE` on the profile's `UserInfo` and stops or starts the profile:
 
 ```java
@@ -956,11 +958,10 @@ profiles on debug builds.
 
 ### 31.4.7 Work Profile Creation via DevicePolicyManager
 
-While `UserManagerService.createProfileForUserWithThrow()` (and its
-`createProfileForUserEvenWhenDisallowedWithThrow()` variant, which is what DPMS
-actually invokes) is the low-level mechanism,
-work profiles are typically created through the **Device Policy Manager**
-provisioning flow. This is what enterprise MDM solutions and the Setup Wizard
+`UserManagerService.createProfileForUserWithThrow()` is the low-level mechanism.
+Its `createProfileForUserEvenWhenDisallowedWithThrow()` variant is what DPMS
+actually invokes. However, work profiles are typically created through the
+**Device Policy Manager** provisioning flow. This is what enterprise MDM solutions and the Setup Wizard
 invoke:
 
 #### Provisioning Flow
@@ -1009,9 +1010,9 @@ private UserHandle createManagedProfileInternal(
 ```
 
 The separate `createAndManageUser()` method (line 12166) does *not* create a
-work profile: it is a device-owner-only operation that creates a new full
+work profile. It is a device-owner-only operation. It creates a new full
 secondary user (`USER_TYPE_FULL_SECONDARY`, or `USER_TYPE_FULL_DEMO` in demo
-mode) via `UserManagerInternal.createUserEvenWhenDisallowed()` and sets the
+mode) via `UserManagerInternal.createUserEvenWhenDisallowed()`. Then it sets the
 caller's component as that user's profile owner. It is blocked in headless
 single-user mode.
 
@@ -1075,7 +1076,7 @@ private void setQuietModeEnabled(int userId, boolean enableQuietMode,
 
 The public entry point `requestQuietModeEnabled()` (line 2149) takes a
 `@QuietModeFlag int flags` and rejects a non-null `target` when *enabling* quiet
-mode (a target only makes sense when disabling and waiting for unlock).
+mode. A target only makes sense when disabling and waiting for unlock.
 
 #### Quiet Mode Flags
 
@@ -1170,9 +1171,9 @@ creation. These allow essential functionality to work across profiles:
 - **Camera capture** — `ACTION_IMAGE_CAPTURE`, `ACTION_VIDEO_CAPTURE`
 - **File picking** — `ACTION_GET_CONTENT`, `ACTION_OPEN_DOCUMENT`
 
-Apps in the work profile can open web links in the personal browser, and
-personal apps can initiate phone calls that route through the work dialer,
-all governed by these cross-profile intent filters.
+Apps in the work profile can open web links in the personal browser. Personal
+apps can start phone calls that route through the work dialer. These
+cross-profile intent filters govern all of this.
 
 ### 31.4.10 Enterprise Policy Integration
 
@@ -1259,7 +1260,7 @@ Settings.Secure.MANAGED_PROFILE_CONTACT_REMOTE_SEARCH
 ```
 
 When enabled, the personal Contacts app can search work contacts (for caller
-ID, for example), but the actual contact data remains in the work profile's
+ID, for example). But the actual contact data remains in the work profile's
 ContactsProvider storage.
 
 ---
@@ -1313,7 +1314,7 @@ private static UserTypeDetails.Builder getDefaultTypeProfilePrivate() {
 The enablement predicate replaced the older `isPrivateProfileEnabled()` helper,
 which was removed during the Android 17 development cycle. Private Space is now
 gated by the `android.multiuser.Flags.blockPrivateSpaceCreation()` flag combined
-with a low-RAM device check: on a low-RAM device with the block flag set, the
+with a low-RAM device check. On a low-RAM device with the block flag set, the
 type is disabled. The default restrictions (`getDefaultPrivateProfileRestrictions()`)
 add `DISALLOW_BLUETOOTH_SHARING` on top of the common `DISALLOW_WALLPAPER`.
 
@@ -1384,7 +1385,7 @@ import static android.content.pm.LauncherUserInfo.PRIVATE_SPACE_ENTRYPOINT_HIDDE
 import static android.provider.Settings.Secure.HIDE_PRIVATESPACE_ENTRY_POINT;
 ```
 
-When hidden, the Private Space is not visible in the launcher at all -- the user
+When hidden, the Private Space is not visible in the launcher at all. The user
 must use a specific gesture or navigate through Settings to access it.
 
 ### 31.5.5 Private Space Biometric Integration
@@ -1506,8 +1507,9 @@ controls which packages are available per user type:
 ```
 
 The installer reads the allowlists and denylists from the device's sysconfig
-XML, ensuring (for example) that enterprise management apps are only installed
-in work profiles and consumer apps are not installed in restricted profiles.
+XML. This makes sure (for example) that enterprise management apps are only
+installed in work profiles and consumer apps are not installed in restricted
+profiles.
 
 ### 31.6.5 External Storage per User
 
@@ -1659,7 +1661,7 @@ When switching users, the system manages processes carefully:
 6. **Transition end:** `setSwitchingUser(false)` dismisses the dialog, showing
    the new user's UI
 
-Profiles of the previous user are stopped; those whose `UserProperties` set
+Profiles of the previous user are stopped. Those whose `UserProperties` set
 `allowStoppingUserWithDelayedLocking` are stopped with *delayed locking*, so
 their CE storage stays unlocked while the profile is stopped. Profiles of the
 new user are started (if `startWithParent=true`).
@@ -1795,10 +1797,10 @@ public boolean isPrivateProfile()  { ... }   // checks userType
 `FLAG_EPHEMERAL_ON_CREATE` (`0x00002000`) is distinct from `FLAG_EPHEMERAL`: it
 marks a user that was *requested* ephemeral at creation time, even if the user
 ends up persistent. Only checks like `isAdmin()`, `isProfile()`, and `isFull()`
-are pure bit tests; `isGuest()`, `isManagedProfile()`, `isPrivateProfile()`,
-and `isCommunalProfile()` resolve against the stored `userType` string instead
-(and `isMain()` tests `FLAG_MAIN` via `isMainUnlogged()` after logging a static
-deprecation warning).
+are pure bit tests. `isGuest()`, `isManagedProfile()`, `isPrivateProfile()`,
+and `isCommunalProfile()` resolve against the stored `userType` string instead.
+`isMain()` tests `FLAG_MAIN` via `isMainUnlogged()` after it logs a static
+deprecation warning.
 
 Common flag combinations:
 
@@ -2015,7 +2017,7 @@ In HSUM:
 - The system user stays running but invisible
 
 This mode is primarily used on automotive platforms where the "device" is the car's
-infotainment system, and the system user manages vehicle-level services while
+infotainment system. The system user manages vehicle-level services, while
 individual human users (driver, passengers) have their own profiles.
 
 ### 31.8.8 Multi-User on Multiple Displays (MUMD)
@@ -2107,8 +2109,8 @@ private static final int USER_VERSION = 11;
 ```
 
 When the device updates, `UserManagerService` runs migration logic for each
-version step (e.g., adding new fields, converting user types from the old
-`FLAG`-based system to the modern `userType` string system).
+version step. Examples are adding new fields and converting user types from the
+old `FLAG`-based system to the modern `userType` string system.
 
 ### 31.8.11 Profile Association and Resolution
 
@@ -2178,9 +2180,9 @@ public static final int ERROR_CODE_INVALID_USER_TYPE = 7;
 public static final int ERROR_CODE_USER_IS_LAST_ADMIN = 8;
 ```
 
-Each journey constant is an alias for a `FrameworkStatsLog` atom enum value, so
-the integers are owned by the statsd atom definition rather than hard-coded in
-the logger. The set covers user switch (foreground and UI-initiated), start,
+Each journey constant is an alias for a `FrameworkStatsLog` atom enum value.
+The statsd atom definition owns the integers. The logger does not hard-code
+them. The set covers user switch (foreground and UI-initiated), start,
 create, stop, remove, admin grant/revoke, main-user promote/demote, and logout.
 These journeys are logged to `FrameworkStatsLog` for device health monitoring and
 aggregate analytics.
@@ -2318,9 +2320,10 @@ OEMs set the budget via:
 - `config_multiuserMaximumUsers` resource overlay (typical: 4-8)
 - `fw.max_users` system property (for testing)
 
-Per-type limits are also enforced -- for example, only 1 guest, only 1 private
-profile per parent, only 1 work profile per parent (production builds, via
-`getMaxManagedProfiles()`, which returns 1 unless on a debuggable build).
+Per-type limits are also enforced. For example, only 1 guest, only 1 private
+profile per parent, and only 1 work profile per parent are allowed. The work
+profile limit applies to production builds, through `getMaxManagedProfiles()`.
+That method returns 1 unless the build is debuggable.
 
 ### 31.8.18 User Switcher Controller in SystemUI
 
@@ -2692,17 +2695,17 @@ adb shell pm list users | grep -o "UserInfo{[0-9]*" | \
 ## 31.9 Android 17 Multi-User Changes
 
 Android 17 did not redraw the multi-user architecture, but it did harden and
-clean up several corners of it: the Headless System User (HSU) became a
-first-class managed identity, Private Space and the Supervising profile shed
-their development feature flags, two new user restrictions landed, and the user
+clean up several corners of it. The Headless System User (HSU) became a
+first-class managed identity. Private Space and the Supervising profile shed
+their development feature flags. Two new user restrictions landed, and the user
 type query API was reshaped. This section collects the changes that touch the
 classes covered earlier in the chapter, each verified against the Android 17
 source.
 
 ### 31.9.1 Headless System User App Management
 
-In Headless System User Mode the system user (user 0) is not a human user, yet
-on automotive and other HSUM devices it still runs apps. Android 17 makes those
+In Headless System User Mode the system user (user 0) is not a human user. On
+automotive and other HSUM devices it still runs apps. Android 17 makes those
 apps manageable and visible rather than anonymous. `getDefaultTypeSystemHeadless()`
 now conditionally attaches a badge, an activity allowlist, and an allowlist mode
 to the headless system user type:
@@ -2795,7 +2798,7 @@ Android 17 adds two user restrictions, both defined in
 `DISALLOW_ADD_GUEST` complements the existing `DISALLOW_ADD_USER` and
 `DISALLOW_ADD_PRIVATE_PROFILE` (`no_add_private_profile`) controls, giving
 device policy a way to forbid guest creation specifically. Both new keys are
-registered in the `UserManager` restriction `@StringDef`/`@interface` set so they
+registered in the `UserManager` restriction `@StringDef`/`@interface` set. They
 flow through `setUserRestriction()` and the merge logic in
 `updateUserRestrictionsInternalLR()` like any other restriction.
 
@@ -2805,10 +2808,10 @@ Two profile types lost their development gates during the Android 17 cycle:
 
 - **Private Space.** The `isPrivateProfileEnabled()` helper on `UserManager` was
   removed (see §31.5.1). The private profile type's `setEnabled(...)` predicate is
-  now expressed directly in `getDefaultTypeProfilePrivate()` using
+  now expressed directly in `getDefaultTypeProfilePrivate()`. It is written using
   `android.multiuser.Flags.blockPrivateSpaceCreation()` together with
-  `ActivityManager.isLowRamDeviceStatic()`, so the gating lives in the user-type
-  factory rather than a standalone API.
+  `ActivityManager.isLowRamDeviceStatic()`. The gating therefore lives in the
+  user-type factory rather than a standalone API.
 - **Supervising profile.** The `android.multiuser.allow_supervising_profile`
   flag was cleaned up, and `getDefaultTypeProfileSupervising()` no longer calls
   `setEnabled(...)` (see §31.8.15). The supervising profile is therefore
@@ -2835,7 +2838,7 @@ public boolean isUserTypeEnabled(@NonNull String userType) {
 ```
 
 The rename (gated by `android.multiuser.Flags.queryUserTypeSupported()`) reflects
-that the question callers actually ask is whether a device *supports* a user
+the real question of callers. They ask whether a device *supports* a user
 type, not whether it is transiently "enabled." The deprecated method simply
 forwards to the new one.
 
@@ -2850,9 +2853,9 @@ documentation):
 - **MUPAND** (MUltiple PAssengers, No Driver), the no-driver automotive extension.
 
 The Android 17 work here is on the automotive side rather than the mediator
-itself: a build flag (`RELEASE_CAR_SYS_EXP_MUMD_SCALABLE_UI_DRIVER`) advances the
-ScalableUI experience for MUMD concurrent-user devices, and a number of CTS host
-tests were updated to skip driver-only behaviors when running as a passenger user
+itself. A build flag (`RELEASE_CAR_SYS_EXP_MUMD_SCALABLE_UI_DRIVER`) advances the
+ScalableUI experience for MUMD concurrent-user devices. Also, a number of CTS host
+tests were updated to skip driver-only behaviors when they run as a passenger user
 on MUMD hardware. The mediator continues to track per-display assignments through
 `mExtraDisplaysAssignedToUsers` and answer `isUserVisible(userId, displayId)`
 queries exactly as described in §31.8.8.
@@ -3123,8 +3126,8 @@ UID isolation through system services to user-facing UI:
 - **`UserManagerService`** is the central authority, managing user metadata in
   `/data/system/users/`, enforcing limits, and coordinating user lifecycle events
 
-- **User types** defined in `UserTypeFactory` create a type-safe, extensible system
-  where each category (full user, profile, system) carries its own properties,
+- **User types** defined in `UserTypeFactory` create a type-safe, extensible
+  system. Each category (full user, profile, system) carries its own properties,
   restrictions, badges, and cross-profile rules
 
 - **Profiles** (work, private, clone) run within a parent user's context, sharing
@@ -3135,17 +3138,17 @@ UID isolation through system services to user-facing UI:
   profiles and full user separation
 
 - **Per-user CE/DE storage** with file-based encryption ensures data isolation both
-  at rest and before unlock, with `UserDataPreparer` handling the creation and
-  destruction of these storage areas
+  at rest and before unlock. `UserDataPreparer` creates and destroys these
+  storage areas
 
 - **User switching** involves coordinated action across `ActivityManagerService`,
   `WindowManagerService`, and every user-aware system service, managed through the
   `UserVisibilityMediator` which supports multiple display modes (SUSD, MUMD, MUPAND)
 
-- **Lifecycle management** follows strict ordering: creation with storage
-  preparation, starting through locked/unlocked states, stopping with process
-  cleanup, and removal with storage destruction -- all tracked through broadcasts
-  and lifecycle listeners
+- **Lifecycle management** follows strict ordering. Creation comes with storage
+  preparation. Starting goes through locked and unlocked states. Stopping comes
+  with process cleanup, and removal with storage destruction. All of these steps are tracked through broadcasts and
+  lifecycle listeners
 
 The multi-user architecture is one of Android's most pervasive features, touching
 virtually every system service and defining the security boundaries for all user data.

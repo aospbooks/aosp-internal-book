@@ -4,17 +4,21 @@ Background work is the eternal tension in mobile operating systems. Users want
 their email synced, their photos backed up, their news feeds refreshed, and
 their notifications delivered promptly. But every background operation drains
 battery, consumes network bandwidth, and competes for CPU and memory with the
-foreground application. Multiply this by the hundreds of apps installed on a
-typical device, and you have a tragedy of the commons: each app's background
-work is individually reasonable but collectively devastating to battery life.
+foreground application. A typical device has hundreds of apps installed. This
+gives a tragedy of the commons: each app's background work is individually
+reasonable but collectively devastating to battery life.
 
 Android's answer has evolved over a decade of increasingly aggressive
-restrictions. This chapter traces the entire background execution infrastructure:
-the execution limits introduced in Android 8.0, the JobScheduler that replaced
-ad hoc background work with a constraint-aware scheduler, the AlarmManager that
-handles time-based wakeups, the WorkManager abstraction layer, foreground
-services and their evolving requirements, and broadcast restrictions that limit
-implicit wakeups.
+restrictions. This chapter traces the entire background execution
+infrastructure. It covers these topics:
+
+- The execution limits introduced in Android 8.0
+- The JobScheduler, which replaced ad hoc background work with a
+  constraint-aware scheduler
+- The AlarmManager, which handles time-based wakeups
+- The WorkManager abstraction layer
+- Foreground services and their evolving requirements
+- Broadcast restrictions that limit implicit wakeups
 
 ---
 
@@ -88,9 +92,9 @@ and its `UidRecord` for each application UID.
 
 ### 30.1.4 App Standby Buckets
 
-Android 9.0 (Pie, API 28) introduced **App Standby Buckets**, which further
-tiered background restrictions based on how recently and frequently the user
-interacted with each app:
+Android 9.0 (Pie, API 28) introduced **App Standby Buckets**. These tier
+background restrictions further, based on how recently and how often the
+user interacted with each app:
 
 | Bucket | Criteria | Job Frequency | Alarm Frequency |
 |--------|----------|--------------|-----------------|
@@ -188,8 +192,8 @@ further restrictions:
 ## 30.2 JobScheduler
 
 JobScheduler is Android's primary mechanism for scheduling deferrable
-background work. Introduced in Android 5.0 (API 21), it allows apps to declare
-*what* work needs to be done and *under what conditions*, and the system decides
+background work. It was introduced in Android 5.0 (API 21). It lets apps declare
+*what* work needs to be done and *under what conditions*. Then the system decides
 *when* to run it. This enables the system to batch work, defer it to optimal
 times (e.g., when charging and on Wi-Fi), and enforce standby bucket quotas.
 
@@ -358,10 +362,10 @@ Some controllers (`BatteryController`, `ConnectivityController`,
 directly. `RestrictingController` adds two hooks --
 `startTrackingRestrictedJobLocked()` and `stopTrackingRestrictedJobLocked()` --
 so that those controllers can also track jobs whose owning app is in the
-`RESTRICTED` standby bucket, where the constraint must hold even more strictly.
+`RESTRICTED` standby bucket. There, the constraint must hold even more strictly.
 The idle-detection plumbing for `IdleController` lives in the
 `controllers/idle/` subpackage (`DeviceIdlenessTracker`, `CarIdlenessTracker`,
-and the `IdlenessTracker`/`IdlenessListener` interfaces), which lets the same
+and the `IdlenessTracker`/`IdlenessListener` interfaces). It lets the same
 controller use a different definition of "idle" on a handheld versus an
 automotive device.
 
@@ -451,13 +455,13 @@ public final class JobStatus {
 
 The low four bits (`CONSTRAINT_CHARGING`, `CONSTRAINT_BATTERY_NOT_LOW`,
 `CONSTRAINT_IDLE`, `CONSTRAINT_STORAGE_NOT_LOW`) are shared with the
-`JobInfo.CONSTRAINT_FLAG_*` values an app sets directly; the high bits hold the
-timing, connectivity, and content-trigger constraints plus the *implicit*
-constraints (`CONSTRAINT_DEVICE_NOT_DOZING`, `CONSTRAINT_WITHIN_QUOTA`,
-`CONSTRAINT_BACKGROUND_NOT_RESTRICTED`, `CONSTRAINT_FLEXIBLE`) that the system
-layers on regardless of what the app asked for. This is why a job that only set
-a network constraint can still sit pending: doze, quota, and background
-restrictions are constraints too, evaluated by their own controllers.
+`JobInfo.CONSTRAINT_FLAG_*` values an app sets directly. The high bits hold the
+timing, connectivity, and content-trigger constraints. They also hold the
+*implicit* constraints (`CONSTRAINT_DEVICE_NOT_DOZING`, `CONSTRAINT_WITHIN_QUOTA`,
+`CONSTRAINT_BACKGROUND_NOT_RESTRICTED`, `CONSTRAINT_FLEXIBLE`). The system
+layers these on regardless of what the app asked for. So a job that only set
+a network constraint can still sit pending. Doze, quota, and background
+restrictions are constraints too, and their own controllers evaluate them.
 
 ### 30.2.7 Job Scheduling Flow
 
@@ -570,11 +574,11 @@ the legacy values:
 | Rare | 10 min / 24 h | 10 min / 24 h |
 | Restricted | 10 min / 24 h, 10 jobs | 10 min / 24 h, 10 jobs |
 
-Expedited jobs (EJs) get a separate budget tracked in the same controller, with
-its own per-bucket limits inside a rolling 24 hour window (for example, 30 min
-for `ACTIVE`, 15 min for `WORKING`, 10 min for `FREQUENT`/`RARE`, 5 min for
-`RESTRICTED`), so a burst of expedited work does not consume the regular job
-quota.
+Expedited jobs (EJs) get a separate budget tracked in the same controller. The
+budget has its own per-bucket limits inside a rolling 24 hour window. For
+example, the limit is 30 min for `ACTIVE`, 15 min for `WORKING`, 10 min for
+`FREQUENT`/`RARE`, and 5 min for `RESTRICTED`. So a burst of expedited work does
+not consume the regular job quota.
 
 ```mermaid
 graph TD
@@ -598,14 +602,16 @@ graph TD
 ### 30.2.11 FlexibilityController
 
 The `FlexibilityController` manages the trade-off between job freshness and
-system efficiency. It defines a set of `FLEXIBLE_CONSTRAINTS` -- the system-wide
+system efficiency. It defines a set of `FLEXIBLE_CONSTRAINTS`. The system-wide
 ones are charging, battery-not-low, and device-idle, plus the job-specific
-connectivity constraint -- and treats them as *soft* preferences early in a
-job's life. A freshly scheduled job is initially asked to satisfy all of them
-(so it runs at the most efficient moment, e.g. charging on Wi-Fi while idle),
-but as the job approaches its deadline the controller progressively drops these
-flexible constraints until, by the fallback deadline, none of them are required
-and the job can run regardless of device state. Jobs with no explicit deadline
+connectivity constraint. The controller treats them as *soft* preferences early
+in a job's life.
+
+A freshly scheduled job is initially asked to satisfy all of them. This is so
+that it runs at the most efficient moment, e.g. charging on Wi-Fi while idle. As the
+job approaches its deadline, the controller progressively drops these flexible
+constraints. By the fallback deadline, none of them are required and the job
+can run regardless of device state. Jobs with no explicit deadline
 fall back to `FcConfig.DEFAULT_FALLBACK_FLEXIBILITY_DEADLINE_MS`. This is what
 lets JobScheduler hold low-urgency work for an opportune moment without ever
 letting it starve.
@@ -628,8 +634,8 @@ package com.android.server.job;
 ```
 
 The manager categorizes running jobs into the `WORK_TYPE_*` bitset and reserves
-a number of concurrent execution slots for each, so that lower-priority work
-cannot starve higher-priority work:
+a number of concurrent execution slots for each. So lower-priority work cannot
+starve higher-priority work:
 
 | Work Type Constant | Meaning |
 |-------------------|---------|
@@ -641,8 +647,8 @@ cannot starve higher-priority work:
 | `WORK_TYPE_BGUSER_IMPORTANT` | FGS/EJ/UIJ job for a fully backgrounded user |
 | `WORK_TYPE_BGUSER` | Plain background job for a fully backgrounded user |
 
-The two `BGUSER` types are how concurrency is split between the currently active
-user and other (background) users on a multi-user device, so jobs for a
+The two `BGUSER` types split concurrency between the currently active
+user and other (background) users on a multi-user device. So jobs for a
 background user cannot crowd out the foreground user's jobs.
 
 ### 30.2.13 JobService: Application-Side Implementation
@@ -708,9 +714,9 @@ status:
 device crosses thermal thresholds it stops affected jobs with
 `INTERNAL_STOP_REASON_DEVICE_THERMAL`. In the Android 17 tree it reports a
 *specific* pending reason -- `PENDING_JOB_REASON_DEVICE_STATE_THERMAL` -- instead
-of the older generic `PENDING_JOB_REASON_DEVICE_STATE`, so apps querying why a
-job is stuck can now tell thermal throttling apart from other device-state
-blocks (see §30.7 on the new pending-reason APIs).
+of the older generic `PENDING_JOB_REASON_DEVICE_STATE`. So an app that queries
+why a job is stuck can now tell thermal throttling apart from other
+device-state blocks. See §30.7 on the new pending-reason APIs.
 
 **Source path**: `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/restrictions/`
 
@@ -944,11 +950,11 @@ FLAG_PRIORITIZE                // Gets priority delivery
 ```
 
 Apps that need to fire alarms during Doze can use `setAndAllowWhileIdle()` or
-`setExactAndAllowWhileIdle()`, but these are rate-limited by a per-app quota
-rather than a fixed minimum interval. In the Android 17 tree the defaults in
+`setExactAndAllowWhileIdle()`. A per-app quota rate-limits these, not a fixed
+minimum interval. In the Android 17 tree the defaults in
 `AlarmManagerService.Constants` allow `DEFAULT_ALLOW_WHILE_IDLE_QUOTA = 72`
 while-idle alarm deliveries inside a `DEFAULT_ALLOW_WHILE_IDLE_WINDOW` of one
-hour for apps targeting modern API levels; apps still on the older "compat"
+hour. This applies to apps that target modern API levels. Apps still on the older "compat"
 behavior get only `DEFAULT_ALLOW_WHILE_IDLE_COMPAT_QUOTA = 7` per window. All of
 these are `DeviceConfig`-tunable, so the exact ceiling can change per release.
 
@@ -1275,8 +1281,8 @@ public class LongUploadWorker extends CoroutineWorker {
 }
 ```
 
-By calling `setForeground()`, the worker gets promoted to a foreground service,
-which is exempt from the standard execution time limit.
+The worker calls `setForeground()`. As a result, the worker is promoted to a foreground
+service, which is exempt from the standard execution time limit.
 
 ---
 
@@ -1410,8 +1416,8 @@ Apps without an exemption should use `WorkManager` with `setExpedited()` or
 ### 30.5.5 Short Service (API 34+)
 
 Android 14 introduced the `shortService` foreground service type for brief
-user-initiated operations that need to run in the foreground but only for a
-short time (under 3 minutes):
+user-initiated operations. These operations need to run in the foreground, but
+only for a short time (under 3 minutes):
 
 ```java
 // Start a short foreground service
@@ -1434,11 +1440,11 @@ suitable for one-off operations like sending a message or processing a payment.
 Starting with Android 15, `dataSync` foreground services have a timeout of
 approximately 6 hours. After the timeout, the system calls `onTimeout()` and
 the service must stop or convert to a different type. This prevents indefinite
-data sync services that may have been abandoned by buggy code.
+data sync services that buggy code may have abandoned.
 
 The same release added the `mediaProcessing` type (`ServiceInfo.java` value
-`1 << 13`) for video and photo editing, which also carries a 6 hour limit and
-the same `onTimeout()` contract. In `ActiveServices`, the active timeout is
+`1 << 13`) for video and photo editing. This type also carries a 6 hour limit
+and the same `onTimeout()` contract. In `ActiveServices`, the active timeout is
 driven by `mDataSyncFgsTimeoutDuration` and the matching media-processing
 constant, so both long-running types share the same enforcement path:
 
@@ -1453,21 +1459,21 @@ if ((foregroundServiceType & ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSIN
 
 The `shortService` timeout is enforced through a separate
 `SERVICE_SHORT_FGS_TIMEOUT_MSG` handler message with its own
-`OOM_ADJ_REASON_SHORT_FGS_TIMEOUT` adjustment, reflecting that short services
-are meant to be measured in minutes rather than hours.
+`OOM_ADJ_REASON_SHORT_FGS_TIMEOUT` adjustment. This reflects that short services
+are meant to last minutes rather than hours.
 
 ### 30.5.7 Foreground Service ANR
 
 If a foreground service does not call `startForeground()` in time after
 `startForegroundService()`, the system generates a
 `ForegroundServiceDidNotStartInTimeException` crash. Developer guidance is to
-call `startForeground()` within a few seconds, but the platform-enforced window
-is longer: the AOSP default is 30 seconds
+call `startForeground()` within a few seconds. The platform-enforced window is
+longer. The AOSP default is 30 seconds
 (`DEFAULT_SERVICE_START_FOREGROUND_TIMEOUT_MS` in
 `frameworks/base/services/core/java/com/android/server/am/ActivityManagerConstants.java`,
-tunable via `DeviceConfig` as `mServiceStartForegroundTimeoutMs`), plus an
-additional 10 second ANR delay
-(`DEFAULT_SERVICE_START_FOREGROUND_ANR_DELAY_MS`) before `ActiveServices`
+tunable via `DeviceConfig` as `mServiceStartForegroundTimeoutMs`). A further
+10 second ANR delay
+(`DEFAULT_SERVICE_START_FOREGROUND_ANR_DELAY_MS`) passes before `ActiveServices`
 actually throws. On API 31+, this is a
 `ForegroundServiceStartNotAllowedException` if the app attempts to start from
 the background without an exemption.
@@ -1505,18 +1511,19 @@ Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
     .build();
 ```
 
-The notification serves a dual purpose: informing the user about ongoing work,
-and providing accountability -- if a user sees an unexpected notification, they
+The notification serves a dual purpose. It informs the user about ongoing work.
+It also provides accountability: if a user sees an unexpected notification, they
 know which app is consuming resources and can stop it.
 
 ### 30.5.9 User-Visible Foreground Service Notifications
 
-Starting with Android 13 (API 33), the Foreground Services Task Manager
+Since Android 13 (API 33), the Foreground Services Task Manager
 (`FgsManagerController` in SystemUI, at
 `frameworks/base/packages/SystemUI/src/com/android/systemui/qs/FgsManagerController.kt`)
-adds an "Active apps" affordance to the notification shade that lists the apps
-currently running foreground services, each with a Stop button. This gives users
-control over misbehaving apps without needing to navigate to Settings.
+adds an "Active apps" affordance to the notification shade. It lists the apps
+that currently run foreground services, each with a Stop button. This gives
+users control over misbehaving apps, and they do not need to navigate to
+Settings.
 
 ---
 
@@ -1632,7 +1639,7 @@ unregisterReceiver(receiver);
 ```
 
 The key difference: context-registered receivers only work while the app is
-already running. They do not cause the app to be launched from a stopped state.
+already running. They do not launch the app from a stopped state.
 This is the core of the restriction's effectiveness -- it prevents broadcast
 storms from launching dozens of dormant apps.
 
@@ -1663,13 +1670,15 @@ warning and may reject it.
 ## 30.7 Android 17 Background Execution Changes
 
 The Android 17 source tree refines background scheduling rather than rebuilding
-it: the JobScheduler controller architecture, the AlarmManager service, and the
+it. The JobScheduler controller architecture, the AlarmManager service, and the
 foreground-service rules are all the same shapes described above. What changed is
 mostly *diagnostics*, *multi-user correctness*, and a set of feature flags that
-fine-tune batching and quotas. Most of these behaviors are gated by an `aconfig`
+fine-tune batching and quotas.
+
+Most of these behaviors are gated by an `aconfig`
 flag, the AOSP mechanism for shipping a change behind a runtime toggle. A few are
-not: the start-user-before-alarm feature in §30.7.8, for instance, is guarded by a
-config resource bool plus a multi-user check rather than an aconfig flag.
+not. For instance, the start-user-before-alarm feature in §30.7.8 is guarded by a
+config resource bool plus a multi-user check. It has no aconfig flag.
 
 ### 30.7.1 The aconfig Flags Behind the Scheduler
 
@@ -1691,9 +1700,9 @@ gate new public APIs; the service-side flags gate internal behavior.
 
 Historically the only way to ask why a job had not run was
 `JobScheduler.getPendingJobReason(int jobId)`, which returns a single reason even
-when several constraints are unmet. Android 17 supersedes it -- the method is not
+when several constraints are unmet. Android 17 supersedes it. The method is not
 formally `@Deprecated`, but an `@apiNote` now steers callers to
-`getPendingJobReasons(int)` -- and adds three richer APIs, declared in
+`getPendingJobReasons(int)`. Android 17 also adds three richer APIs, declared in
 `frameworks/base/apex/jobscheduler/framework/java/android/app/job/JobScheduler.java`:
 
 ```java
@@ -1715,10 +1724,10 @@ public Map<Integer, Duration> getPendingJobReasonStats(int jobId);
 These map to the `get_pending_job_reasons_api`,
 `get_pending_job_reasons_history_api`, and `get_pending_job_reason_stats_api`
 flags. The companion `enhanced_pending_and_stop_reasons_api` flag adds more
-specific reason codes: for example, the thermal `JobRestriction` now reports
+specific reason codes. For example, the thermal `JobRestriction` now reports
 `PENDING_JOB_REASON_DEVICE_STATE_THERMAL` instead of the generic
-`PENDING_JOB_REASON_DEVICE_STATE` (see §30.2.14), so an app can distinguish
-thermal throttling from doze or other device-state blocks. Because none of this
+`PENDING_JOB_REASON_DEVICE_STATE` (see §30.2.14). With this, an app can
+distinguish thermal throttling from doze or other device-state blocks. Because none of this
 history is persisted across reboots, it is meant for live debugging, not
 long-term telemetry.
 
@@ -1740,11 +1749,11 @@ flowchart TD
 
 The `job_debug_info_apis` flag adds developer-attached metadata to jobs.
 `JobInfo.Builder.addDebugTag(String)` attaches free-form debug tags (up to 32
-per job, 127 characters each, no PII), and `setTraceTag(String)` attaches a
+per job, 127 characters each, no PII). `setTraceTag(String)` attaches a
 single tag that appears in system traces. These tags surface in
-`dumpsys jobscheduler` and in the Perfetto job-tracing events (§30.7.4), making
-it far easier to tell which of an app's many scheduled jobs is which when
-diagnosing scheduling problems:
+`dumpsys jobscheduler` and in the Perfetto job-tracing events (§30.7.4). This
+makes it far easier to tell which of an app's many scheduled jobs is which
+during diagnosis of scheduling problems:
 
 ```java
 // frameworks/base/apex/jobscheduler/framework/java/android/app/job/JobInfo.java
@@ -1758,21 +1767,22 @@ new JobInfo.Builder(JOB_ID, component)
 
 Android 17 routes JobScheduler's tracing through the external Perfetto SDK. The
 new `JobPerfettoTracer` (`JobPerfettoTracer.java`, Copyright 2025) is created in
-the `JobSchedulerService` constructor and emits an instant trace event for each
+the `JobSchedulerService` constructor. It emits an instant trace event for each
 job's lifecycle, tagged with the job's component and any trace tag. This replaces
-the older ad hoc `Trace` calls and lets job execution show up as first-class
-track events in a Perfetto capture, alongside the rest of the system trace.
+the older ad hoc `Trace` calls. It also lets job execution show up as
+first-class track events in a Perfetto capture, alongside the rest of the system
+trace.
 
 **Source path**: `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/JobPerfettoTracer.java`
 
 ### 30.7.5 Abandoned-Job Detection
 
 A long-standing failure mode is an app that returns `true` from `onStartJob()`
-(promising async work) but never calls `jobFinished()` -- the job's execution
-context is held until it times out, wasting a concurrency slot. The
+(a promise of async work) but never calls `jobFinished()`. The job's execution
+context stays held until it times out, which wastes a concurrency slot. The
 `handle_abandoned_jobs` flag adds detection for this. When the
-`JobServiceContext` times out a job, it checks whether the job was abandoned and,
-if so, reports a distinct stop reason instead of a plain timeout:
+`JobServiceContext` times out a job, it checks whether the job was abandoned.
+If so, it reports a distinct stop reason instead of a plain timeout:
 
 ```java
 // frameworks/base/apex/jobscheduler/service/java/com/android/server/job/
@@ -1805,10 +1815,10 @@ latency for fewer wakeups and radio activations:
 - `do_not_force_rush_execution_at_boot`: the scheduler no longer force-rushes job
   execution immediately after boot, smoothing the post-boot CPU and I/O spike.
 
-Two more flags cap how much an app can demand of the scheduler:
+Two more flags cap how much an app can demand of the scheduler.
 `enforce_proxied_jobs_limit` bounds jobs scheduled indirectly (for example via
-`SyncManager`), and `limit_per_uid_cumulative_workitem_size` bounds the total
-memory an app's `JobWorkItem`s can pin in the system. `include_job_name_in_anr_message`
+`SyncManager`). `limit_per_uid_cumulative_workitem_size` bounds the total
+memory that an app's `JobWorkItem`s can pin in the system. `include_job_name_in_anr_message`
 is a small but practical debugging win: the offending job's component name now
 appears in the slow-response ANR message.
 
@@ -1817,31 +1827,34 @@ appears in the slow-response ANR message.
 User-initiated jobs (UIJs) must show a notification while they run, similar to a
 foreground service. This is not new in Android 17. The centralized
 `JobNotificationCoordinator` (`JobNotificationCoordinator.java`, Copyright 2022)
-shipped alongside UIJs themselves in Android 14 (API 34): it maps each running UIJ
-to the app notification it is attached to, marks the notification with a
-user-initiated-job flag through `NotificationManagerInternal`, and restricts the
-app from silently dismissing a UIJ's notification while the job runs, so the user
-always retains a visible, actionable indicator (and a way to stop the work).
-The association -- and, where appropriate, the notification itself -- is torn
+shipped alongside UIJs themselves in Android 14 (API 34). It maps each running UIJ
+to the app notification it is attached to. It marks the notification with a
+user-initiated-job flag through `NotificationManagerInternal`. It also restricts
+the app from silently dismissing a UIJ's notification while the job runs.
+
+This way, the user always retains a visible, actionable indicator (and a way to
+stop the work). The association -- and, where appropriate, the notification itself -- is torn
 down when the job stops or completes, via `removeNotificationAssociation()`
 called from `JobServiceContext`. Android 17 inherits
-this coordinator unchanged; it is covered here because it underpins the UIJ
+this coordinator unchanged. It is covered here because it underpins the UIJ
 behavior the rest of this chapter relies on.
 
 **Source path**: `frameworks/base/apex/jobscheduler/service/java/com/android/server/job/JobNotificationCoordinator.java`
 
 ### 30.7.8 Starting a User Before Its Alarm Fires
 
-On multi-user and private-space devices, an alarm scheduled by an app belonging
-to a *stopped* user could be missed because the user (and thus the app) was not
+On multi-user and private-space devices, an app can belong to a *stopped* user.
+Its alarm could be missed, because the user (and thus the app) was not
 running when the alarm time arrived. Android 17 closes this gap with the
-`UserWakeupStore` (`UserWakeupStore.java`, Copyright 2024). The feature is not
-behind an aconfig flag: `AlarmManagerService` sets `mStartUserBeforeScheduledAlarms`
+`UserWakeupStore` (`UserWakeupStore.java`, Copyright 2024).
+
+The feature is not
+behind an aconfig flag. `AlarmManagerService` sets `mStartUserBeforeScheduledAlarms`
 only when `UserManager.supportsMultipleUsers()` is true *and* the config resource
 bool `config_allowAlarmsOnStoppedUsers` is set (AlarmManagerService.java:1873-1875).
 When it is enabled, `AlarmManagerService` records, per user, the earliest time that
-user has an alarm due, persisting the set of user IDs with pending alarms to an XML
-file under the system data directory:
+user has an alarm due. It also persists the set of user IDs with pending alarms
+to an XML file under the system data directory:
 
 ```java
 // frameworks/base/apex/jobscheduler/service/java/com/android/server/alarm/
@@ -1852,9 +1865,9 @@ final int[] userIds = mUserWakeupStore.getUserIdsToWakeup(nowELAPSED);
 ```
 
 Because the list is persisted, a user with a scheduled alarm can be started even
-after a device reboot, and the store deliberately staggers consecutive user
-starts (a fixed delay between them) so the system does not try to start several
-stopped users at the same instant. This is primarily what makes scheduled alarms
+after a device reboot. The store also deliberately staggers consecutive user
+starts (a fixed delay between them). This way, the system does not try to start
+several stopped users at the same instant. This is primarily what makes scheduled alarms
 reliable for private-space and secondary-profile apps.
 
 ```mermaid
@@ -1881,8 +1894,9 @@ The `alarm.aconfig` flags refine while-idle behavior:
 
 - `allow_listeners_while_idle`: `OnAlarmListener`-based alarms (the in-process
   variant from §30.3.8) can now be allowed to fire during doze under the
-  while-idle quota, with their own `DEFAULT_ALLOW_WHILE_IDLE_LISTENER_QUOTA`
-  (72 per window), matching what `PendingIntent` while-idle alarms already had.
+  while-idle quota. They have their own `DEFAULT_ALLOW_WHILE_IDLE_LISTENER_QUOTA`
+  (72 per window). This matches what `PendingIntent` while-idle alarms already
+  had.
 - `allow_alarms_with_relaxed_quota`: certain allow-while-idle listener alarms are
   granted a relaxed quota path, checked in `AlarmManagerService` at delivery time
   via `Flags.allowAlarmsWithRelaxedQuota()`.
@@ -1901,8 +1915,8 @@ state machine (§30.1.5):
 - `support_allow_while_idle_quota_zero`: support configuring the while-idle quota
   all the way down to zero, fully blocking while-idle alarms when desired.
 
-None of these change the public alarm or job APIs; they are knobs the platform
-(and OEMs, for Wear and foldables) use to tune the doze/standby battery trade-off.
+None of these change the public alarm or job APIs. They are knobs that the
+platform (and OEMs, for Wear and foldables) use to tune the doze/standby battery trade-off.
 
 ---
 
@@ -2523,7 +2537,7 @@ flowchart TD
 
 **Key takeaways from this chapter:**
 
-1. **Background limits are pervasive**: Starting with Android 8.0, apps cannot
+1. **Background limits are pervasive**: Since Android 8.0, apps cannot
    freely run background services. Every version since has added further
    restrictions. Apps must design around these limits from the start.
 

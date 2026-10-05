@@ -1,22 +1,27 @@
 # Chapter 24: Display System
 
-The Android display system spans three major processes -- `system_server`,
-`surfaceflinger`, and client applications -- and bridges two languages
-(Java in the framework, C++ in the native compositor). Its responsibilities
-range from discovering physical panels, through scheduling frame refresh at
-precise VSYNC intervals, to compositing hundreds of graphical layers into a
-single output image. This chapter examines every major subsystem: the Java-side
-`DisplayManagerService` that owns display lifecycle; the `DisplayArea`
-hierarchy that organises window Z-ordering; the VSYNC pipeline from hardware
-interrupts through `Choreographer`; screen rotation and foldable display
-management; display cutout and rounded-corner handling; the SurfaceFlinger
-front-end refactor and `CompositionEngine`; buffer management through
-`BLASTBufferQueue`; virtual displays and mirroring; colour management; and
-display power control.
+The Android display system spans three major processes: `system_server`,
+`surfaceflinger`, and client applications. It also bridges two
+languages (Java in the framework, C++ in the native compositor). Its
+responsibilities include discovering physical panels and scheduling frame
+refresh at precise VSYNC intervals. They also include compositing hundreds of
+graphical layers into a single output image. This chapter examines every major
+subsystem. The topics are:
 
-Readers who have worked through the graphics rendering pipeline in Chapter 13
-and the system_server architecture in Chapter 20 will find this chapter
-naturally extends those foundations into the display-specific domain.
+- The Java-side `DisplayManagerService` that owns display lifecycle.
+- The `DisplayArea` hierarchy that organizes window Z-ordering.
+- The VSYNC pipeline from hardware interrupts through `Choreographer`.
+- Screen rotation and foldable display management.
+- Display cutout and rounded-corner handling.
+- The SurfaceFlinger front-end refactor and `CompositionEngine`.
+- Buffer management through `BLASTBufferQueue`.
+- Virtual displays and mirroring.
+- Color management.
+- Display power control.
+
+This chapter extends the foundations from the graphics rendering pipeline
+(Chapter 13) and the system_server architecture (Chapter 20) into the
+display-specific domain.
 
 ---
 
@@ -24,8 +29,8 @@ naturally extends those foundations into the display-specific domain.
 
 ### 24.1.1 The Three-Layer Model
 
-Android's display subsystem is organised into three distinct layers, each
-running in a different process and address space:
+Android's display subsystem has three distinct layers. Each layer runs
+in a different process and address space:
 
 ```mermaid
 graph TB
@@ -71,13 +76,13 @@ graph TB
 
 **Layer 1 -- Framework (system_server).** `DisplayManagerService` owns the
 lifecycle of every display. It discovers physical displays through
-`DisplayAdapter` implementations, creates `LogicalDisplay` objects that map
-to physical `DisplayDevice` instances, and notifies `WindowManagerService`
+`DisplayAdapter` implementations. It creates `LogicalDisplay` objects that map
+to physical `DisplayDevice` instances. It also notifies `WindowManagerService`
 of display additions, removals, and configuration changes.
 
 **Layer 2 -- Native compositor (surfaceflinger).** SurfaceFlinger receives
-buffer updates through `SurfaceControl.Transaction`, schedules composition
-on VSYNC, and delegates the actual pixel blending to either the Hardware
+buffer updates through `SurfaceControl.Transaction` and schedules composition
+on VSYNC. It delegates the actual pixel blending to either the Hardware
 Composer HAL (overlay planes) or the GPU (client composition via
 RenderEngine).
 
@@ -97,18 +102,18 @@ Its Javadoc explains the architecture:
 > applications when the state changes.
 
 DMS uses the `DisplayThread` (a shared `HandlerThread` running at
-`THREAD_PRIORITY_DISPLAY + 1`) for its main handler. All internal state is
-protected by a single `SyncRoot` lock -- the same lock used by all display
-adapters and logical display objects:
+`THREAD_PRIORITY_DISPLAY + 1`) for its main handler. A single `SyncRoot` lock
+protects all internal state. All display adapters and logical display objects
+use the same lock:
 
 ```java
 // frameworks/base/services/core/java/com/android/server/display/DisplayManagerService.java
 private final SyncRoot mSyncRoot = new SyncRoot();
 ```
 
-The lock ordering constraint is critical: DMS may hold `mSyncRoot` and call
-into SurfaceFlinger (via `SurfaceControl`), but it must never call into
-`WindowManagerService` while holding `mSyncRoot` because WMS holds its own
+The lock ordering constraint is critical. DMS may hold `mSyncRoot` and call
+into SurfaceFlinger (via `SurfaceControl`). But DMS must never call into
+`WindowManagerService` while it holds `mSyncRoot`, because WMS holds its own
 `mGlobalLock` and may call back into DMS. All potentially reentrant
 out-calls are dispatched asynchronously through the handler.
 
@@ -159,10 +164,10 @@ classDiagram
 ```
 
 - **LocalDisplayAdapter** handles physical displays (built-in and external)
-  reported by SurfaceFlinger's hotplug mechanism. When its display-event
-  listener receives an `onHotplug()` callback, it creates or removes
-  `LocalDisplayDevice` instances backed by a SurfaceFlinger display token
-  and emits `DISPLAY_DEVICE_EVENT_ADDED`, `DISPLAY_DEVICE_EVENT_CHANGED`,
+  reported by SurfaceFlinger's hotplug mechanism. Its display-event
+  listener receives an `onHotplug()` callback. Then the adapter creates or
+  removes `LocalDisplayDevice` instances backed by a SurfaceFlinger display
+  token. It emits `DISPLAY_DEVICE_EVENT_ADDED`, `DISPLAY_DEVICE_EVENT_CHANGED`,
   and `DISPLAY_DEVICE_EVENT_REMOVED` notifications to
   `DisplayDeviceRepository` via `sendDisplayDeviceEventLocked()`.
 
@@ -183,8 +188,8 @@ canonical list of active `DisplayDevice` objects and notifies DMS of changes.
 
 The separation between `LogicalDisplay` and `DisplayDevice` is fundamental.
 A `LogicalDisplay` represents a display as seen by the rest of the system
-(window manager, applications), while a `DisplayDevice` represents the
-underlying physical or virtual hardware.
+(window manager, applications). A `DisplayDevice` represents the underlying
+physical or virtual hardware.
 
 ```mermaid
 classDiagram
@@ -235,10 +240,9 @@ The key design insight, stated in the `LogicalDisplay` Javadoc:
 > many-to-many and some might have no relation at all.
 
 In practice, for single-display phones the mapping is 1:1. For foldables,
-the mapping becomes dynamic -- a single logical display (the default display,
+the mapping becomes dynamic. A single logical display (the default display,
 ID 0) can be swapped between the inner and outer physical display devices
-during fold/unfold transitions. This swapping is managed by
-`LogicalDisplayMapper`.
+during fold/unfold transitions. `LogicalDisplayMapper` manages this swapping.
 
 ### 24.1.5 Display Configuration Flow
 
@@ -275,16 +279,16 @@ private final SparseArray<SparseArray<CallbackRecord>> mCallbackRecordByPidByUid
         new SparseArray<>();
 ```
 
-Events are delivered via `MSG_DELIVER_DISPLAY_EVENT` posted to the handler,
-ensuring asynchronous delivery without holding `mSyncRoot`.
+Events are delivered via `MSG_DELIVER_DISPLAY_EVENT`, which is posted to the
+handler. This makes delivery asynchronous, and it does not hold `mSyncRoot`.
 
 ### 24.1.6 Display Groups
 
-Displays are organised into `DisplayGroup` instances that share power state
-and brightness. The primary display group contains the built-in display(s);
-virtual displays may create their own groups using
-`VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP` or be part of the device display
-group using `VIRTUAL_DISPLAY_FLAG_DEVICE_DISPLAY_GROUP`. The
+Displays are grouped into `DisplayGroup` instances that share power state
+and brightness. The primary display group contains the built-in display(s).
+Virtual displays may create their own groups using
+`VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP`. They may also be part of the device
+display group using `VIRTUAL_DISPLAY_FLAG_DEVICE_DISPLAY_GROUP`. The
 `DisplayGroupAllocator` assigns group IDs:
 
 ```java
@@ -299,8 +303,8 @@ goes to sleep, all displays in that group turn off together.
 
 ### 24.1.7 DisplayInfo and Overrides
 
-The `DisplayInfo` object visible to applications is constructed through a
-layered override mechanism:
+The `DisplayInfo` object visible to applications is built through a layered
+override mechanism:
 
 1. **Base info** -- Derived from `DisplayDeviceInfo` of the primary
    display device (physical size, density, supported modes).
@@ -311,8 +315,8 @@ layered override mechanism:
    applied via `setDisplayInfoOverrideFromWindowManagerLocked()`.
 
 The `WM_OVERRIDE_FIELDS` constant set in `DisplayInfoOverrides` defines
-exactly which fields WMS is permitted to override, preventing accidental
-clobbering of hardware-derived values.
+exactly which fields WMS may override. This prevents accidental clobbering of
+hardware-derived values.
 
 ### 24.1.8 DisplayBlanker: Power State Coordination
 
@@ -344,19 +348,19 @@ private final DisplayBlanker mDisplayBlanker = new DisplayBlanker() {
 };
 ```
 
-The ordering is critical: for OFF transitions, the display state is set
-before notifying PowerManager; for ON transitions, PowerManager is notified
+The ordering is critical. For OFF transitions, the display state is set
+before PowerManager is notified. For ON transitions, PowerManager is notified
 first. This prevents race conditions where the system thinks the display
 is on while it is still powering down.
 
 ### 24.1.9 Display Mode Director and the Vote System
 
 `DisplayModeDirector` (in the `display/mode/` package) is the framework-side
-policy engine that translates high-level mode requests from many sources (app
-`setFrameRate` calls, the user's peak-refresh-rate setting, performance hints,
-proximity, skin temperature) into the `DesiredDisplayModeSpecs` that DMS hands
-to SurfaceFlinger. It is built on a *vote* abstraction: every input registers a
-`Vote` at a fixed priority in `VotesStorage`, and `VoteSummary` collapses the
+policy engine. It translates high-level mode requests from many sources into
+the `DesiredDisplayModeSpecs` that DMS hands to SurfaceFlinger. The sources are
+app `setFrameRate` calls, the user's peak-refresh-rate setting, performance
+hints, proximity, and skin temperature. It is built on a *vote* abstraction. Every input registers a
+`Vote` at a fixed priority in `VotesStorage`. Then `VoteSummary` collapses the
 votes for a display into a single resolved set of size and refresh-rate
 constraints.
 
@@ -390,15 +394,16 @@ graph TD
     SPEC --> DMS_OUT["DisplayManagerService<br/>(applies to LogicalDisplay)"]
 ```
 
-Each `Vote` is keyed by a numeric priority, and `VoteSummary` resolves
-conflicts by letting higher-priority system constraints (thermal, low power)
-narrow or veto the ranges requested by lower-priority sources such as apps.
+Each `Vote` is keyed by a numeric priority. `VoteSummary` resolves conflicts.
+Higher-priority system constraints (thermal, low power) can narrow or veto the
+ranges that lower-priority sources such as apps request.
+
 The concrete vote classes (`SizeVote`, `RefreshRateVote`,
 `SupportedRefreshRatesVote`, `RequestedRefreshRateVote`, `WorkDurationsVote`,
 `HdrPreferenceVote`, and others) all live alongside `DisplayModeDirector` in
 `frameworks/base/services/core/java/com/android/server/display/mode/`. Note that
-the SurfaceFlinger-side selector that picks the final hardware mode from this
-spec is a separate C++ class, `RefreshRateSelector` (Section 24.3.6); the
+the SurfaceFlinger-side selector is a separate C++ class, `RefreshRateSelector`
+(Section 24.3.6). It picks the final hardware mode from this spec. The
 framework never references it directly.
 
 ### 24.1.10 Handler Message Protocol
@@ -423,9 +428,9 @@ The `MSG_DELIVER_DISPLAY_SNAPSHOT` message (added so a freshly registered
 listener receives the complete current display set in one batch) is defined at
 `frameworks/base/services/core/java/com/android/server/display/DisplayManagerService.java:314`.
 
-The `MSG_REQUEST_TRAVERSAL` message is particularly important: when
+The `MSG_REQUEST_TRAVERSAL` message is particularly important. When
 display configuration changes, DMS must schedule a traversal in
-SurfaceFlinger to apply the new display parameters (layer stack
+SurfaceFlinger. The traversal applies the new display parameters (layer stack
 assignment, display projection, display mode).
 
 ---
@@ -435,7 +440,7 @@ assignment, display projection, display mode).
 ### 24.2.1 What Is a DisplayArea?
 
 Below `DisplayContent` (the `WindowContainer` that represents a full logical
-display), Android organises windows into a tree of `DisplayArea` containers.
+display), Android arranges windows into a tree of `DisplayArea` containers.
 Each `DisplayArea` groups windows that share a common feature or Z-order
 region. The class hierarchy is:
 
@@ -483,7 +488,7 @@ classDiagram
     DisplayArea <|-- DisplayArea_Tokens
 ```
 
-The Javadoc for `DisplayArea` explains the three flavours that enforce
+The Javadoc for `DisplayArea` explains the three flavors that enforce
 Z-order correctness:
 
 ```
@@ -593,8 +598,8 @@ constraints on the hierarchy:
 1. **Unique IDs for roots and TDAs**: Every `RootDisplayArea` and
    `TaskDisplayArea` must have a globally unique feature ID.
 2. **Unique feature IDs per root**: `Feature` nodes below the same
-   `RootDisplayArea` must have unique IDs, but features below different
-   roots may share IDs (enabling cross-root organizing).
+   `RootDisplayArea` must have unique IDs. Features below different
+   roots may share IDs, which enables cross-root organizing.
 3. **Exactly one IME container**: The IME container must exist in exactly
    one hierarchy builder.
 4. **Exactly one default TDA**: One `TaskDisplayArea` must have the ID
@@ -790,7 +795,7 @@ graph LR
 ### 24.3.2 VSyncPredictor: The Timing Model
 
 `VSyncPredictor` maintains a linear regression model of VSYNC timing.
-Rather than relying solely on the latest hardware timestamp, it collects a
+It does not rely only on the latest hardware timestamp. It collects a
 history of timestamps and fits a line (slope + intercept) to predict future
 VSYNC events:
 
@@ -998,7 +1003,7 @@ Each `VsyncConfig` contains:
 The offset strategy:
 
 - **Late (normal)**: App wakes early in the VSYNC period, renders, then
-  SF wakes later to composite and present. This maximises the time
+  SF wakes later to composite and present. This maximizes the time
   available for app rendering.
 - **Early (transaction heavy)**: Both app and SF wake earlier to handle
   the extra transaction processing work.
@@ -1027,8 +1032,8 @@ The modulator maintains frame counters:
 
 - **Early transaction frames**: After a transaction is scheduled, keep
   early offsets for at least `MIN_EARLY_TRANSACTION_FRAMES` (2) frames
-  plus a time delay (`MIN_EARLY_TRANSACTION_TIME`) to avoid races with
-  transaction commit.
+  plus a time delay (`MIN_EARLY_TRANSACTION_TIME`). This avoids races
+  with transaction commit.
 - **Early GPU frames**: After GPU composition is used, keep early GPU
   offsets for `MIN_EARLY_GPU_FRAMES` (2) frames as a low-pass filter
   against alternating composition strategies.
@@ -1090,9 +1095,9 @@ struct Policy {
 ```
 
 The `OneShotTimer` in the Scheduler fires after a configurable idle
-period, signalling the `RefreshRateSelector` to lower the refresh rate.
-Any new content update (buffer queue activity, touch event) resets the
-timer. This is a significant power optimization: a phone showing a
+period. It then signals the `RefreshRateSelector` to lower the refresh
+rate. Any new content update (buffer queue activity, touch event) resets
+the timer. This is a significant power optimization. A phone that shows a
 static document drops from 120 Hz to 60 Hz (or lower) after a few
 seconds of inactivity.
 
@@ -1101,8 +1106,8 @@ seconds of inactivity.
 `SmallAreaDetectionAllowMappings` enables per-UID small-area detection
 thresholds. When enabled, SurfaceFlinger can reduce the refresh rate for
 layers that update only a small percentage of the screen (e.g., a blinking
-cursor), preventing those layers from forcing the entire display to run at
-a high refresh rate. The `SmallAreaDetectionController` in
+cursor). Those layers then cannot force the entire display to run at a
+high refresh rate. The `SmallAreaDetectionController` in
 `DisplayManagerService` manages the allow-list of UIDs.
 
 ---
@@ -1177,8 +1182,8 @@ sequenceDiagram
 
 `SeamlessRotator` enables rotation without a blackout screen by applying
 counter-transforms to individual windows. During seamless rotation, each
-window's `SurfaceControl` is transformed to undo the display rotation,
-so from the user's perspective, the content appears stationary while the
+window's `SurfaceControl` is transformed to undo the display rotation.
+As a result, from the user's perspective, the content appears stationary while the
 display orientation changes underneath.
 
 The constructor computes the transform matrix:
@@ -1208,10 +1213,10 @@ public void unrotate(Transaction transaction, WindowContainer win) {
 }
 ```
 
-Additionally, `mApplyFixedTransformHint` sets a buffer transform hint on
-the SurfaceControl so that graphic producers (e.g., the app's
-`Surface`) do not allocate buffers in the new orientation prematurely --
-the hint pins the expected buffer orientation to the old rotation until
+`mApplyFixedTransformHint` also sets a buffer transform hint on the
+SurfaceControl. With this hint, graphic producers (e.g., the app's
+`Surface`) do not allocate buffers in the new orientation prematurely.
+The hint pins the expected buffer orientation to the old rotation until
 the producer catches up.
 
 ### 24.4.4 AsyncRotationController: Non-Activity Windows
@@ -1240,8 +1245,8 @@ The controller supports four transition operations:
 | `OP_CHANGE_MAY_SEAMLESS` | 3 | Potentially seamless (shell decides) |
 
 For seamless rotation of system windows (e.g., screen decor overlays that
-must be seamless), the controller requests individual sync transactions and
-applies the `SeamlessRotator` counter-transform to each window token.
+must be seamless), the controller requests individual sync transactions.
+It applies the `SeamlessRotator` counter-transform to each window token.
 
 ### 24.4.5 Foldable Rotation Coordination
 
@@ -1250,7 +1255,7 @@ during fold/unfold events. It introduces a `FOLDING_RECOMPUTE_CONFIG_DELAY_MS`
 (800ms) delay when folding to closed state, preventing configuration
 changes and visual jumps during the mechanical folding motion.
 
-`DisplayRotationCoordinator` synchronises rotation across multiple displays
+`DisplayRotationCoordinator` synchronizes rotation across multiple displays
 (e.g., inner and outer displays of a foldable). When the default display
 changes rotation, it notifies other displays through a callback mechanism
 so they can coordinate their own rotation responses.
@@ -1324,7 +1329,7 @@ public final class DeviceStateManagerService extends SystemService {
 }
 ```
 
-Each device state is described by a `DeviceState` whose behaviour is encoded as
+Each device state is described by a `DeviceState` whose behavior is encoded as
 a set of integer *property* constants. These constants are defined in the public
 API class `android.hardware.devicestate.DeviceState`
 (`frameworks/base/core/java/android/hardware/devicestate/DeviceState.java`), not
@@ -1389,10 +1394,10 @@ graph TD
 transitions work. When the device transitions between states (e.g., from
 CLOSED to OPEN), the mapper must:
 
-1. **Identify which physical displays are enabled** in the new state using
-   `DeviceStateToLayoutMap` (a mapping from device state identifiers to
-   `Layout` objects describing which displays are active and their
-   positions).
+1. **Identify which physical displays are enabled** in the new state. Use
+   `DeviceStateToLayoutMap` for this. It maps device state identifiers to
+   `Layout` objects, which describe the active displays and their
+   positions.
 
 2. **Swap the underlying `DisplayDevice`** for the default `LogicalDisplay`.
    The logical display ID (0) stays the same, but its backing physical
@@ -1431,16 +1436,16 @@ public static final int LOGICAL_DISPLAY_EVENT_SWAPPED = 1 << 3;
 public static final int LOGICAL_DISPLAY_EVENT_DEVICE_STATE_TRANSITION = 1 << 5;
 ```
 
-Alongside these, Android 17 carries dedicated bits for connected (external)
-displays and for the device-state lifecycle:
+Android 17 also carries dedicated bits for connected (external) displays
+and for the device-state lifecycle. These are
 `LOGICAL_DISPLAY_EVENT_CONNECTED` (`1 << 7`),
 `LOGICAL_DISPLAY_EVENT_DISCONNECTED` (`1 << 8`),
 `LOGICAL_DISPLAY_EVENT_REFRESH_RATE_CHANGED` (`1 << 9`),
 `LOGICAL_DISPLAY_EVENT_STATE_CHANGED` (`1 << 10`), and
 `LOGICAL_DISPLAY_EVENT_COMMITTED_STATE_CHANGED` (`1 << 11`). The connect and
-disconnect events are distinct from add and remove: a display can be physically
-connected (and reported to apps that opted in) before the system decides to
-enable a `LogicalDisplay` for it.
+disconnect events are distinct from add and remove. A display can be
+physically connected (and reported to apps that opted in) before the system
+decides to enable a `LogicalDisplay` for it.
 
 ### 24.5.4 BookStyleDeviceStatePolicy
 
@@ -1466,9 +1471,9 @@ Modern foldables can run both displays simultaneously. The
 displays, and the `DisplayTopologyStore` interface persists the topology
 configuration. In Android 17 its concrete implementation is
 `DisplayTopologyXmlStore`
-(`frameworks/base/services/core/java/com/android/server/display/DisplayTopologyXmlStore.java`),
-which writes a per-user `display_topology.xml` under the credential-encrypted
-system directory (Section 24.12 covers the multi-display topology API in full).
+(`frameworks/base/services/core/java/com/android/server/display/DisplayTopologyXmlStore.java`).
+It writes a per-user `display_topology.xml` under the credential-encrypted
+system directory. Section 24.12 covers the multi-display topology API in full.
 When concurrent displays are active, the system:
 
 - Assigns separate `DisplayGroup` instances if the displays serve
@@ -1713,9 +1718,9 @@ private static Pair<Path, DisplayCutout> sCachedCutout = NULL_PAIR;
 
 ### 24.6.7 Side Overrides
 
-For devices with cutouts on multiple sides (e.g., a camera notch on top
-and a sensor housing on the bottom), `DisplayCutout` supports side
-overrides that remap cutout bounds to different sides:
+Some devices have cutouts on multiple sides (e.g., a camera notch on top
+and a sensor housing on the bottom). For these devices, `DisplayCutout`
+supports side overrides that remap cutout bounds to different sides:
 
 ```java
 @GuardedBy("CACHE_LOCK")
@@ -1847,9 +1852,9 @@ The builder implements two update paths:
   parent to child.
 
 Snapshots are rebuilt or merged in place on each commit (the fast path
-calls `snapshot->merge(...)` on existing snapshot objects); the
-composition pipeline only reads them after the front-end update completes,
-so it still sees a consistent view of layer state without holding locks.
+calls `snapshot->merge(...)` on existing snapshot objects). The
+composition pipeline only reads them after the front-end update completes.
+So it still sees a consistent view of layer state without holding locks.
 
 ### 24.7.4 CompositionEngine
 
@@ -1914,7 +1919,7 @@ validation cycle:
    `RenderEngine` into the client target buffer.
 5. **presentDisplay**: HWC composites all planes and presents.
 
-This two-pass strategy minimises GPU usage -- on capable hardware, many or
+This two-pass strategy minimizes GPU usage -- on capable hardware, many or
 all layers can be handled by overlay planes, saving power and reducing
 latency.
 
@@ -1963,13 +1968,13 @@ classDiagram
 The `Changes` flags are critical for the snapshot builder's incremental
 update path. When only `Buffer` has changed (no geometry, hierarchy, or
 visibility changes), the fast path can update just the buffer reference
-in existing snapshots without re-walking the hierarchy tree. The flags shown
-above are illustrative, not exhaustive: the full `enum class Changes` in
+in existing snapshots. It does not re-walk the hierarchy tree. The flags shown
+above are illustrative, not exhaustive. The full `enum class Changes` in
 `frameworks/native/services/surfaceflinger/FrontEnd/RequestedLayerState.h`
 also covers `Input`, `Z`, `Mirror`, `Parent`, `RelativeParent`, `Metadata`,
-`SidebandStream`, `Animation`, `BufferSize`, `GameMode`, and, new in the
-Android 17 cycle, `PostProcess` (used by the per-layer LUT and picture-profile
-work described in Section 24.13).
+`SidebandStream`, `Animation`, `BufferSize`, `GameMode`, and `PostProcess`.
+That last flag is new in the Android 17 cycle, and the per-layer LUT and
+picture-profile work uses it (see Section 24.13).
 
 ### 24.7.7 LayerHierarchy: Parent-Child Tree
 
@@ -2082,9 +2087,9 @@ buffering). The states:
 
 ### 24.8.2 Triple Buffering
 
-Android uses triple buffering by default: while the display is scanning
-out buffer A and SurfaceFlinger is compositing buffer B, the application
-can render into buffer C. This pipeline maximises throughput at the cost
+Android uses triple buffering by default. The display scans out buffer A
+and SurfaceFlinger composites buffer B. At the same time, the application
+can render into buffer C. This pipeline maximizes throughput at the cost
 of one additional frame of latency:
 
 ```mermaid
@@ -2148,7 +2153,7 @@ Key advantages of BLAST:
    (position, crop, matrix) in a single transaction, eliminating tearing
    between buffer content and window position.
 2. **Client-side control**: The client decides when to submit buffers,
-   enabling synchronisation with other operations (e.g., `SyncGroup`).
+   enabling synchronization with other operations (e.g., `SyncGroup`).
 3. **Fence management**: Release fences flow back through transaction
    callbacks, and the `ReleaseBufferCallback` ensures proper fence
    propagation.
@@ -2178,7 +2183,7 @@ BufferQueue.
 
 The `syncNextTransaction()` method allows callers to intercept the next
 transaction before it is applied, enabling operations like
-`ViewRootImpl`'s synchronised buffer submission during `relayout`.
+`ViewRootImpl`'s synchronized buffer submission during `relayout`.
 `mergeWithNextTransaction()` allows merging additional transaction
 operations (e.g., position changes) with the next buffer submission.
 
@@ -2225,17 +2230,17 @@ sequenceDiagram
 
 Three types of fences:
 
-- **Acquire fence**: Signalled when the GPU finishes rendering. SurfaceFlinger
+- **Acquire fence**: Signaled when the GPU finishes rendering. SurfaceFlinger
   must wait for this before reading the buffer.
-- **Release fence**: Signalled when SurfaceFlinger/HWC is done with the
+- **Release fence**: Signaled when SurfaceFlinger/HWC is done with the
   buffer. The producer must wait for this before reusing the buffer.
-- **Present fence**: Signalled when the composed frame starts scanning out
+- **Present fence**: Signaled when the composed frame starts scanning out
   on the display. Used for frame timing measurements.
 
 ### 24.8.7 Gralloc Buffer Allocation
 
-Buffer memory is allocated through the Gralloc HAL (Graphics Allocator),
-which returns `GraphicBuffer` objects backed by hardware-specific memory
+Buffer memory is allocated through the Gralloc HAL (Graphics Allocator).
+The HAL returns `GraphicBuffer` objects backed by hardware-specific memory
 (contiguous DRAM for HWC scanout, tiled memory for GPU, etc.).
 
 The `IGraphicBufferProducer` and `IGraphicBufferConsumer` interfaces use
@@ -2261,19 +2266,19 @@ BufferQueue on its own timeline. This created synchronization problems:
 
 BLAST solved all three by moving buffer acquisition to the client side
 and bundling buffer submission with geometry changes in a single
-`SurfaceControl.Transaction`. The migration was gradual -- initially gated
-by the `use_blast_adapter_sv` global setting and the
-`debug.sf.enable_blast_adapter` system property, both since removed -- and
-is now the only supported path.
+`SurfaceControl.Transaction`. The migration was gradual. At first, the
+`use_blast_adapter_sv` global setting and the
+`debug.sf.enable_blast_adapter` system property gated it. Both are since
+removed, and BLAST is now the only supported path.
 
 ### 24.8.9 SyncGroup and Cross-Surface Synchronization
 
 `BLASTBufferQueue.syncNextTransaction()` supports cross-surface
 synchronization. `SurfaceView` calls it directly on its own
-`BLASTBufferQueue`; `ViewRootImpl` reaches it indirectly through
+`BLASTBufferQueue`. `ViewRootImpl` reaches it indirectly through
 `HardwareRenderer.SyncInterface.syncNextTransaction(...)` and merges the
-captured buffer transaction into a `SurfaceSyncGroup`, which coordinates
-when the group of changes becomes visible:
+captured buffer transaction into a `SurfaceSyncGroup`. This group
+coordinates when the group of changes becomes visible:
 
 ```java
 // In SurfaceView
@@ -2367,21 +2372,22 @@ graph LR
     SINK --> ENC
 ```
 
-The three queues, as named in `VirtualDisplaySurface.h`, are the **Sink BQ**
-(the surface the application provided at creation time, where composed
-buffers are ultimately delivered), the **Render BQ** (the surface handed to
-the composition engine as the GPU rendering target), and the **Output BQ**
-(which supplies buffers for HWC output). The routing logic handles three
+`VirtualDisplaySurface.h` names three queues.
+The **Sink BQ** is the surface the application provided at creation time.
+Composed buffers are ultimately delivered there.
+The **Render BQ** is the surface handed to the composition engine as the GPU
+rendering target. The **Output BQ** supplies buffers for HWC output. The routing logic handles three
 cases:
 
 1. **GPU composition only**: The GPU-composed output is taken out of the
    render BQ and queued to the sink BQ.
-2. **HWC composition only**: HWC needs an output buffer for `advanceFrame`;
-   the surface reuses a dequeued sink buffer when possible and otherwise
-   dequeues one from the output BQ, then queues the result to the sink.
-3. **Mixed**: GPU composes client layers into the render BQ; that buffer is
-   handed to HWC as the client target, and HWC composites everything into
-   an output buffer (from the sink or output BQ) that is sent to the sink.
+2. **HWC composition only**: HWC needs an output buffer for `advanceFrame`.
+   The surface reuses a dequeued sink buffer when possible. Otherwise it
+   dequeues one from the output BQ. Then it queues the result to the sink.
+3. **Mixed**: GPU composes client layers into the render BQ. That buffer is
+   handed to HWC as the client target. HWC composites everything into
+   an output buffer (from the sink or output BQ). That buffer is sent to
+   the sink.
 
 `SinkSurfaceHelper` manages the sink-side BufferQueue, handling buffer
 allocation, format negotiation, and fence synchronization with the
@@ -2465,9 +2471,9 @@ device semantics. A `VirtualDeviceImpl` manages:
 - Window policy controllers
 
 `DisplayWindowPolicyController` (stored in DMS's
-`mDisplayWindowPolicyControllers`) enforces per-display window policies:
-which apps can run, whether the keyguard is shown, whether activities
-can be launched on the virtual display.
+`mDisplayWindowPolicyControllers`) enforces per-display window policies.
+These policies decide which apps can run, whether the keyguard is shown,
+and whether activities can be launched on the virtual display.
 
 ```java
 // DisplayManagerService.java
@@ -2549,7 +2555,7 @@ public final class ColorDisplayService extends SystemService {
 }
 ```
 
-The colour-mode constants themselves are declared on the public-facing
+The color-mode constants themselves are declared on the public-facing
 `android.hardware.display.ColorDisplayManager`
 (`frameworks/base/core/java/android/hardware/display/ColorDisplayManager.java`)
 and imported by the service:
@@ -2621,7 +2627,7 @@ classDiagram
 ### 24.10.3 DisplayTransformManager: The Priority Matrix
 
 `DisplayTransformManager` maintains a priority-ordered sparse array of
-4x4 colour matrices that are multiplied together and sent to SurfaceFlinger
+4x4 color matrices that are multiplied together and sent to SurfaceFlinger
 as a single combined transform:
 
 ```java
@@ -2663,9 +2669,8 @@ private static final int SURFACE_FLINGER_TRANSACTION_DISPLAY_COLOR = 1023;
 
 Night Display (blue light filter) uses `NightDisplayTintController` (a
 private inner class of `ColorDisplayService` extending `TintController`)
-to shift the display toward warmer tones; the abstract
-`ColorTemperatureTintController` base is used by Display White Balance
-instead. Night Display supports three activation modes:
+to shift the display toward warmer tones. Display White Balance uses the
+abstract `ColorTemperatureTintController` base instead. Night Display supports three activation modes:
 
 | Mode | Constant | Behavior |
 |------|----------|----------|
@@ -2673,24 +2678,24 @@ instead. Night Display supports three activation modes:
 | Custom schedule | `AUTO_MODE_CUSTOM_TIME` | User-defined start/end times |
 | Twilight | `AUTO_MODE_TWILIGHT` | Automatic based on sunrise/sunset |
 
-The twilight mode integrates with `TwilightManager` to compute local
-sunrise and sunset times based on the device's location.
+The twilight mode integrates with `TwilightManager`. This lets it compute the local
+sunrise and sunset times, based on the device's location.
 
-The colour temperature is converted to a 4x4 matrix using a CCT (Correlated
-Colour Temperature) to RGB transform. The `CctEvaluator` class is a
-`TypeEvaluator<Integer>` that animates between CCT values, stepping through
-the range using per-range step sizes; the CCT-to-matrix conversion itself
-is done by the tint controller's `computeMatrixForCct()` / `setMatrix(int
-cct)` using per-device colour-temperature coefficients.
+The color temperature is converted to a 4x4 matrix using a CCT (Correlated
+Color Temperature) to RGB transform. The `CctEvaluator` class is a
+`TypeEvaluator<Integer>` that animates between CCT values. It steps through
+the range with per-range step sizes. The tint controller does the
+CCT-to-matrix conversion itself, with `computeMatrixForCct()` / `setMatrix(int
+cct)` and per-device color-temperature coefficients.
 
 ### 24.10.5 Display White Balance
 
 `DisplayWhiteBalanceTintController` uses ambient light sensor data to
 maintain consistent white appearance under different lighting conditions.
-The `DisplayWhiteBalanceController` reads from the colour temperature
-sensor (or derived from the ambient light sensor) and computes a correction
-matrix that shifts the display white point to compensate for ambient
-lighting.
+The `DisplayWhiteBalanceController` reads from the color temperature
+sensor (or the value is derived from the ambient light sensor). It computes a
+correction matrix that shifts the display white point to compensate for
+ambient lighting.
 
 ### 24.10.6 SurfaceFlinger Color Pipeline
 
@@ -2732,8 +2737,9 @@ The `HdrConversionMode` controls system-wide HDR format conversion:
 
 `AppSaturationController` applies per-app desaturation. Privileged callers
 holding `CONTROL_DISPLAY_SATURATION` request reduced saturation for a
-specific package via `ColorDisplayManager.setAppSaturationLevel()`, and the
-controller maintains a saturation level keyed by package name and user ID:
+specific package via `ColorDisplayManager.setAppSaturationLevel()`.
+The controller maintains a saturation level keyed by package name and
+user ID:
 
 ```mermaid
 graph LR
@@ -2742,12 +2748,12 @@ graph LR
 ```
 
 Unlike the global transforms that apply to all content, per-app transforms
-are applied as per-layer colour matrices in SurfaceFlinger, allowing
-different apps to have different saturation levels simultaneously.
+are applied as per-layer color matrices in SurfaceFlinger. This lets
+different apps have different saturation levels simultaneously.
 
 ### 24.10.9 Daltonizer (Color Blindness Correction)
 
-The daltonizer applies a colour-correction matrix for users with colour
+The daltonizer applies a color-correction matrix for users with color
 vision deficiency. It supports three types:
 
 - **Protanomaly** -- Red-weak
@@ -2756,15 +2762,15 @@ vision deficiency. It supports three types:
 
 The correction matrix is sent to SurfaceFlinger via the
 `SURFACE_FLINGER_TRANSACTION_DALTONIZER` (1014) transaction code. It
-operates independently of the colour matrix pipeline -- the daltonizer
+operates independently of the color matrix pipeline -- the daltonizer
 is applied in SurfaceFlinger's shader as a separate transform.
 
 ### 24.10.10 Even Dimmer
 
 "Even Dimmer" is an accessibility feature (formerly "Extra Dim") that
 reduces display brightness below the minimum hardware brightness by
-applying a dimming colour matrix. `ReduceBrightColorsTintController`
-generates a matrix that scales all colour channels, while
+applying a dimming color matrix. `ReduceBrightColorsTintController`
+generates a matrix that scales all color channels, while
 `ColorDisplayService` caps the reduction:
 
 ```java
@@ -2777,24 +2783,24 @@ The percentage is set through `Settings.Secure.REDUCE_BRIGHT_COLORS_LEVEL`
 and converted to a matrix with diagonal values less than 1.0. This works
 in conjunction with (not instead of) the hardware brightness control,
 allowing the display to appear dimmer than the backlight minimum. In Android
-17 the feature has graduated: the `even_dimmer` aconfig flag was removed and
-the implementation (driven by `DisplayDeviceConfig.isEvenDimmerAvailable()`
+17 the feature has graduated. The `even_dimmer` aconfig flag was removed.
+The implementation (driven by `DisplayDeviceConfig.isEvenDimmerAvailable()`
 and the even-dimmer nit-to-strength mapping in `LocalDisplayAdapter`) is no
 longer flag-gated.
 
 ### 24.10.11 Color Mode Selection
 
-The user-facing "Display" settings provide colour mode selection:
+The user-facing "Display" settings provide color mode selection:
 
 | Mode | Constant | Description |
 |------|----------|-------------|
 | Natural | `COLOR_MODE_NATURAL` (0) | Calibrated sRGB |
 | Boosted | `COLOR_MODE_BOOSTED` (1) | Slightly enhanced saturation |
-| Saturated | `COLOR_MODE_SATURATED` (2) | Wide gamut, vivid colours |
+| Saturated | `COLOR_MODE_SATURATED` (2) | Wide gamut, vivid colors |
 | Automatic | `COLOR_MODE_AUTOMATIC` (3) | Content-aware switching |
 
 In `Automatic` mode, the system switches between sRGB and the display's
-native wide gamut based on the colour space of the visible content. This
+native wide gamut based on the color space of the visible content. This
 is communicated to SurfaceFlinger via the `SURFACE_FLINGER_TRANSACTION_DISPLAY_COLOR` (1023) transaction code.
 
 ---
@@ -2931,7 +2937,7 @@ AOD support requires coordination between `DisplayPowerController`,
 2. **DisplayPowerController** transitions to `POLICY_DOZE`, setting the
    display to a low-power state.
 3. **SurfaceFlinger** may switch to a special display mode with reduced
-   refresh rate and limited colour depth.
+   refresh rate and limited color depth.
 4. **DisplayPowerState** manages the screen brightness to the AOD level.
 
 The `ColorFade` animation (the screen-off effect) is rendered using
@@ -3026,7 +3032,7 @@ SDR brightness simultaneously:
 
 The ramp skipping logic (`RAMP_STATE_SKIP_INITIAL`,
 `RAMP_STATE_SKIP_AUTOBRIGHT`) allows the initial brightness set on
-screen-on to be applied instantly without animation, avoiding a visible
+screen-on to be applied instantly without animation. This avoids a visible
 brightness ramp when the screen turns on.
 
 ### 24.11.9 High Brightness Mode (HBM)
@@ -3045,14 +3051,14 @@ stateDiagram-v2
     Throttled --> Normal : Temperature drops
 ```
 
-HBM metadata (`HighBrightnessModeMetadata`) is maintained per-display by
-`HighBrightnessModeMetadataMapper`, tracking running time in HBM to
-enforce time-in-state limits that protect the display hardware.
+`HighBrightnessModeMetadataMapper` maintains the HBM metadata
+(`HighBrightnessModeMetadata`) for each display. It tracks the running time in
+HBM to enforce time-in-state limits that protect the display hardware.
 
 ### 24.11.10 Brightness Nit Ranges
 
 The display pipeline records a detailed nit-based brightness range for
-telemetry, with 37 buckets from 0-1 nits through 2750-3000 nits. In Android 17
+telemetry. It has 37 buckets from 0-1 nits through 2750-3000 nits. In Android 17
 this lives in the extracted `DisplayBrightnessReporter`, not directly in
 `DisplayPowerController`:
 
@@ -3073,42 +3079,42 @@ improvement and `FrameworkStatsLog` for platform telemetry.
 
 ### 24.11.11 Lead-Follower Brightness
 
-For devices with multiple displays that should share brightness (e.g.,
-a foldable where inner and outer displays should have consistent brightness),
-`DisplayPowerController` supports a lead-follower model:
+Some devices have multiple displays that should share brightness. An example is
+a foldable where the inner and outer displays should have consistent brightness.
+For these devices, `DisplayPowerController` supports a lead-follower model:
 
 ```java
 private int mLeadDisplayId = Layout.NO_LEAD_DISPLAY;
 ```
 
 When `mLeadDisplayId` is set, the follower display mirrors the leader's
-brightness decisions rather than running its own auto-brightness
+brightness decisions. It does not run its own auto-brightness
 algorithm. The leader-follower relationship is defined in the `Layout`
 configuration from `DeviceStateToLayoutMap`.
 
 ### 24.11.12 Display Offload
 
-`DisplayOffloadSession` enables offloading display updates to a
+`DisplayOffloadSession` supports offload of display updates to a
 co-processor (e.g., for watch faces on Wear OS). When offload is active,
 the main processor can enter deep sleep while the co-processor handles
 simple display updates (time, complications). The session is managed
 through `DisplayOffloadSessionImpl` in `DisplayManagerService`.
 
-When offloading is active and the screen needs to turn on (e.g., wrist
-raise), the `MSG_OFFLOADING_SCREEN_ON_UNBLOCKED` message coordinates
-the handoff from the co-processor back to the main display pipeline,
-tracked via the `SCREEN_ON_BLOCKED_BY_DISPLAYOFFLOAD_TRACE_NAME`
+The screen needs to turn on while offload is active (e.g., wrist
+raise). Then the `MSG_OFFLOADING_SCREEN_ON_UNBLOCKED` message coordinates
+the handoff from the co-processor back to the main display pipeline.
+This handoff is tracked via the `SCREEN_ON_BLOCKED_BY_DISPLAYOFFLOAD_TRACE_NAME`
 trace marker.
 
 ---
 
 ## 24.12 Connected Displays and the Display Topology API
 
-Android's external-display story matured substantially in Android 17. Where
-earlier releases mostly mirrored the built-in panel to an HDMI or USB-C sink,
-17 introduces a first-class *display topology* the system persists and exposes
-to apps, plus content-mode management that lets a connected display extend the
-workspace rather than only mirror it.
+Android's external-display story matured substantially in Android 17. Earlier
+releases mostly mirrored the built-in panel to an HDMI or USB-C sink. Android 17
+introduces a first-class *display topology*. The system persists this topology
+and exposes it to apps. Android 17 also adds content-mode management. With it, a
+connected display can extend the workspace and not only mirror it.
 
 ### 24.12.1 The Topology Data Model
 
@@ -3125,15 +3131,14 @@ public static final int POSITION_RIGHT = 2;
 public static final int POSITION_BOTTOM = 3;
 ```
 
-Each node carries a logical size, density, the attachment side relative to its
-parent, and a floating-point offset (in density-independent pixels) along the
-shared edge. `DisplayTopology` provides `addDisplay()`, `removeDisplay()`,
+Each node carries a logical size, a density, and the attachment side relative to
+its parent. It also carries a floating-point offset (in density-independent
+pixels) along the shared edge. `DisplayTopology` provides `addDisplay()`, `removeDisplay()`,
 `rearrange()`, and a `normalize()` step that clamps offsets and removes
-overlaps so adjacent displays stay edge-connected. A flattened
-`DisplayTopologyGraph`
+overlaps so adjacent displays stay edge-connected. The input system
+consumes a flattened `DisplayTopologyGraph`
 (`frameworks/base/core/java/android/hardware/display/DisplayTopologyGraph.java`)
-adjacency view is what the input system consumes to move the pointer across the
-seam between displays.
+adjacency view to move the pointer across the seam between displays.
 
 ### 24.12.2 The Public DisplayManager API
 
@@ -3174,9 +3179,9 @@ maintains the live topology and reacts to display add, change, and remove
 events. Persistence is abstracted behind the `DisplayTopologyStore` interface,
 whose Android 17 implementation is `DisplayTopologyXmlStore`. The XML store
 writes a per-user `display_topology.xml` under the credential-encrypted system
-directory (`Environment.getDataSystemCeDirectory(userId)`), keeps an ordered
-most-recently-used list of remembered topologies, and batches writes using a
-reorder threshold (`MIN_REORDER_WHICH_TRIGGERS_PERSISTENCE = 10`) so that minor
+directory (`Environment.getDataSystemCeDirectory(userId)`). It keeps an ordered
+most-recently-used list of remembered topologies. It batches writes with a
+reorder threshold (`MIN_REORDER_WHICH_TRIGGERS_PERSISTENCE = 10`), so that minor
 re-orderings do not thrash the disk. It also reads immutable vendor and product
 topology files shipped under the device's etc display-config directory.
 
@@ -3186,31 +3191,36 @@ The other half of the connected-display work is *content-mode management*,
 gated by the `enable_display_content_mode_management` flag (namespace
 `lse_desktop_experience`). When enabled, a connected display may run in either
 mirror or extended mode, and the default for a capable external display becomes
-extended. A display advertises its ability to switch via
+extended.
+
+A display advertises its ability to switch via
 `DisplayDeviceInfo.FLAG_ALLOWS_CONTENT_MODE_SWITCH`
-(`1 << 20`), and `LogicalDisplay.canHostTasksLocked()` uses that flag to decide
-whether the display can host its own task stack rather than just reflecting the
-default display. The user preference is stored in
-`Settings.Secure.MIRROR_BUILT_IN_DISPLAY` (1 = mirror, 0 = extend), and
+(`1 << 20`). `LogicalDisplay.canHostTasksLocked()` uses that flag to decide
+whether the display can host its own task stack. Otherwise the display only
+reflects the default display. The user preference is stored in
+`Settings.Secure.MIRROR_BUILT_IN_DISPLAY` (1 = mirror, 0 = extend).
 `DisplayGroupAllocator` chooses each display's content mode and group.
 
-Two policy classes split the work. `SecondaryDisplayPolicy`
+Two policy classes split the work.
+
+`SecondaryDisplayPolicy`
 (`frameworks/base/services/core/java/com/android/server/display/SecondaryDisplayPolicy.java`)
-governs how a newly connected display is treated, including downgrading a
+governs how a newly connected display is treated. For example, it downgrades a
 desktop-mode preference to "ask" when desktop mode is unavailable.
+
 `ExternalDisplayPolicy`
 (`frameworks/base/services/core/java/com/android/server/display/ExternalDisplayPolicy.java`)
-gates external displays on thermal headroom: it registers a
-`SkinThermalStatusObserver` and calls `disableExternalDisplays()` when the skin
-temperature reaches a critical level, then emits `EVENT_DISPLAY_CONNECTED` to
+gates external displays on thermal headroom. It registers a
+`SkinThermalStatusObserver`. When the skin temperature reaches a critical level,
+it calls `disableExternalDisplays()`. Then it emits `EVENT_DISPLAY_CONNECTED` to
 notify the rest of the system. Usage telemetry (mirroring, extended,
 presentation) flows through `ExternalDisplayStatsService`.
 
 ## 24.13 Adaptive Refresh Rate, HDR, and Display LUTs
 
-Android 17 advances three rendering-quality areas that all terminate in
-SurfaceFlinger and the Hardware Composer: adaptive refresh rate, HDR on
-connected displays, and per-layer colour lookup tables.
+Android 17 advances three rendering-quality areas. All three end in
+SurfaceFlinger and the Hardware Composer. They are adaptive refresh rate, HDR on
+connected displays, and per-layer color lookup tables.
 
 ### 24.13.1 Adaptive Refresh Rate and Frame-Rate Categories
 
@@ -3248,11 +3258,11 @@ graph TD
 The Android 17 churn around this is mostly refinement of an API that first
 landed in 16. `Display.hasArrSupport()`
 (`frameworks/base/core/java/android/view/Display.java`) lets callers skip
-`setFrameRateCategory` on multiple-refresh-rate (MRR) panels, while
-`LayerInfo::isVoteValidForMrr()` restricts category votes to ARR/VRR devices
-unless the `frame_rate_category_mrr` flag is set. Android 17 also adds
-`Display.getFrameRateVelocityMapping()` (returning `FrameRateVelocityPoint`
-entries) so scrolling content can map fling velocity to a target rate. The
+`setFrameRateCategory` on multiple-refresh-rate (MRR) panels. `LayerInfo::isVoteValidForMrr()`
+restricts category votes to ARR/VRR devices unless the `frame_rate_category_mrr`
+flag is set. Android 17 also adds `Display.getFrameRateVelocityMapping()`. It
+returns `FrameRateVelocityPoint` entries, so scrolling content can map fling
+velocity to a target rate. The
 MRR-specific flags `frame_rate_category_mrr` and `mrr_full_frame_rate_list`
 live in
 `frameworks/native/services/surfaceflinger/surfaceflinger_flags_new.aconfig`.
@@ -3262,7 +3272,7 @@ live in
 HDR output is no longer limited to the built-in panel. Android 17 adds the
 `connected_display_hdr_v3` flag (namespace `core_graphics`, in
 `surfaceflinger_flags_new.aconfig`) on top of the earlier
-`connected_display_hdr_v2`, enabling HDR selection on external displays.
+`connected_display_hdr_v2`. These flags enable HDR selection on external displays.
 System-wide HDR conversion is still expressed through `HdrConversionMode`:
 
 ```java
@@ -3275,24 +3285,24 @@ public static final int HDR_CONVERSION_FORCE = 3;
 
 For refresh-rate policy, HDR preference now participates in the framework vote
 system through `HdrPreferenceVote`
-(`frameworks/base/services/core/java/com/android/server/display/mode/HdrPreferenceVote.java`),
-whose `updateSummary()` ANDs an `allowHdr` flag so a system or battery-driven
-vote can veto HDR even when the user requested it. DMS continues to honour
-per-device disabled HDR types via `mUserDisabledHdrTypes`. SurfaceFlinger also
+(`frameworks/base/services/core/java/com/android/server/display/mode/HdrPreferenceVote.java`).
+Its `updateSummary()` ANDs an `allowHdr` flag. A system or battery-driven
+vote can then veto HDR even when the user requested it. DMS still honors
+per-device disabled HDR types through `mUserDisabledHdrTypes`. SurfaceFlinger also
 gains higher-fidelity capture through the `true_hdr_screenshots` and
 `local_tonemap_screenshots` flags.
 
 ### 24.13.3 Display Colour LUTs
 
-Android 17 exposes a public API for attaching colour lookup tables (LUTs) to a
-surface, giving apps and the system fine-grained control over the display
-colour transform beyond the global matrix pipeline of Section 24.10. The native
+Android 17 exposes a public API to attach color lookup tables (LUTs) to a
+surface. The API gives apps and the system fine-grained control over the display
+color transform, beyond the global matrix pipeline of Section 24.10. The native
 representation is `DisplayLuts`
-(`frameworks/native/libs/gui/include/gui/DisplayLuts.h`), which carries one or
+(`frameworks/native/libs/gui/include/gui/DisplayLuts.h`). It carries one or
 more `Entry` records (each with a dimension, size, and sampling key) plus a
-shared-memory file descriptor holding the LUT data; the HAL capability is
-described by `LutProperties`
-(`frameworks/native/libs/gui/aidl/android/gui/LutProperties.aidl`).
+shared-memory file descriptor that holds the LUT data. `LutProperties`
+(`frameworks/native/libs/gui/aidl/android/gui/LutProperties.aidl`) describes the
+HAL capability.
 
 The framework surface is
 `frameworks/base/core/java/android/hardware/DisplayLuts.java` and
@@ -3307,8 +3317,8 @@ public static final int SAMPLING_KEY_MAX_RGB = 1;
 public static final int SAMPLING_KEY_CIE_Y = 2;
 ```
 
-A LUT is attached per layer via `SurfaceControl.Transaction.setLuts()` (passing
-`null` clears it), and an app can discover device support through
+A LUT is attached per layer via `SurfaceControl.Transaction.setLuts()` (a
+`null` argument clears it). An app can discover device support through
 `OverlayProperties.getLutProperties()`. Only internal and external displays
 report real device capabilities -- for other display types, including virtual
 displays, `Display.getOverlaySupport()` returns the default
@@ -3317,13 +3327,13 @@ displays, `Display.getOverlaySupport()` returns the default
 ### 24.13.4 Picture Profiles
 
 A related, system-level facility lets a connected TV-style display apply
-hardware picture processing (gamma, colour temperature, hue, saturation) per
+hardware picture processing (gamma, color temperature, hue, saturation) per
 layer. A `PictureProfile`
 (`frameworks/base/media/java/android/media/quality/PictureProfile.java`) is
 identified at the surface layer by an opaque `PictureProfileHandle` and applied
-through `SurfaceControl.Transaction.setPictureProfileHandle()`. Because the
-hardware can process only a limited number of layers at once, the active set is
-bounded by `SurfaceControl.getMaxPictureProfiles()` and arbitrated by content
+through `SurfaceControl.Transaction.setPictureProfileHandle()`. The
+hardware can process only a limited number of layers at once. For this reason,
+the active set is bounded by `SurfaceControl.getMaxPictureProfiles()` and arbitrated by content
 priority. Profiles carry per-HDR-stream-status variants (SDR, HDR10, Dolby
 Vision, HLG, HDR10+, HDR Vivid) and are managed through `MediaQualityManager`.
 The feature is gated by the `apply_picture_profiles` flag.
@@ -3337,24 +3347,29 @@ Two lower-level reworks underpin the features above.
 SurfaceFlinger's GPU client-composition path (RenderEngine, Section 24.7.10)
 is migrating from Skia Ganesh to Skia Graphite on Vulkan. Android 17 carries a
 staged-rollout set of flags in
-`frameworks/native/services/surfaceflinger/surfaceflinger_flags_new.aconfig`:
-`force_compile_graphite_renderengine` (compiles but does not enable Graphite;
-also toggleable via the `debug.renderengine.graphite` system property), plus the
-per-device opt-in rollout flags `graphite_renderengine_preview_rollout`,
+`frameworks/native/services/surfaceflinger/surfaceflinger_flags_new.aconfig`.
+`force_compile_graphite_renderengine` compiles but does not enable Graphite.
+Graphite can also be toggled via the `debug.renderengine.graphite` system property.
+
+The
+per-device opt-in rollout flags are `graphite_renderengine_preview_rollout`,
 `graphite_renderengine_preview2_rollout`, and
-`graphite_renderengine_desktop_rollout`. None are default-on; the final state is
-chosen by each device's release configuration.
+`graphite_renderengine_desktop_rollout`. None are default-on. Each device's
+release configuration chooses the final state.
 
 ### 24.14.2 Atomic Multi-Display Modeset
 
 The connected-display and topology features rest on a reworked modeset path in
-SurfaceFlinger that can change several displays' modes atomically rather than
-one at a time. The Android 17 work adds a `SurfaceControl` atomic-modeset API,
-a display-command modeset implementation, and a modeset state machine (the
+SurfaceFlinger. This path can change the modes of several displays atomically,
+not one at a time.
+
+The Android 17 work adds three parts. They are a
+`SurfaceControl` atomic-modeset API, a display-command modeset implementation,
+and a modeset state machine. The
 `modeset_multi_display`, `display_command_modeset`, `modeset_state_machine`, and
-`synced_resolution_switch` flags in the SurfaceFlinger aconfig files). Pacesetter
+`synced_resolution_switch` flags for this work are in the SurfaceFlinger aconfig files. Pacesetter
 selection (Section 24.3.7) was also updated to prefer the display capable of the
-highest peak frame rate, and the legacy HIDL power path was removed from
+highest peak frame rate. The legacy HIDL power path was removed from
 SurfaceFlinger. Follower (secondary) displays gain their own refresh-rate
 selection and back-pressure handling so that a slow external panel cannot stall
 the pacesetter.
@@ -3362,7 +3377,7 @@ the pacesetter.
 ## Try It
 
 The display stack exposes most of its internal state through `dumpsys` and
-`cmd` interfaces, which is the fastest way to connect the classes in this
+`cmd` interfaces. This is the fastest way to connect the classes in this
 chapter to a running device. The following commands are all available on a
 standard Android 17 build over `adb shell`:
 
@@ -3384,27 +3399,28 @@ standard Android 17 build over `adb shell`:
 Suggested explorations:
 
 1. **Watch a fold/unfold swap.** On a foldable (or the foldable emulator), run
-   `dumpsys device_state` and `dumpsys display` before and after folding, and
-   confirm that logical display 0's backing physical device changes while its
-   display ID stays the same (Section 24.5.3). Look for the
+   `dumpsys device_state` and `dumpsys display` before and after the
+   device is folded. Confirm that the backing physical device of logical display 0
+   changes. Confirm that its display ID stays the same (Section 24.5.3). Look for the
    `LOGICAL_DISPLAY_EVENT_SWAPPED` transition in the DMS dump.
 
 2. **Force an overlay display.** Run
-   `adb shell settings put global overlay_display_devices "1920x1080/320"` and
-   observe a new logical display appear in `dumpsys display` via the
+   `adb shell settings put global overlay_display_devices "1920x1080/320"` .
+   Observe a new logical display appear in `dumpsys display` via the
    `OverlayDisplayAdapter` (Section 24.9.8). This needs no external hardware.
 
-3. **Inspect the refresh-rate vote.** While scrolling a list, capture
-   `dumpsys display` and find the `DisplayModeDirector` vote summary
-   (Section 24.1.9); compare the resolved `DesiredDisplayModeSpecs` against the
-   modes the panel actually supports.
+3. **Inspect the refresh-rate vote.** While a list scrolls, capture
+   `dumpsys display`. Find the `DisplayModeDirector` vote summary
+   (Section 24.1.9). Compare the resolved `DesiredDisplayModeSpecs` against the
+   modes that the panel actually supports.
 
 4. **Read the topology.** On a build with the connected-display flags enabled,
-   attach an external display and inspect the persisted
-   `display_topology.xml` under the per-user system directory, then change the
-   arrangement and confirm the file updates (Section 24.12.3).
+   attach an external display.
+   Inspect the persisted `display_topology.xml` under the per-user system
+   directory. Change the arrangement. Confirm that the file updates
+   (Section 24.12.3).
 
-5. **Trace a frame.** Capture a `perfetto` trace and correlate the
+5. **Trace a frame.** Capture a `perfetto` trace. Correlate the
    `FrameTimeline` events (Section 24.3.11) with the end-to-end latency
    breakdown below. A single frame from touch to photon traverses the entire
    stack:
@@ -3462,62 +3478,63 @@ sequenceDiagram
 | HWC commit | 0.2-0.5ms | DRM atomic commit |
 | **Total** | **3.7-12.5ms** | Must fit in 8.33ms for 120Hz |
 
-   When the total exceeds the VSYNC period, the frame misses its deadline and is
-   presented one period late (a "jank" frame), which `FrameTimeline` and
-   `dumpsys SurfaceFlinger --frametimeline` expose for analysis.
+   When the total exceeds the VSYNC period, the frame misses its deadline. It is
+   presented one period late (a "jank" frame). `FrameTimeline` and
+   `dumpsys SurfaceFlinger --frametimeline` expose these frames for analysis.
 
 ## Summary
 
-The Android display system is a deep vertical stack that begins with
+The Android display system is a deep vertical stack. It begins with
 hardware VSYNC interrupts and extends through native C++ composition,
 Java framework services, and application-level APIs. The key architectural
 decisions that define this system are:
 
 1. **Logical/Physical separation**: `LogicalDisplay` decouples the
-   system-visible display from the underlying hardware, enabling foldable
+   system-visible display from the underlying hardware. This supports foldable
    display swapping, virtual displays, and future multi-panel configurations.
 
 2. **DisplayArea tree**: The `DisplayAreaPolicyBuilder` creates a flexible
-   container hierarchy that enforces Z-ordering while allowing features
-   (magnification, one-handed mode, cutout hiding) to target specific
+   container hierarchy that enforces Z-ordering. Features
+   (magnification, one-handed mode, cutout hiding) can still target specific
    window-type ranges.
 
 3. **VSYNC-driven pipeline**: Every frame starts with a predicted VSYNC
-   from `VSyncPredictor`, flows through `VSyncDispatchTimerQueue` to
-   `EventThread`, crosses into Java-land via `Choreographer`, and
-   culminates in `CompositionEngine::present()`.
+   from `VSyncPredictor`. The frame flows through `VSyncDispatchTimerQueue` to
+   `EventThread`. It crosses into Java-land via `Choreographer`. It ends in
+   `CompositionEngine::present()`.
 
 4. **Transaction-based buffer delivery**: `BLASTBufferQueue` bundles buffer
    submission with geometry changes in atomic `SurfaceControl.Transaction`
-   operations, eliminating the class of bugs that arose from
-   buffer-geometry desynchronisation.
+   operations. This removes the class of bugs that arose from
+   buffer-geometry desynchronization.
 
 5. **Front-end/back-end split**: SurfaceFlinger's refactored architecture
    separates layer state management (`LayerLifecycleManager`,
    `LayerSnapshotBuilder`) from composition (`CompositionEngine`,
-   `HWComposer`), enabling better testing, incremental updates, and
-   reduced lock contention.
+   `HWComposer`). This enables better testing, incremental updates, and
+   less lock contention.
 
-6. **Priority-ordered colour transforms**: `DisplayTransformManager`
-   composes multiple 4x4 colour matrices (night display, white balance,
-   saturation, accessibility) in a defined priority order, producing a
+6. **Priority-ordered color transforms**: `DisplayTransformManager`
+   composes multiple 4x4 color matrices (night display, white balance,
+   saturation, accessibility) in a defined priority order. It produces a
    single combined transform for SurfaceFlinger.
 
 7. **State-driven foldable support**: `DeviceStateManagerService` provides
-   a clean state-machine abstraction for foldable postures, with
-   `LogicalDisplayMapper` handling the complex display swapping that makes
+   a clean state-machine abstraction for foldable postures.
+   `LogicalDisplayMapper` handles the complex display swapping that makes
    fold/unfold transitions appear seamless to applications.
 
-8. **Connected-display maturity (Android 17)**: a persisted, app-visible
-   `DisplayTopology`, content-mode management (mirror versus extend), adaptive
-   refresh rate driven by frame-rate categories, HDR on external displays, and
-   per-layer colour LUTs and picture profiles all build on a reworked atomic
-   multi-display modeset path in SurfaceFlinger.
+8. **Connected-display maturity (Android 17)**: a reworked atomic
+   multi-display modeset path in SurfaceFlinger underlies several features.
+   These are a persisted, app-visible `DisplayTopology` and content-mode
+   management (mirror versus extend). They also include adaptive refresh rate
+   driven by frame-rate categories, HDR on external displays, and per-layer
+   color LUTs and picture profiles.
 
 These subsystems interact constantly during normal device operation.
 A single frame touches the VSYNC predictor, Choreographer, ViewRootImpl,
 BLASTBufferQueue, the SurfaceFlinger front-end, CompositionEngine,
-HWComposer, and the kernel DRM driver -- a pipeline that completes in
+HWComposer, and the kernel DRM driver. This pipeline completes in
 under 16 milliseconds at 60 Hz, or under 8 milliseconds at 120 Hz.
 
 ### Quick Reference: Key Source Paths

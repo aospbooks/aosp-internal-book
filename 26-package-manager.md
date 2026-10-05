@@ -3,13 +3,13 @@
 PackageManagerService (PMS) is the single most important system service for application
 lifecycle management in Android. It is responsible for discovering, parsing, verifying,
 installing, updating, and removing every APK on the device. It maintains the authoritative
-database of installed packages, enforces permission policy, resolves intents to the
-correct component, orchestrates the overlay system, and provides the backbone of the
-entire app ecosystem. At roughly 280 source files in its
+database of installed packages. It enforces permission policy, resolves intents to the
+correct component, and orchestrates the overlay system. It also provides the backbone of
+the entire app ecosystem. At roughly 280 source files in its
 module tree, PMS is arguably the most complex subsystem in the entire Android framework.
 
-This chapter dissects PMS from the ground up: starting with the structure of an APK
-itself, then moving through the service architecture, boot-time scanning, the installation
+This chapter dissects PMS from the ground up. It starts with the structure of an APK
+itself. Then it covers the service architecture, boot-time scanning, the installation
 pipeline, the permission model, intent resolution, split APKs, and the runtime resource
 overlay system.
 
@@ -204,16 +204,16 @@ Extends v2 with **key rotation** support. v3 introduces a "proof of rotation" st
 that chains old and new signing certificates together. This allows developers to
 rotate their signing key without losing the ability to update existing installations.
 
-The proof of rotation is a linked list of certificates where each certificate in the
-chain signs the next one, establishing a trust chain from the original signing
+The proof of rotation is a linked list of certificates. Each certificate in the
+chain signs the next one. This establishes a trust chain from the original signing
 certificate to the current one.
 
 #### APK Signature Scheme v4 (Android 11+)
 
 Designed for **incremental installation** (Incremental File System). v4 produces a
 separate `.idsig` file that contains a Merkle tree hash over the APK's contents. This
-allows the system to verify blocks of the APK as they are streamed to the device,
-enabling installation before the entire APK has been downloaded.
+allows the system to verify blocks of the APK as they are streamed to the device.
+Installation can then start before the entire APK has been downloaded.
 
 From `VerifyingSession.java`:
 
@@ -247,10 +247,10 @@ graph TD
 ```
 
 PMS uses `ApkSignatureVerifier` to verify signatures during installation. The verifier
-tries the newest scheme first and falls back to older schemes: verification stops at the
-highest signature scheme actually present in the APK, and lower schemes are only
+tries the newest scheme first and falls back to older schemes. Verification stops at the
+highest signature scheme actually present in the APK. Lower schemes are only
 consulted when a newer block is absent. Protection against stripping a newer signature
-comes not from re-verifying every scheme but from the stripping-protection attributes
+comes not from re-verifying every scheme. It comes from the stripping-protection attributes
 `apksigner` inserts into the older signatures, which record that a newer scheme exists.
 
 ### 26.1.7 APK Alignment
@@ -269,8 +269,8 @@ public static final int PAGE_SIZE_16KB = 16384;
 Alignment is enforced by build-time tooling (`zipalign`, and Play's publishing
 requirements) rather than by PMS: the install path does not reject misaligned APKs.
 On 16 KB page-size devices, PMS checks native-library alignment during package scan
-(`ScanPackageUtils` calls `checkPackageAlignment()`) and records the result as
-page-size app-compat flags on the `PackageSetting`, so a misaligned app can be run
+(`ScanPackageUtils` calls `checkPackageAlignment()`). PMS records the result as
+page-size app-compat flags on the `PackageSetting`. A misaligned app can then be run
 in compatibility mode. Misaligned resources still carry a cost: the system must
 extract them to a separate file rather than mapping them directly from the APK.
 
@@ -478,8 +478,8 @@ Method naming conventions enforce lock discipline:
 ### 26.2.3 The Computer Snapshot Pattern
 
 The most significant architectural feature of modern PMS is the **Computer snapshot
-pattern**. This was introduced to solve the severe lock contention problem: PMS's
-`mLock` was one of the most contended locks in the system, causing jank and ANRs.
+pattern**. This was introduced to solve the severe lock contention problem. PMS's
+`mLock` was one of the most contended locks in the system. It caused jank and ANRs.
 
 The key insight is that most PMS operations are **read-only** -- they query package
 information but do not modify it. The snapshot pattern separates reads from writes:
@@ -927,8 +927,8 @@ treated:
 ## 26.3 Package Scanning
 
 At boot time, PMS must discover and parse every APK on the device. This is one of
-the most time-critical parts of the boot process -- scanning thousands of packages
-can take tens of seconds and directly impacts the time from power-on to usable device.
+the most time-critical parts of the boot process. Scanning thousands of packages
+can take tens of seconds. This directly affects the time from power-on to usable device.
 
 ### 26.3.1 Boot-Time Scanning Overview
 
@@ -1264,9 +1264,9 @@ public void initNonSystemApps(PackageParser2 packageParser,
 }
 ```
 
-The `SCAN_REQUIRE_KNOWN` flag enforces an expectation about *known* packages:
-if a package is already registered in `packages.xml`, the scanned APK must
-still live at the code path recorded there, otherwise the scan fails with
+The `SCAN_REQUIRE_KNOWN` flag enforces an expectation about *known* packages.
+If a package is already registered in `packages.xml`, the scanned APK must
+still live at the code path recorded there. Otherwise the scan fails with
 `INSTALL_FAILED_PACKAGE_CHANGED`. Previously unknown packages in `/data/app`
 are still picked up normally -- they are not rejected or removed.
 
@@ -1359,8 +1359,8 @@ void fixInstalledAppDirMode() {
 }
 ```
 
-The `0771` mode ensures that non-system users cannot list the directory contents,
-preventing them from discovering installed package names by directory enumeration.
+The `0771` mode makes sure that non-system users cannot list the directory
+contents. This prevents them from discovering installed package names by directory enumeration.
 
 ### 26.3.13 Scan Flow Diagram
 
@@ -2521,7 +2521,7 @@ static {
 
 Non-privileged apps have their filter priorities silently capped to 0 for *every*
 action. For the protected actions, the cap to 0 applies even to privileged system
-apps -- the only exception is the setup wizard package, which may keep a high
+apps. The only exception is the setup wizard package, which may keep a high
 priority on these actions.
 
 ### 26.6.9 Instant App Resolution
@@ -2907,8 +2907,8 @@ graph TD
 
 Feature splits get a `PathClassLoader` by default, chained to the parent split's
 loader. A split may opt into `DelegateLastClassLoader` by declaring
-`android:classLoader="dalvik.system.DelegateLastClassLoader"` in its manifest,
-but this is not the default, and a feature does not normally override the base's
+`android:classLoader="dalvik.system.DelegateLastClassLoader"` in its manifest.
+This is not the default, and a feature does not normally override the base's
 classes.
 
 ### 26.7.8 Resource Merging for Splits
@@ -3211,11 +3211,11 @@ per category per target package.
 
 Overlay security is enforced at multiple levels:
 
-1. **Signature check** -- Mutable overlays targeting system packages may require
+1. **Signature check** -- Mutable overlays that target system packages may require
    signature matching with the target or a privileged signature.
 
 2. **Overlayable declarations** -- Target packages can declare which of their
-   resources are overlayable using `<overlayable>` tags:
+   resources are overlayable with `<overlayable>` tags:
 
 ```xml
 <!-- In the target package's res/values/overlayable.xml -->
@@ -3333,10 +3333,10 @@ sequenceDiagram
     ID->>D: SystemService.stop("idmap2d")
 ```
 
-For batch operations during boot (when many overlays need idmap creation
-simultaneously), `IdmapManager` batches the requests through `createIdmaps()`,
-splitting them by IPC size limits to avoid exceeding the Binder transaction
-buffer:
+During boot, many overlays can need idmap creation at the same time. For these
+batch operations, `IdmapManager` batches the requests through `createIdmaps()`.
+It splits them by IPC size limits, so that they do not exceed the Binder
+transaction buffer:
 
 ```java
 // frameworks/base/services/core/java/com/android/server/om/IdmapManager.java
@@ -3490,7 +3490,7 @@ mSettings.removeIf(overlayInfo -> overlayInfo.isFabricated
 ### 26.8.17 RRO Constraints
 
 Android introduces RRO constraints (gated by the `Flags.rroConstraints()`
-feature flag) that allow conditionally enabling overlays based on runtime
+feature flag) that allow overlays to be enabled conditionally, based on runtime
 conditions. Constraints are passed through the `OverlayConstraint` class
 and are evaluated by idmap2d during idmap creation:
 
@@ -3505,8 +3505,8 @@ if (!enable && hasConstraints) {
 }
 ```
 
-Constraints are only valid when enabling an overlay -- disabling always
-removes all constraints.
+Constraints are only valid in the call that enables an overlay. A call that
+disables an overlay always removes all constraints.
 
 ### 26.8.18 Overlay Settings Persistence
 
@@ -3534,8 +3534,8 @@ The settings are serialized to `/data/system/overlays.xml` using Android's
 ### 26.8.19 Batched Idmap Transactions
 
 When the `Flags.mergeIdmapBinderTransactions()` flag is enabled,
-`OverlayManagerServiceImpl` collects all packages that need idmap operations
-and processes them in a single batched call rather than individual IPC
+`OverlayManagerServiceImpl` collects all packages that need idmap operations.
+It then processes them in a single batched call, not in individual IPC
 transactions:
 
 ```java
@@ -3554,7 +3554,7 @@ if (Flags.mergeIdmapBinderTransactions()) {
 ```
 
 This optimization significantly reduces boot time on devices with many
-overlays by minimizing the number of Binder transactions to idmap2d.
+overlays. It minimizes the number of Binder transactions to idmap2d.
 
 ### 26.8.20 OMS Shell Commands
 
@@ -3583,8 +3583,8 @@ $ adb shell dumpsys overlay
 ## 26.9 App Hibernation
 
 App hibernation is Android's mechanism for handling unused applications.
-When users install apps and then stop using them, those apps continue
-consuming storage (cached data, OAT/dex artifacts) and may retain runtime
+Users sometimes install apps and then stop using them. Those apps continue
+to use storage (cached data, OAT/dex artifacts). They may also keep runtime
 permissions that pose privacy risks. The `AppHibernationService` coordinates
 with `PermissionController`, `PackageManagerService`, and
 `ActivityManagerService` to put idle apps into a low-resource state and
@@ -3610,8 +3610,8 @@ graph TD
     style PC fill:#bbf,stroke:#333
 ```
 
-The key architectural decision is that `AppHibernationService` manages the
-*state* of hibernation, but the *policy* (which apps should hibernate) lives
+The key architectural decision is a split. `AppHibernationService` manages the
+*state* of hibernation. The *policy* (which apps should hibernate) lives
 in `PermissionController`, which runs in a separate process. This separation
 allows Google to update hibernation policy through Play Services without
 modifying the framework.
@@ -3653,7 +3653,7 @@ When `PermissionController` determines an app should hibernate, it calls
 `setHibernatingForUser()`. The service then:
 
 1. **Force-stops the package** via `ActivityManagerService.forceStopPackage()`,
-   killing all processes and canceling alarms/jobs
+   which kills all processes and cancels alarms/jobs
 2. **Deletes cached files** via `PackageManagerService.deleteApplicationCacheFilesAsUser()`
 3. **Records bytes saved** from `StorageStatsManager.queryStatsForPackage()`
 4. **Persists state** to disk via `HibernationStateDiskStore`
@@ -3698,9 +3698,10 @@ private void unhibernatePackageForUser(String packageName, int userId) {
 }
 ```
 
-The boot-completed broadcasts are critical: they allow the app to re-register
+The boot-completed broadcasts are critical. They let the app re-register
 its `AlarmManager` alarms, `JobScheduler` jobs, `WorkManager` tasks, and
-Firebase Cloud Messaging tokens that were lost when the app was force-stopped.
+Firebase Cloud Messaging tokens. The app lost these items when it was
+force-stopped.
 
 ```mermaid
 sequenceDiagram
@@ -3726,7 +3727,7 @@ important. `PermissionController` handles both:
 
 1. **Permission auto-revoke**: Revokes runtime permissions for unused apps
    (introduced Android 11)
-2. **App hibernation**: Puts unused apps in hibernation state, reclaiming
+2. **App hibernation**: Puts unused apps in hibernation state and reclaims
    storage (introduced Android 12)
 
 These are separate features that share the same policy signal: "this app
@@ -3746,8 +3747,8 @@ static final String KEY_APP_HIBERNATION_ENABLED = "app_hibernation_enabled";
 sIsServiceEnabled = isDeviceConfigAppHibernationEnabled();
 ```
 
-Every public API method checks `sIsServiceEnabled` before proceeding,
-returning empty or false values when disabled. This allows the feature to be
+Every public API method checks `sIsServiceEnabled` first.
+It returns empty or false values when the service is disabled. This allows the feature to be
 remotely toggled without a system update.
 
 ### 26.9.7 Persistence and Boot Sequence
@@ -3773,7 +3774,7 @@ public void onBootPhase(int phase) {
 }
 ```
 
-User-level states are loaded lazily when a user is unlocked, using
+User-level states are loaded lazily when a user is unlocked. It uses
 per-user `HibernationStateDiskStore` instances stored in the `mUserDiskStores`
 `SparseArray`.
 
@@ -3807,30 +3808,33 @@ adb shell device_config get app_hibernation app_hibernation_enabled
 
 Android 17 adds a first-party path for turning a Progressive Web App (PWA) into a
 real, installed Android package. Until now, a browser that wanted to "Add to Home
-Screen" either created a lightweight WebAPK through Play services or dropped a
-shortcut that just relaunched the browser. Android 17 moves the capability into the
-platform: a new updatable APEX, `com.android.webapp`, fetches a site's web manifest,
-generates a signed APK on-device, and installs it through the same
-`PackageInstaller` pipeline described in Section 26.4. The whole module lives outside
-`frameworks/base` at `packages/modules/WebApp`, but its public surface is an
-`android.content.pm.webapp` API, so it is fundamentally a PackageManager client and a
+Screen" had two options. It either created a lightweight WebAPK through Play
+services, or it dropped a shortcut that just relaunched the browser. Android 17
+moves the capability into the platform.
+
+A new updatable APEX, `com.android.webapp`, fetches a site's web manifest and
+generates a signed APK on-device. It installs the APK through the same
+`PackageInstaller` pipeline that Section 26.4 describes. The whole module lives
+outside `frameworks/base`, at `packages/modules/WebApp`. Its public surface is an
+`android.content.pm.webapp` API. So it is fundamentally a PackageManager client and a
 new sibling to the install path.
 
 The feature is gated by the `enable_web_app_service_v2` aconfig flag
-(`packages/modules/WebApp/flags/flags.aconfig`), which lives in the
-`lse_desktop_experience` namespace -- the same namespace used by the large-screen
-desktop windowing work -- because the primary consumer is a desktop-class browser
-installing standalone web apps. The APEX itself is compiled in only when the
-`RELEASE_WEBAPP_MODULE` build flag is set
-(`packages/modules/WebApp/apex/Android.bp`), and even on a build that ships the APEX,
+(`packages/modules/WebApp/flags/flags.aconfig`). The flag lives in the
+`lse_desktop_experience` namespace, which the large-screen desktop windowing work
+also uses. This namespace fits because the primary consumer is a desktop-class
+browser that installs standalone web apps. The APEX itself is compiled in only when
+the `RELEASE_WEBAPP_MODULE` build flag is set
+(`packages/modules/WebApp/apex/Android.bp`). Even on a build that ships the APEX,
 the runtime path is a no-op until the `Settings.Global` value `enable_webapp_minter`
 is set to `1`.
 
 ### 26.10.1 Module Layout and the APEX Boundary
 
-The Web App module is a self-contained mainline module with four parts: a framework
-library that exposes the SDK API, an AIDL contract, a privileged system app that does
-the work, and the APEX that packages everything together.
+The Web App module is a self-contained mainline module with four parts. The parts
+are a framework library, an AIDL contract, a privileged system app, and the APEX.
+The library exposes the SDK API. The app does the work. The APEX packages everything
+together.
 
 ```mermaid
 graph TB
@@ -3906,7 +3910,7 @@ WebAppManager webAppManager = context.getSystemService(WebAppManager.class);
 
 Because the implementation ships in an APEX rather than in the system server,
 `WebAppManager` does not hold a binder to a long-lived service. Instead it discovers
-and binds to the privileged `WebAppService` app on demand, which keeps the installer
+and binds to the privileged `WebAppService` app on demand. This keeps the installer
 process out of memory except while an install is actually in flight.
 
 ### 26.10.3 Discovering and Binding the WebAppService
@@ -3925,12 +3929,12 @@ List<ResolveInfo> services =
 ```
 
 If more than one system app claims the action the manager logs `Log.wtf`, because the
-contract assumes exactly one provider. Requests are queued while the bind is in
-flight: `WebAppManager` maintains a list of pending `Runnable`s, drains them in
-`onServiceConnected`, and runs the blocking AIDL calls on a single-threaded executor
+contract assumes exactly one provider. `WebAppManager` queues requests while the
+bind is in flight. It maintains a list of pending `Runnable`s and drains them in
+`onServiceConnected`. It runs the blocking AIDL calls on a single-threaded executor,
 so the caller's thread is never blocked. It tracks an active-request count and unbinds
-the service once the count drops back to zero, so the installer APEX process is torn
-down promptly after the last install or query completes.
+the service once the count drops back to zero. The installer APEX process is then
+torn down promptly after the last install or query completes.
 
 The following diagram shows the full asynchronous install round trip across the
 process boundary.
@@ -3960,8 +3964,8 @@ sequenceDiagram
 
 ### 26.10.4 The Install Request and Result Contract
 
-`WebAppManager` exposes two asynchronous operations, each taking an `Executor` and a
-functional callback so results are delivered off the binder thread:
+`WebAppManager` exposes two asynchronous operations. Each operation takes an
+`Executor` and a functional callback, so results are delivered off the binder thread:
 
 - `install(WebAppInstallRequest, Executor, ObjIntConsumer<String>)` -- the
   `ObjIntConsumer` receives the installed package name (or `null`) and a result code.
@@ -3970,8 +3974,8 @@ functional callback so results are delivered off the binder thread:
 
 A `WebAppInstallRequest`
 (`packages/modules/WebApp/framework/java/android/content/pm/webapp/WebAppInstallRequest.java`)
-is built with a `Builder` that takes only a display title and the PWA manifest URL --
-the installer derives everything else (name, icons, colors, start URL) from the
+is built with a `Builder` that takes only a display title and the PWA manifest URL.
+The installer derives everything else (name, icons, colors, start URL) from the
 fetched manifest. Its result codes spell out exactly why an install can fail:
 
 | Result code | Meaning |
@@ -3989,19 +3993,19 @@ fetched manifest. Its result codes spell out exactly why an install can fail:
 `WebAppQueryRequest`
 (`packages/modules/WebApp/framework/java/android/content/pm/webapp/WebAppQueryRequest.java`)
 lets a caller ask whether a given package was installed by the Web App service. The
-answer is deliberately privacy-preserving: an app that does not hold
-`QUERY_ALL_PACKAGES` only learns about packages it itself installed, and otherwise
-receives `RESULT_PERMISSION_DENIED` rather than a true/false that would leak the
-existence of an unrelated package.
+answer is deliberately privacy-preserving. An app that does not hold
+`QUERY_ALL_PACKAGES` only learns about packages it itself installed. For any other
+package, it receives `RESULT_PERMISSION_DENIED` and not a true/false answer, which
+would leak the existence of an unrelated package.
 
 ### 26.10.5 Caller Eligibility: the Browser Role
 
 Web app installation is not a public capability for arbitrary apps. The
 `WebAppService.install()` implementation
 (`packages/modules/WebApp/service/java/com/android/webapp/service/WebAppService.kt`)
-enforces that the caller is a legitimate browser before doing any work. It clears the
-calling identity, maps the calling UID to a single package, and then checks that the
-package can handle a browsable `http:` view intent:
+enforces that the caller is a legitimate browser before it does any work. It clears
+the calling identity and maps the calling UID to a single package. Then it checks
+that the package can handle a browsable `http:` view intent:
 
 ```kotlin
 val intent = Intent(Intent.ACTION_VIEW).apply {
@@ -4016,24 +4020,25 @@ if (resolveInfo.none { it.activityInfo.packageName == callingPackage }) {
 ```
 
 In other words, eligibility is tied to the `RoleManager.ROLE_BROWSER` concept: only an
-app that registers as a browser can mint web apps. The service runs these
-`PackageManager` and role queries with its own (privileged) identity by wrapping them
-in `clearCallingIdentity()` / `restoreCallingIdentity()`, so a malicious caller cannot
-piggyback on the system app's visibility.
+app that registers as a browser can mint web apps. The service wraps these
+`PackageManager` and role queries in `clearCallingIdentity()` /
+`restoreCallingIdentity()`. The queries then run with its own (privileged) identity.
+So a malicious caller cannot piggyback on the system app's visibility.
 
 ### 26.10.6 Minting and Signing the APK On-Device
 
 Once a request is accepted it is handed to `WebAppInstaller`
 (`packages/modules/WebApp/service/java/com/android/webapp/service/WebAppInstaller.kt`),
-which processes a bounded queue of requests one at a time and shuts the service down
-when the queue empties. For each request it:
+This class processes a bounded queue of requests one at a time. It shuts the service
+down when the queue empties. For each request it:
 
-1. **Fetches and parses the web manifest** over HTTP into a `PwaManifest` model,
-   pulling out name, start URL, display mode, theme/background colors, orientation,
-   and the icon list.
+1. **Fetches and parses the web manifest** over HTTP into a `PwaManifest` model.
+   It pulls out the name, start URL, display mode, theme/background colors,
+   orientation, and the icon list.
 2. **Downloads the icons** into a per-package working directory under the service's
-   cache, sorting them into density buckets (`mdpi` through `xxxhdpi`) and handling
-   `maskable` and `monochrome` icon purposes for adaptive and notification icons.
+   cache. It sorts them into density buckets (`mdpi` through `xxxhdpi`). It also
+   handles `maskable` and `monochrome` icon purposes for adaptive and notification
+   icons.
 3. **Shows a confirmation dialog** (`InstallConfirmActivity`) and suspends on a Kotlin
    coroutine continuation until the user approves or cancels.
 4. **Mints a signed APK** via `ApkMinter`
@@ -4041,9 +4046,9 @@ when the queue empties. For each request it:
 5. **Installs it** through `PackageInstaller`.
 
 The minting step is what makes this module unusual: it builds a real APK at runtime.
-`ApkMinter` unpacks a template ZIP shipped inside the APEX, renders the
+`ApkMinter` unpacks a template ZIP shipped inside the APEX. It renders the
 `AndroidManifest.xml.mustache` and `colors.xml.mustache` templates with values from
-the manifest, and then shells out to the `aapt2` binary that the APEX bundles to
+the manifest. Then it shells out to the `aapt2` binary that the APEX bundles, to
 compile and link resources. Both paths are fixed inside the APEX image:
 
 ```kotlin
@@ -4051,15 +4056,17 @@ private const val TEMPLATE_FILE = "/apex/com.android.webapp/res/webapp-template.
 private const val AAPT2_EXEC = "/apex/com.android.webapp/bin/aapt2"
 ```
 
-The package name is deterministic but opaque: `generatePackageName()` takes the
-SHA-256 of the calling package name concatenated with the manifest URL and prefixes it
-with `com.android.webapp`, so the same site installed by the same browser always maps
-to the same package. Signing is done by `ApkKeyStore`
-(`packages/modules/WebApp/service/java/com/android/webapp/service/minter/ApkKeyStore.kt`),
-which generates a hardware-backed RSA key in the `AndroidKeyStore` on first use and
-signs the APK with v2 and v3 signature schemes (v1 and v4 are disabled). Because every
-web app on the device is signed by this one service-owned key, the service can later
-recognize "apps it installed" by comparing signing certificates -- which is exactly
+The package name is deterministic but opaque. `generatePackageName()` takes the
+SHA-256 of the calling package name concatenated with the manifest URL. It prefixes
+the result with `com.android.webapp`. So the same site installed by the same browser
+always maps to the same package.
+
+Signing is done by `ApkKeyStore`
+(`packages/modules/WebApp/service/java/com/android/webapp/service/minter/ApkKeyStore.kt`).
+It generates a hardware-backed RSA key in the `AndroidKeyStore` on first use. It signs
+the APK with v2 and v3 signature schemes (v1 and v4 are disabled). Every web app on
+the device is signed by this one service-owned key. So the service can later
+recognize "apps it installed" when it compares signing certificates. This is exactly
 how `WebAppQueryRequest` is answered.
 
 ### 26.10.7 The Privileged Permissions It Needs
@@ -4075,12 +4082,12 @@ exactly three privileged permissions through its APEX allowlist
 | `SUBSTITUTE_NOTIFICATION_APP_NAME` | Show install progress notifications under the calling browser's name, not the installer's |
 
 The actual install uses a normal `PackageInstaller` session built with
-`SessionParams(MODE_FULL_INSTALL)`, attributing the originating UID to the calling
-browser so the install source is recorded correctly. Holding `INSTALL_PACKAGES` is
-what lets the commit proceed without prompting the user a second time, since the user
-already approved through the module's own confirmation dialog. This is the same commit
-machinery covered in Section 26.4.8 -- the Web App service is simply a privileged
-client of it, not a new install pathway inside PMS.
+`SessionParams(MODE_FULL_INSTALL)`. The session attributes the originating UID to the
+calling browser, so the install source is recorded correctly. Holding
+`INSTALL_PACKAGES` is what lets the commit proceed without a second prompt to the
+user. This is because the user already approved through the module's own confirmation dialog. This is
+the same commit machinery covered in Section 26.4.8. The Web App service is simply a
+privileged client of it, not a new install pathway inside PMS.
 
 ### 26.10.8 Where It Fits in the Package Manager Story
 
@@ -4091,11 +4098,11 @@ on top of the existing, stable `PackageInstaller` API:
 - It is an APEX, so it can be updated independently of the platform.
 - It reuses the install pipeline, signature schemes, and source attribution already
   built into PMS instead of adding privileged install code to the system server.
-- Its public API lives under `android.content.pm.webapp`, signalling that the platform
-  now treats "installed web app" as a first-class kind of package.
+- Its public API lives under `android.content.pm.webapp`. This signals that the
+  platform now treats "installed web app" as a first-class kind of package.
 
-The result, from PMS's point of view, is an ordinary third-party APK that happens to
-have been generated on the device and signed by a system component. Everything PMS
+From the point of view of PMS, the result is an ordinary third-party APK. It happens
+to be generated on the device and signed by a system component. Everything PMS
 does with it -- scanning, permission grants, intent resolution, visibility filtering --
 is identical to any other installed app.
 
@@ -4739,15 +4746,15 @@ graph TB
 This chapter covered its critical subsystems:
 
 - **APK Structure** (Section 26.1): The internal layout of Android packages, including
-  the manifest, DEX files, resources, native libraries, and the evolution of APK
-  signing from v1 JAR signing to v4 incremental signatures.
+  the manifest, DEX files, resources, and native libraries. It also covers how APK
+  signing evolved from v1 JAR signing to v4 incremental signatures.
 
 - **PMS Architecture** (Section 26.2): The Computer snapshot pattern that enables
-  lock-free reads, the three-lock hierarchy, the helper class decomposition, and the
-  core data structures including `PackageSetting` and `Settings`.
+  lock-free reads, the three-lock hierarchy, and the helper class decomposition. It
+  also covers the core data structures, including `PackageSetting` and `Settings`.
 
 - **Package Scanning** (Section 26.3): The boot-time scanning process that discovers
-  packages across system partitions, APEX modules, and user-installed apps, using
+  packages across system partitions, APEX modules, and user-installed apps. It uses
   parallel parsing and caching for performance.
 
 - **Installation Pipeline** (Section 26.4): The five-stage installation process from
@@ -4759,7 +4766,7 @@ This chapter covered its critical subsystems:
   grant/revoke, one-time permissions, and auto-revoke.
 
 - **Intent Resolution** (Section 26.6): The algorithm for matching implicit intents
-  to components, including the role of priority, preferred activities, App Links,
+  to components. It covers the role of priority, preferred activities, App Links,
   cross-profile resolution, and package visibility filtering.
 
 - **Split APKs** (Section 26.7): The split APK architecture with base, configuration,
@@ -4771,8 +4778,8 @@ This chapter covered its critical subsystems:
   and overlay configuration.
 
 - **Web App Installer** (Section 26.10): The Android 17 `com.android.webapp` APEX that
-  mints and installs a signed APK from a PWA manifest on-device, exposed through the
-  new `android.content.pm.webapp.WebAppManager` system service and layered on top of
+  mints and installs a signed APK from a PWA manifest on-device. It is exposed through
+  the new `android.content.pm.webapp.WebAppManager` system service. It sits on top of
   the existing `PackageInstaller` pipeline.
 
 ### Design Philosophy and Evolution
@@ -4807,14 +4814,14 @@ lock contention. Fabricated overlays enabled Material You theming.
 
 **Android 15 (V):** 16KB page size alignment. Continued decomposition and cleanup.
 
-**Android 16:** Further refactoring of the install path -- package update logging was
-moved into `InstallPackageHelper` -- and continued tightening of the privileged
-permission allowlist handling in `PackageManagerShellCommand`.
+**Android 16:** Further refactoring of the install path. Package update logging was
+moved into `InstallPackageHelper`. The privileged permission allowlist handling in
+`PackageManagerShellCommand` continued to become tighter.
 
 **Android 17:** The Web App installer (`com.android.webapp`) lands as an updatable
-APEX with a new `android.content.pm.webapp` API, mounting a PWA-to-APK install
-experience on top of the existing `PackageInstaller` pipeline without changing PMS
-itself.
+APEX with a new `android.content.pm.webapp` API. It adds a PWA-to-APK install
+experience on top of the existing `PackageInstaller` pipeline. PMS itself does not
+change.
 
 This evolution explains several aspects of the current codebase:
 

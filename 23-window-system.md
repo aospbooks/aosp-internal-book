@@ -1,8 +1,8 @@
 # Chapter 23: Window System
 
-The Android window system is a multi-layered architecture that spans from native composition (SurfaceFlinger) through Java framework services (WindowManagerService) to a presentation library (WM Shell) that orchestrates animations and feature UIs. This chapter provides a comprehensive analysis of the window management layer -- the policy engine that sits between applications requesting screen real estate and the compositor that paints pixels to the display.
+The Android window system is a multi-layered architecture. It spans from native composition (SurfaceFlinger), through Java framework services (WindowManagerService), to a presentation library (WM Shell) that orchestrates animations and feature UIs. This chapter provides a comprehensive analysis of the window management layer. This layer is the policy engine between the applications that request screen real estate and the compositor that paints pixels to the display.
 
-Chapter 13 (Graphics & Render Pipeline) covered how buffers flow from application through HWUI to SurfaceFlinger. This chapter covers the layer above that: how windows are created, tracked, organized into a hierarchy, animated through transitions, and managed across multiple displays and windowing modes. A companion three-part detailed report (referenced in section 23.11) provides a 100-section deep dive; this chapter provides the architectural foundation needed to read that report productively.
+Chapter 13 (Graphics & Render Pipeline) covered how buffers flow from application through HWUI to SurfaceFlinger. This chapter covers the layer above that. It explains how windows are created, tracked, organized into a hierarchy, and animated through transitions. It also explains how windows are managed across multiple displays and windowing modes. A companion three-part detailed report (referenced in section 23.11) provides a 100-section deep dive. This chapter provides the architectural foundation that is needed to read that report productively.
 
 ---
 
@@ -354,7 +354,7 @@ sequenceDiagram
     Note over SF: Atomic commit of all<br/>surface changes
 ```
 
-The `LAYOUT_REPEAT_THRESHOLD` (4) limits how many times the layout pass can re-run within a single placement cycle to prevent infinite loops when layout changes trigger further layout changes.
+The `LAYOUT_REPEAT_THRESHOLD` (4) limits how many times the layout pass can re-run within a single placement cycle. This prevents infinite loops when layout changes trigger further layout changes.
 
 ### 23.1.9 WMS Internal Data Structures
 
@@ -473,7 +473,7 @@ METHOD_NONE = 0;       // Apps draw internally, just report completion
 METHOD_BLAST = 1;      // Apps send buffers to be applied in sync
 ```
 
-The parallel sync system prevents dependency cycles: if sync B depends on sync A and a container is added to A that is already watched by B, the container is moved from B to A rather than creating a cycle.
+The parallel sync system prevents dependency cycles. Suppose sync B depends on sync A, and a container is added to A that B already watches. Then the container is moved from B to A. This does not create a cycle.
 
 ### 23.1.13 DisplayContent Internals
 
@@ -552,7 +552,7 @@ The window system is split into two halves:
 | **Window access** | Direct WindowState/Task manipulation | TaskOrganizer callbacks, SurfaceControl |
 | **Animation** | Triggers transitions, manages sync | Receives TransitionInfo, animates surfaces |
 
-The split was introduced to allow OEMs and system components (SystemUI, Launcher) to customize window behavior without modifying core WM policy. WM Core signals intent ("this task is entering PiP"), and Shell decides presentation ("animate with this curve to this corner"). Note that the two halves live in different processes: WM Core runs in `system_server`, while WM Shell is a static library (`WindowManager-Shell`) linked into the SystemUI app, so every Core-Shell interaction crosses a Binder boundary via the `WindowOrganizer`/`TaskOrganizer` AIDL interfaces.
+The split was introduced to allow OEMs and system components (SystemUI, Launcher) to customize window behavior without modifying core WM policy. WM Core signals intent ("this task is entering PiP"), and Shell decides presentation ("animate with this curve to this corner"). Note that the two halves live in different processes. WM Core runs in `system_server`, while WM Shell is a static library (`WindowManager-Shell`) linked into the SystemUI app. So every Core-Shell interaction crosses a Binder boundary through the `WindowOrganizer`/`TaskOrganizer` AIDL interfaces.
 
 ### 23.2.2 Shell Directory Structure
 
@@ -782,7 +782,7 @@ graph LR
     SHELL -->|"I/O, persistence"| BG
 ```
 
-The `@ShellMainThread` is the primary execution thread for Shell components. It runs at `THREAD_PRIORITY_DISPLAY` priority, the same as RenderThread (SurfaceFlinger runs at the even higher `PRIORITY_URGENT_DISPLAY`), ensuring that window management operations are not preempted by lower-priority work.
+The `@ShellMainThread` is the primary execution thread for Shell components. It runs at `THREAD_PRIORITY_DISPLAY` priority, the same as RenderThread (SurfaceFlinger runs at the even higher `PRIORITY_URGENT_DISPLAY`). This makes sure that lower-priority work does not preempt window management operations.
 
 The threading model enforces a strict contract:
 
@@ -813,7 +813,7 @@ private static final int MSGQ_SLOW_DISPATCH_THRESHOLD_MS = 30;
 
 ### 23.3.1 Overview: From Legacy AppTransition to Shell Transitions
 
-The transition system manages how window changes (opening, closing, resizing, rotating) are animated. Android has evolved from a legacy `AppTransition` system (where WM Core both decided and animated transitions) to a "Shell Transitions" architecture where WM Core collects participating windows and Shell drives the animation.
+The transition system manages how window changes (opening, closing, resizing, rotating) are animated. Android has evolved from a legacy `AppTransition` system to a "Shell Transitions" architecture. In the legacy system, WM Core both decided and animated transitions. In Shell Transitions, WM Core collects participating windows and Shell drives the animation.
 
 The Shell Transitions system (`ENABLE_SHELL_TRANSITIONS = true`) is now the primary path. The key benefit is that Shell can orchestrate complex multi-window animations (e.g., entering split-screen with two tasks simultaneously) that the legacy system could not handle.
 
@@ -1525,7 +1525,7 @@ Displays use two identification schemes:
 | `mDisplayId` | `int` | Stable within boot | Assigned by `DisplayManagerService` |
 | `mCurrentUniqueDisplayId` | `String` | Can change at runtime | Physical display EDID or virtual display token |
 
-The `mCurrentUniqueDisplayId` can change if the underlying physical display hardware changes (e.g., hot-plugging a different monitor), while `mDisplayId` remains stable for the lifetime of the `DisplayContent`.
+The `mCurrentUniqueDisplayId` can change if the underlying physical display hardware changes (e.g., hot-plugging a different monitor). In contrast, `mDisplayId` remains stable for the lifetime of the `DisplayContent`.
 
 ### 23.5.3 Virtual Displays
 
@@ -1593,7 +1593,7 @@ The window system maintains focus at two levels:
 1. **Per-display focus** -- Each `DisplayContent` tracks its own focused window
 2. **Global focus** -- `RootWindowContainer` determines which display's focused window is the "top" focus (receives key events)
 
-This dual-level system is essential for multi-display scenarios where the user might interact with different displays simultaneously (e.g., typing on one display while watching a video on another).
+This dual-level system is essential for multi-display scenarios. In these scenarios, the user might use different displays at the same time (e.g., typing on one display while watching a video on another).
 
 ### 23.5.6 Display Groups and Topology
 
@@ -1652,7 +1652,7 @@ Each `DisplayContent` tracks both initial and overridden display metrics. These 
 - **Settings**: User-accessible display size/density settings
 - **System server**: Programmatic display configuration changes
 
-The override system maintains a ratio (`mForcedDisplayDensityRatio`) between the forced density and the initial density. When the display resolution changes (e.g., on a device with variable resolution support), this ratio is used to scale the density proportionally, preserving the user's chosen display size.
+The override system maintains a ratio (`mForcedDisplayDensityRatio`) between the forced density and the initial density. When the display resolution changes (e.g., on a device with variable resolution support), this ratio is used to scale the density proportionally. This keeps the user's chosen display size.
 
 ```java
 // DisplayContent fields for override tracking
@@ -1666,17 +1666,18 @@ float mForcedDisplayDensityRatio = 0.0f;
 
 ### 23.5.9 Cross-Display Drag and Drop
 
-A drag gesture is not confined to the display it started on. When a connected-display
-setup forms a single topology (Section 23.5.6), the user can press on content on one
-display, drag the shadow across the seam, and drop it on a window on another display.
-The mechanics live entirely in WindowManager's `DragState` and `DragDropController`
-(`frameworks/base/services/core/java/com/android/server/wm/`); the one drag surface
+A drag gesture is not confined to the display it started on. A connected-display
+setup forms a single topology (Section 23.5.6). In that case, the user can press on
+content on one display and drag the shadow across the seam. Then the user can drop it on a window on
+another display. The mechanics live entirely in WindowManager's `DragState` and
+`DragDropController`
+(`frameworks/base/services/core/java/com/android/server/wm/`). The one drag surface
 follows the pointer out of one display's surface hierarchy and into another's.
 
-A drag starts in `DragDropController.performDrag()` (`DragDropController.java:162`),
-which builds the drag `SurfaceControl`, parents it to the origin display's overlay
-(`reparentToOverlay`, line 301), and records both the origin and the current display on
-the `DragState`:
+A drag starts in `DragDropController.performDrag()` (`DragDropController.java:162`).
+This method builds the drag `SurfaceControl` and parents it to the origin display's
+overlay (`reparentToOverlay`, line 301). It also records both the origin and the current
+display on the `DragState`:
 
 ```java
 // DragState.java
@@ -1684,9 +1685,9 @@ DisplayContent mStartDragDisplayContent;    // line 139 -- where the drag began
 DisplayContent mCurrentDisplayContent;      // line 144 -- where the pointer is now
 ```
 
-The drag's own input window is created `DISPLAY_TOPOLOGY_AWARE` (`DragState.java:445`),
-which is what lets the pointer -- and therefore the drag -- leave the origin display at
-all: input dispatch follows the display topology instead of clamping to one display's
+The drag's own input window is created `DISPLAY_TOPOLOGY_AWARE` (`DragState.java:445`).
+This is what lets the pointer -- and therefore the drag -- leave the origin display at
+all. Input dispatch follows the display topology instead of clamping to one display's
 bounds.
 
 *How a drag surface follows the pointer onto another display*
@@ -1718,20 +1719,20 @@ Every drag motion event carries the display the pointer is currently over.
 (`DragState.java:725`). That method is where a display crossing is handled:
 
 - **Detect the crossing.** It compares the incoming `displayId` with the current one
-  (`if (mCurrentDisplayContent.mDisplayId != displayId)`, line 736); if the target
-  `DisplayContent` no longer exists the drag ends, otherwise `mCurrentDisplayContent` is
+  (`if (mCurrentDisplayContent.mDisplayId != displayId)`, line 736). If the target
+  `DisplayContent` no longer exists, the drag ends. Otherwise `mCurrentDisplayContent` is
   updated to the new display (line 745).
 - **Re-parent the drag surface.** The shadow is moved into the new display's surface
   tree -- `mTransaction.reparent(mSurfaceControl, mCurrentDisplayContent.getSurfaceControl())`
   (line 762). This is the literal hand-off of the surface between displays.
-- **Rescale for density.** Because two displays can differ in density, the animated
+- **Rescale for density.** The animated
   scale and thumbnail offsets are multiplied by the ratio of the new display's
-  `mBaseDisplayDensity` to the old one's (lines 756-761), so the shadow keeps the same
-  physical size as it crosses (a 1.0 scale onto a 420-dpi panel from a 160-dpi one
-  becomes about 2.6).
+  `mBaseDisplayDensity` to the old one's (lines 756-761). This is because two displays can differ in density. This keeps the shadow at the same
+  physical size as it crosses. For example, a 1.0 scale onto a 420-dpi panel from a
+  160-dpi one becomes about 2.6.
 - **Redirect input.** The drag input window's `displayId` is updated and re-applied
-  (`inputWindowHandle.displayId = displayId`, line 770) so subsequent dispatch and the
-  `ACTION_DRAG_LOCATION` / `ACTION_DROP` events route to windows on the new display.
+  (`inputWindowHandle.displayId = displayId`, line 770). As a result, subsequent dispatch and the
+  `ACTION_DRAG_LOCATION` / `ACTION_DROP` events then route to windows on the new display.
 
 Windows learn about a drag through `broadcastDragStartedLocked()`, which walks *every*
 window on *every* display (`mService.mRoot.forAllWindows(...)`), not just the origin
@@ -1740,28 +1741,28 @@ display's. One wrinkle is coordinates: `ACTION_DRAG_STARTED` carries window-rela
 So for a window on a different display from the drag origin, `sendDragStartedLocked()`
 deliberately sends a sentinel position
 (`new PointF(-newWin.getBounds().left - 1, -newWin.getBounds().top - 1)`,
-`DragState.java:569`) that signals "the drag is off this display" without implying a real
-distance; per-display `ACTION_DRAG_LOCATION` events, by contrast, carry valid
-display-local coordinates.
+`DragState.java:569`). This position signals "the drag is off this display" without
+implying a real distance. Per-display `ACTION_DRAG_LOCATION` events, by contrast, carry
+valid display-local coordinates.
 
 Two further details complete the cross-display picture:
 
-- **Return animation.** If a drag is released without being consumed and the pointer
-  ended on a different display from where it began
+- **Return animation.** Suppose a drag is released without being consumed. If the pointer
+  then ended on a different display from where it began
   (`mCurrentDisplayContent.getDisplayId() != mStartDragDisplayContent.getDisplayId()`,
   `DragState.java:825`), the snap-back animation scales toward
-  `DIFFERENT_DISPLAY_RETURN_ANIMATION_SCALE = 0.75f` (line 85) instead of animating a
+  `DIFFERENT_DISPLAY_RETURN_ANIMATION_SCALE = 0.75f` (line 85). This is used instead of animating a
   meaningless cross-display translation.
 - **Topology changes mid-drag.** If displays are added, removed, or rearranged while a
   drag is in flight, `DragDropController.handleDisplayTopologyChange()`
-  (`DragDropController.java:493`) cancels the drag outright, because the cached
+  (`DragDropController.java:493`) cancels the drag outright. This is because the cached
   `DisplayContent`s could now be stale.
 
 What is *not* gated is the destination display. `isValidDropTarget()` enforces the usual
 window-level rules -- `DRAG_FLAG_GLOBAL` (cross-window), `DRAG_FLAG_GLOBAL_SAME_APPLICATION`
-(same-UID only), URI-permission grants, and cross-profile copy restrictions -- but none of
-them test whether the target window is on the *same display* as the source, so a drop is
-allowed on any eligible window regardless of which display hosts it. Cross-display drag is
+(same-UID only), URI-permission grants, and cross-profile copy restrictions. None of
+these rules test whether the target window is on the *same display* as the source. So a
+drop is allowed on any eligible window regardless of which display hosts it. Cross-display drag is
 long-standing window-system behavior rather than an Android 17 addition; Android 17 leaves
 the model unchanged.
 
@@ -1771,7 +1772,7 @@ the model unchanged.
 
 ### 23.6.1 InputFlinger to WMS Pipeline
 
-The input system and window system are tightly coupled: InputFlinger needs to know the window layout to route touch events to the correct window, and WMS needs to track focus for keyboard input routing.
+The input system and window system are tightly coupled. InputFlinger needs to know the window layout to route touch events to the correct window. WMS needs to track focus for keyboard input routing.
 
 ```mermaid
 graph LR
@@ -1905,7 +1906,7 @@ graph LR
 
 The socket pair is created during `addWindow()` and the server-side socket is registered with `InputDispatcher` via the `InputWindowHandle`. The client-side socket is returned to the application through the `IWindowSession`.
 
-Events flow as serialized `InputMessage` structures through the socket. The application reads them in its `InputEventReceiver` (attached to the Looper), processes them through the `ViewRootImpl` InputStage chain, and sends a finished signal back through the socket.
+Events flow as serialized `InputMessage` structures through the socket. The application reads them in its `InputEventReceiver` (attached to the Looper), processes them through the `ViewRootImpl` InputStage chain. Then it sends a finished signal back through the socket.
 
 ### 23.6.7 Window Input Flags
 
@@ -1923,7 +1924,7 @@ Window input behavior is controlled by several flags:
 | `INPUT_FEATURE_DISPLAY_TOPOLOGY_AWARE` | Handles cross-display pointer movement |
 | `PRIVATE_FLAG_TRUSTED_OVERLAY` | Overlay is trusted (system-signed) |
 
-The `FLAG_NOT_TOUCH_MODAL` flag is particularly important for multi-window scenarios: without it, a window would consume all touch events within the display bounds, even those outside the window's visible area.
+The `FLAG_NOT_TOUCH_MODAL` flag is particularly important for multi-window scenarios. Without it, a window would consume all touch events within the display bounds, even those outside the window's visible area.
 
 ### 23.6.8 Input Consumers
 
@@ -1951,11 +1952,13 @@ Spy windows do not affect event dispatch to normal windows -- they only observe.
 
 Sections 23.6.1–23.6.9 trace input events from kernel evdev all the way
 into `ViewRootImpl`'s `InputStage` chain. None of those subsystems draw
-anything — they route events. The visible artefacts that follow the
-pointer around (the mouse cursor arrow, the white circles that appear
-under fingertips when "Show touches" is enabled in developer options,
-the stylus tip indicator) are drawn by a separate library at
-`frameworks/base/libs/input/`, packaged as `libinputservice`. This
+anything — they route events.
+
+The visible artifacts that follow the
+pointer around are the mouse cursor arrow and the stylus tip indicator.
+They also include the white circles that appear under fingertips when
+"Show touches" is enabled in developer options. A separate library draws them. It lives at
+`frameworks/base/libs/input/` and is packaged as `libinputservice`. This
 subsection covers what that library does, where it lives in the
 process tree, and how it interacts with InputFlinger and SurfaceFlinger.
 
@@ -1991,9 +1994,9 @@ virtual std::shared_ptr<PointerControllerInterface> createPointerController(
   process, not inside InputFlinger.
 
 Net effect: the heavy graphics dependencies stay out of the InputFlinger
-binary; InputFlinger holds an opaque `PointerControllerInterface*` and
-calls `move(...)`, `setPosition(...)`, `setSpots(...)`,
-`updatePointerIcon(...)` on it without knowing those calls eventually
+binary. InputFlinger holds an opaque `PointerControllerInterface*`. It calls
+`move(...)`, `setPosition(...)`, `setSpots(...)`,
+`updatePointerIcon(...)` on it. It does not know that those calls eventually
 schedule SurfaceFlinger transactions.
 
 #### What's in the Library
@@ -2075,15 +2078,16 @@ The shared base class holds:
 #### Sprite Lifecycle
 
 `SpriteController` is the heart of the rendering. Each `Sprite` is
-backed by a `SurfaceControl` parented under a per-display pointer
-overlay layer that WindowManagerService itself creates and z-orders:
+backed by a `SurfaceControl`. It is parented under a per-display pointer
+overlay layer that WindowManagerService itself creates and z-orders.
+
 `DisplayContent` builds a "Pointer Overlays" surface under its
-"Display Overlays" layer (which sits at `Integer.MAX_VALUE`) and
-assigns it the `TYPE_POINTER` policy layer. That parent surface
+"Display Overlays" layer (which sits at `Integer.MAX_VALUE`). It
+assigns this surface the `TYPE_POINTER` policy layer. That parent surface
 reaches `SpriteController` through the `ParentSurfaceProvider`
 callback, which routes from the JNI layer up through
 `InputManagerService` to `DisplayContent.getPointerOverlayLayer()` in
-`system_server` — SurfaceFlinger neither provides the layer nor
+`system_server`. SurfaceFlinger neither provides the layer nor
 chooses its z-order. The WM-assigned z-order keeps the cursor above
 every window, even `TYPE_SYSTEM_ALERT` windows.
 
@@ -2121,7 +2125,7 @@ Two layered design choices stand out:
   *copies* the locked state out, releases the lock, and then runs the
   transaction. Resizing or redrawing a sprite surface cannot stall an
   input thread, even briefly. The comment in `SpriteController.h:170`
-  spells this out: "the surfaces can be resized and redrawn without
+  spells this out. It says: "the surfaces can be resized and redrawn without
   blocking the client by holding a lock on the sprites for a long
   time".
 
@@ -2143,16 +2147,16 @@ The implementation:
 1. Looks up the per-display `TouchSpotController` (creating one on
    first use).
 2. For each bit in `spotIdBits`, either updates an existing `Spot` or
-   adopts one from a recycled pool (the controller caches up to 12
+   adopts one from a recycled pool. The controller caches up to 12
    sprite SurfaceControls to avoid Binder round-trips when the same
-   finger ID reappears).
+   finger ID reappears.
 3. Calls `Spot::updateSprite(...)` which sets icon / position / alpha
    on the underlying `Sprite`.
 4. Spots not present in the new bitmask fade out and are recycled.
 
 The `skipScreenshot` flag passed alongside spots adds
 `ISurfaceComposerClient::eSkipScreenshot` to the sprite's
-SurfaceControl flags, so screenshots and screen mirroring don't
+SurfaceControl flags. As a result, screenshots and screen mirroring do not
 capture the touch indicators (privacy + cleanliness for screencasts).
 
 #### Display Topology Awareness
@@ -2171,10 +2175,10 @@ which:
   screenshot-skipped on the right displays after topology changes.
 
 The lock used by the listener is the same lock the controller uses
-internally — the constructor comment in `PointerController.h:102`
-explains the choice: the listener can outlive the controller (because
-the `WindowInfosListener` registration takes a strong reference), so
-sharing the listener's lock with the controller avoids needing a
+internally. The constructor comment in `PointerController.h:102`
+explains the choice. The listener can outlive the controller (because
+the `WindowInfosListener` registration takes a strong reference). So
+sharing the listener's lock with the controller avoids a
 separate lock with the same ordering rules.
 
 #### Skip-Screenshot Per Display
@@ -2183,7 +2187,7 @@ separate lock with the same ordering rules.
 `clearSkipScreenshotFlags()` let the system request that the *cursor*
 also be excluded from screenshots / mirror feeds on specific displays.
 This is used for screenrecord and projection scenarios where the
-cursor would otherwise appear as a stale artefact in the captured
+cursor would otherwise appear as a stale artifact in the captured
 output. The flag flows through `MouseCursorController` down to
 `Sprite::setSkipScreenshot(bool)` and then into the sprite's
 `SurfaceControl` flags via the same async transaction path.
@@ -2195,22 +2199,22 @@ a subsystem along its dependency profile*:
 
 - InputFlinger gets to remain a tight, dependency-light daemon focused
   on event delivery.
-- The pointer/spot rendering policy gets to live in
-  `system_server`, where it can talk to SurfaceFlinger, load icon
+- The pointer/spot rendering policy lives in
+  `system_server`. There it can talk to SurfaceFlinger, load icon
   bitmaps via the framework's resource system, and respect window
   topology changes.
 - The seam between them (`PointerControllerInterface` +
   `PointerChoreographerPolicyInterface`) is small enough that
-  InputFlinger unit tests mock it trivially, while still giving
+  InputFlinger unit tests mock it trivially. It still gives
   `system_server` complete control over what actually appears on
   screen.
 
 For most callers, `libinputservice` is invisible — its surface is
 "the cursor follows my mouse and the touch dots appear when developer
-options are on". For framework developers tracing why the cursor
-flickers, fades, or appears on the wrong display, `PointerController`
+options are on". Framework developers who trace why the cursor
+flickers, fades, or appears on the wrong display. For them, `PointerController`
 and its `MouseCursorController` / `TouchSpotController` collaborators
-are where the answer lives.
+hold the answer.
 
 ---
 
@@ -2260,7 +2264,7 @@ graph TB
 
 This 1:1 mapping is a fundamental invariant of the system. Every time a child is added to or removed from a `WindowContainer`, a corresponding `SurfaceControl` reparent operation is issued to SurfaceFlinger via a `SurfaceControl.Transaction`.
 
-The `prepareSurfaces()` method, called during the surface placement pass, allows each `WindowContainer` to update its `SurfaceControl` properties (position, size, alpha, visibility, layer order) before the transaction is committed.
+The surface placement pass calls the `prepareSurfaces()` method. The method lets each `WindowContainer` update its `SurfaceControl` properties (position, size, alpha, visibility, layer order) before the transaction is committed.
 
 ### 23.7.2 Animation Leash Mechanism
 
@@ -2387,7 +2391,7 @@ void transferAnimation(SurfaceAnimator from) {
 }
 ```
 
-The `mAnimationTransferMap` in `WindowManagerService` ensures that when the animation adapter fires its completion callback, it is routed to the correct (new) `SurfaceAnimator` rather than the original.
+The `mAnimationTransferMap` in `WindowManagerService` makes sure that the completion callback of the animation adapter is routed to the new `SurfaceAnimator` and not to the original.
 
 ### 23.7.6 The Animatable Interface
 
@@ -2459,7 +2463,7 @@ private static SurfaceControl createAnimationLeash(Animatable animatable,
 }
 ```
 
-The leash is created as an `EffectLayer` (a container-only surface with no buffer), which means it does not consume GPU memory or affect composition performance -- it only provides a transform node in the surface tree.
+The leash is created as an `EffectLayer` (a container-only surface with no buffer). This means it does not consume GPU memory or affect composition performance. It only provides a transform node in the surface tree.
 
 ### 23.7.8 Transaction Batching and Atomic Apply
 
@@ -2495,9 +2499,9 @@ This atomic commit ensures that users never see intermediate states where some w
 
 - **`mPendingTransaction`** (`getPendingTransaction()`): Accumulated changes that will be applied during the next `performSurfacePlacement()`. This is the normal path for layout changes.
 
-- **`mSyncTransaction`** (`getSyncTransaction()`): Used during BLAST sync. When a container is part of a sync group, its surface changes are redirected to the sync transaction, which is held until all participants are ready, then applied atomically with the synced buffer deliveries.
+- **`mSyncTransaction`** (`getSyncTransaction()`): Used during BLAST sync. When a container is part of a sync group, its surface changes are redirected to the sync transaction. The sync transaction is held until all participants are ready. Then it is applied atomically with the synced buffer deliveries.
 
-The distinction is critical for transitions: during a transition, participants redirect their surface changes to the sync transaction so that the visual update (surfaces move) is synchronized with the content update (surfaces show new content).
+The distinction is critical for transitions. During a transition, participants redirect their surface changes to the sync transaction. This synchronizes the visual update (surfaces move) with the content update (surfaces show new content).
 
 ---
 
@@ -2550,7 +2554,7 @@ Sub-windows are children of an application window in the `WindowState` hierarchy
 
 ### 23.8.4 System Window Types
 
-System windows form the largest category. The offsets below are just constant values within the 2000-2999 range; relative z-order is assigned separately by `WindowManagerPolicy.getWindowLayerFromTypeLw()`, an explicit switch that maps each type to an arbitrary layer index and is not monotonic in the type value (`TYPE_WALLPAPER`, for example, maps to the bottom-most layer despite its mid-range type value):
+System windows form the largest category. The offsets below are just constant values within the 2000-2999 range. Relative z-order is assigned separately by `WindowManagerPolicy.getWindowLayerFromTypeLw()`. This method is an explicit switch that maps each type to an arbitrary layer index. The index is not monotonic in the type value (`TYPE_WALLPAPER`, for example, maps to the bottom-most layer despite its mid-range type value):
 
 | Constant | Offset | Description |
 |----------|--------|-------------|
@@ -2609,7 +2613,7 @@ int WINDOW_FREEZE_LAYER   = TYPE_LAYER_MULTIPLIER * 200;
 int SCREEN_FREEZE_LAYER_BASE = WINDOW_FREEZE_LAYER + TYPE_LAYER_MULTIPLIER;
 ```
 
-Each window gets a base layer of `getWindowLayerFromTypeLw(type) * TYPE_LAYER_MULTIPLIER` -- the policy-assigned layer index times the multiplier, not the raw type value -- with `TYPE_LAYER_OFFSET` providing room for sub-windows within that type. Most system window types resolve to policy layers above `APPLICATION_LAYER`, but not all: `TYPE_WALLPAPER` (2013) resolves to policy layer 1, below every application window.
+Each window gets a base layer of `getWindowLayerFromTypeLw(type) * TYPE_LAYER_MULTIPLIER`. This is the policy-assigned layer index times the multiplier, not the raw type value. `TYPE_LAYER_OFFSET` gives room for sub-windows within that type. Most system window types resolve to policy layers above `APPLICATION_LAYER`, but not all: `TYPE_WALLPAPER` (2013) resolves to policy layer 1, below every application window.
 
 ### 23.8.6 DisplayArea-Based Z-Ordering
 
@@ -2891,7 +2895,7 @@ private final InsetsControlTarget mEmptyImeControlTarget = new InsetsControlTarg
 
 ### 23.9.8 Insets Animation
 
-The insets system supports animated show/hide of system bars. When the user swipes to hide the navigation bar, or when the IME slides up, the animation is driven by the `InsetsController` on the client side with coordination from `InsetsStateController` on the server side.
+The insets system supports animated show/hide of system bars. When the user swipes to hide the navigation bar, or when the IME slides up, the `InsetsController` on the client side drives the animation. `InsetsStateController` on the server side coordinates with it.
 
 The animation flow:
 
@@ -2926,7 +2930,7 @@ With Android 15's edge-to-edge enforcement, the insets system becomes even more 
 PRIVATE_FLAG_OPT_OUT_EDGE_TO_EDGE  // App explicitly opts out
 ```
 
-The `FLAG_FORCE_CONSUMING` on `InsetsSource` forces certain insets to be consumed by the window framework even if the app does not handle them, preventing content from rendering behind system bars.
+The `FLAG_FORCE_CONSUMING` on `InsetsSource` forces certain insets to be consumed by the window framework even if the app does not handle them. This prevents content from rendering behind system bars.
 
 ### 23.9.10 Safe Region Bounds
 
@@ -2963,7 +2967,7 @@ Core components:
 
 PiP transitions integrate with the broader Shell transition system through custom transition types (`TRANSIT_EXIT_PIP`, `TRANSIT_REMOVE_PIP`, `TRANSIT_PIP_BOUNDS_CHANGE`).
 
-The PiP-to-split-screen flow (`TRANSIT_EXIT_PIP_TO_SPLIT`) demonstrates the cross-feature transition handling: a PiP window expanding into one side of a split-screen layout requires coordinating both the PiP and split-screen modules.
+The PiP-to-split-screen flow (`TRANSIT_EXIT_PIP_TO_SPLIT`) demonstrates the cross-feature transition handling. A PiP window expands into one side of a split-screen layout. This requires coordination of both the PiP and split-screen modules.
 
 **Cross-reference:** The detailed PiP analysis is in the companion report, Part 2, section 66.
 
@@ -3029,41 +3033,49 @@ Desktop windowing is the most complex Shell feature, providing a full desktop ex
 The desktop mode directory alone contains 50+ files, reflecting the significant engineering investment in bringing desktop-class windowing to Android.
 
 **Multiple desks.** A single display can host more than one *desk* (virtual
-desktop), each with its own set of open windows, in the same way a Linux desktop
-offers several workspaces. The `multidesks/` package implements this on top of
-the desktop-windowing stack. `DesksController`
+desktop), each with its own set of open windows. A Linux desktop offers several
+workspaces in the same way. The `multidesks/` package implements this on top of
+the desktop-windowing stack.
+
+`DesksController`
 (`.../desktopmode/multidesks/DesksController.kt`) owns the create/activate/
-deactivate/remove logic and drives a `DesksOrganizer` (the `RootTaskDesksOrganizer`
-implementation) that gives each desk its own root task container under the
-display's `TaskDisplayArea`; activating a desk reorders its container to the
-front and a `DeskSwitchTransitionHandler` animates the lateral move between two
-desks on the same display. The per-desk state -- `activeTasks`, `visibleTasks`,
-`minimizedTasks`, and the `leftTiledTaskId`/`rightTiledTaskId` snap slots -- is
+deactivate/remove logic. It drives a `DesksOrganizer` (the `RootTaskDesksOrganizer`
+implementation). The organizer gives each desk its own root task container under
+the display's `TaskDisplayArea`. Activating a desk reorders its container to the
+front. A `DeskSwitchTransitionHandler` animates the lateral move between two
+desks on the same display.
+
+The per-desk state is `activeTasks`, `visibleTasks`,
+`minimizedTasks`, and the `leftTiledTaskId`/`rightTiledTaskId` snap slots. It is
 held in the `Desk` data model (`.../desktopmode/data/Desk.kt`) inside the
-per-user `DesktopRepository` (which tracks per-display desk state internally),
-instantiated per user by `DesktopUserRepositories`. So multiple desks reuse the existing per-display task hierarchy and
-transition machinery rather than introducing a parallel one: a desk is a root
-task the organizer shows or hides, and switching desks is an ordinary Shell
+per-user `DesktopRepository` (which tracks per-display desk state internally).
+`DesktopUserRepositories` instantiates that repository for each user.
+
+So multiple desks reuse the existing per-display task hierarchy and
+transition machinery. They do not add a parallel one. A desk is a root
+task the organizer shows or hides. Switching desks is an ordinary Shell
 transition.
 
 A few desktop sub-features round out the surface presentation.
+
 `DesktopWallpaperActivity` (`.../desktopmode/DesktopWallpaperActivity.kt`) is a
 transparent activity that paints the wallpaper behind the freeform windows, gated
 by `enable_desktop_windowing_wallpaper_activity`. `DesktopImmersiveController`
 (`.../desktopmode/DesktopImmersiveController.kt`) moves a freeform task in and out
-of a full-immersive state where the task fills the display and the status bar is
-transient, via `moveTaskToImmersive()`. `DesktopHomeScreenPeekController`
+of a full-immersive state, via `moveTaskToImmersive()`. In this state the task
+fills the display and the status bar is transient. `DesktopHomeScreenPeekController`
 (`.../desktopmode/homescreenpeeking/DesktopHomeScreenPeekController.kt`) shifts
 the desktop windows toward a screen edge to peek at the home screen behind them,
-gated by `enable_home_screen_peeking`. First-run onboarding for the desktop
-gestures lives in `education/`: `AppHandleEducationController` introduces the
+gated by `enable_home_screen_peeking`.
+
+First-run onboarding for the desktop
+gestures lives in `education/`. `AppHandleEducationController` introduces the
 app-handle drag that pulls an app into a freeform window
-(`enable_desktop_windowing_app_handle_education`), and
-`AppToWebEducationController` introduces the app-to-web transition
+(`enable_desktop_windowing_app_handle_education`). `AppToWebEducationController` introduces the app-to-web transition
 (`enable_desktop_windowing_app_to_web_education`,
 `enable_enhanced_app_to_web_transition`).
 
-**Cross-reference:** Chapter 22 (Activity and Window Management) covers the *WM-core* side of desktop windowing -- how `Task` windowing modes, the desktop task lifecycle, and `DesktopExperienceFlags` gating drive policy. This chapter covers the *Shell presentation* side: the surfaces, transition handlers, and caption decorations that animate desktop windows. Detailed desktop mode analysis is also in the companion report, Part 2, section 69.
+**Cross-reference:** Chapter 22 (Activity and Window Management) covers the *WM-core* side of desktop windowing. It explains how `Task` windowing modes, the desktop task lifecycle, and `DesktopExperienceFlags` gating drive policy. This chapter covers the *Shell presentation* side: the surfaces, transition handlers, and caption decorations that animate desktop windows. Detailed desktop mode analysis is also in the companion report, Part 2, section 69.
 
 ### 23.10.5 Predictive Back
 
@@ -3157,7 +3169,7 @@ Mixed transitions arise in several scenarios:
 | Desktop task moving while split is active | Desktop + Split |
 | Recents gesture while PiP is visible | Recents + PiP |
 
-`MixedTransitionHandler` itself is only a marker interface extending `Transitions.TransitionHandler`; the implementation, `DefaultMixedHandler`, detects these scenarios by examining the `TransitionInfo` changes and delegates sub-animations to the appropriate feature handlers while coordinating their timing.
+`MixedTransitionHandler` itself is only a marker interface that extends `Transitions.TransitionHandler`. The implementation, `DefaultMixedHandler`, detects these scenarios by examining the `TransitionInfo` changes. It delegates sub-animations to the appropriate feature handlers and coordinates their timing.
 
 `DefaultMixedTransition` and `RecentsMixedTransition` subclass `DefaultMixedHandler.MixedTransition` for common mixed scenarios:
 
@@ -3182,13 +3194,13 @@ Key capabilities:
 - **Theming**: Adapts to light/dark mode and accent colors
 - **View host pooling**: Reuses `SurfaceControlViewHost` instances for efficiency
 
-The caption bar system has evolved from a legacy `DecorView`-based approach (where the app process rendered its own title bar) to a Shell-based approach (where Shell renders the title bar externally). The Shell approach provides consistent styling, eliminates app-side rendering overhead, and enables system-level drag/resize handling.
+The caption bar system has evolved. The legacy approach was based on `DecorView` (the app process rendered its own title bar). The new approach is based on Shell (Shell renders the title bar externally). The Shell approach provides consistent styling, eliminates app-side rendering overhead, and enables system-level drag/resize handling.
 
 Resizing also covers *snapping*. Dragging a freeform window to a screen edge, or
 toggling maximize, snaps it to half the display through `SnapController`
-(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/SnapController.kt`),
-whose `snapToHalfScreen()` takes a `DesktopTasksController.SnapPosition` (left or
-right) and is wired into the window-decoration drag positioners. Snapping works
+(`frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/SnapController.kt`).
+Its `snapToHalfScreen()` takes a `DesktopTasksController.SnapPosition` (left or
+right). It is wired into the window-decoration drag positioners. Snapping works
 across monitors when `enable_cross_display_snap_support` is set, and
 `enable_freeform_box_shadows_v2` controls the drop shadow drawn around freeform
 windows.
@@ -3228,7 +3240,7 @@ The initialization order matters because features depend on infrastructure compo
 
 **Directory:** `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/crashhandling/`
 
-`ShellCrashHandler` is not an exception catcher. WM Shell runs inside the SystemUI process, so an unhandled Shell exception takes down SystemUI -- not the system server -- and the process is restarted. `ShellCrashHandler` registers with `ShellInit` and runs at initialization time *after* such a restart, cleaning up state left over from before the crash:
+`ShellCrashHandler` is not an exception catcher. WM Shell runs inside the SystemUI process, so an unhandled Shell exception takes down SystemUI -- not the system server -- and the process is restarted. `ShellCrashHandler` registers with `ShellInit` and runs at initialization time *after* such a restart. It cleans up state left over from before the crash:
 
 1. Removes bubble overrides left on running tasks (`handleBubbleTaskCleanup()`)
 2. Cleans up leftover PiP task state (`handlePipTaskCleanup()`)
@@ -3244,7 +3256,7 @@ Shell integrates with Android's `SystemPerformanceHinter` to provide performance
 - Heavy animations (split enter, desktop window drag) request sustained performance
 - Animation completion releases the performance boost
 
-The `InteractionJankMonitor` integration tracks frame drops during Shell-driven animations, enabling jank detection and reporting for transitions, PiP resize, split divider drag, and other interactive operations.
+The `InteractionJankMonitor` integration tracks frame drops during Shell-driven animations. This enables jank detection and reporting for transitions, PiP resize, split divider drag, and other interactive operations.
 
 ---
 
@@ -3379,7 +3391,7 @@ Shell has its own ProtoLog groups (e.g., `WM_SHELL_TRANSITIONS`, `WM_SHELL_SPLIT
 
 **Window traces:**
 
-`WindowTracing` captures periodic snapshots of the entire window hierarchy as Protocol Buffer messages, which can be analyzed with the Winscope tool for debugging layout, visibility, and z-order issues.
+`WindowTracing` captures periodic snapshots of the entire window hierarchy as Protocol Buffer messages. They can be analyzed with the Winscope tool to debug layout, visibility, and z-order issues.
 
 ### 23.11.5 Architecture Cheat Sheet
 
@@ -3403,7 +3415,7 @@ For quick reference, the core architectural patterns:
 
 ## 23.12 Android 17 Window System Changes
 
-Android 17 does not restructure the window system, but it does land focused changes on the parts this chapter owns: insets delivery, connected-display presentation, and caption-bar handling. The desktop *windowing-mode policy and lifecycle* live in WM core and are covered in Chapter 22; the changes below are the window, surface, insets, and display-side pieces. Each flag here is a real entry in the Android 17 (`android17-release`) tree, so a reader can grep the same name in source.
+Android 17 does not restructure the window system. It does land focused changes on the parts this chapter owns: insets delivery, connected-display presentation, and caption-bar handling. The desktop *windowing-mode policy and lifecycle* live in WM core, and Chapter 22 covers them. The changes below are the window, surface, insets, and display-side pieces. Each flag here is a real entry in the Android 17 (`android17-release`) tree, so a reader can grep the same name in source.
 
 ### 23.12.1 Insets Delivery and Rotation
 
@@ -3413,7 +3425,9 @@ Two `windowing_frontend` flags refine how insets reach clients.
 
 - `send_new_insets_state_with_rotation` -- *"Send the new InsetsState to the shell when the display rotates."* Before this, the insets snapshot and the rotation could be delivered out of step, so a client could briefly lay out against pre-rotation insets. The display-update path now bundles the fresh `InsetsState` with the rotation event. The flag is read in `DisplayUpdater.java`, `DeferredDisplayUpdater.java`, and `DisplayRotation.java` (all under `frameworks/base/services/core/java/com/android/server/wm/`) via `com.android.window.flags.Flags.sendNewInsetsStateWithRotation()`.
 
-- `synced_insets_animation` -- *"Synchronize the applied insets to a view with the ongoing system insets animation."* This is a client-side change consumed in `frameworks/base/core/java/android/view/InsetsController.java` and `frameworks/base/core/java/android/view/ViewRootImpl.java`. It keeps the insets a view sees in step with the in-flight system-bar/IME animation, so content does not jump a frame ahead of (or behind) the bar it is reacting to. This refines the insets contract described in section 23.9 rather than replacing it: the server still grants an `InsetsSourceControl` with a leash, and the client still animates it; the flag just tightens the timing of when the *applied* insets value updates.
+- `synced_insets_animation` -- *"Synchronize the applied insets to a view with the ongoing system insets animation."* This is a client-side change consumed in `frameworks/base/core/java/android/view/InsetsController.java` and `frameworks/base/core/java/android/view/ViewRootImpl.java`. It keeps the insets a view sees in step with the in-flight system-bar/IME animation. Content therefore does not jump a frame ahead of (or behind) the bar it is reacting to.
+
+    This refines the insets contract described in section 23.9 rather than replacing it. The server still grants an `InsetsSourceControl` with a leash, and the client still animates it. The flag just tightens the timing of when the *applied* insets value updates.
 
 Insets delivery on rotation (Android 17):
 
@@ -3437,44 +3451,44 @@ The connected-display work (external monitors, large screens) adds display-side 
 
 **Source file:** `frameworks/base/core/java/android/window/flags/lse_desktop_experience.aconfig`
 
-- `mask_presentation_flags_on_internal_displays` -- *"Mask Display.FLAG_PRESENTATION for certain apps on internal displays."* Some apps treat any `FLAG_PRESENTATION` display as a secondary external screen; on a connected-display device the internal panel should not look like a presentation target to those apps, so the flag masks the flag for them.
+- `mask_presentation_flags_on_internal_displays` -- *"Mask Display.FLAG_PRESENTATION for certain apps on internal displays."* Some apps treat any `FLAG_PRESENTATION` display as a secondary external screen. On a connected-display device the internal panel should not look like a presentation target to those apps. So the flag masks it for them.
 - `enable_connected_displays_wallpaper_presentations` -- extends wallpaper presentation to connected external displays.
 - `disable_display_force_freeform_on_pc` -- *"Prevents a display from being forced to freeform solely due to it being on PC."* A display attached to a PC form factor is no longer unconditionally pushed into freeform windowing; the windowing mode is decided by policy instead.
 - `enable_presentation_stops_top_task_bugfix` -- corrects top-task handling when a presentation is shown on a display.
 
-The display content-mode machinery itself is gated by `DesktopExperienceFlags.ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT`, read in `DisplayContent.java` (e.g. around the content-mode update paths). `DesktopExperienceFlags` (`frameworks/base/core/java/android/window/DesktopExperienceFlags.java`) is the Android 17 gating mechanism that wraps these window flags with a developer-options override, so the whole connected-display feature can be toggled coherently for testing.
+The display content-mode machinery itself is gated by `DesktopExperienceFlags.ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT`, read in `DisplayContent.java` (e.g. around the content-mode update paths). `DesktopExperienceFlags` (`frameworks/base/core/java/android/window/DesktopExperienceFlags.java`) is the Android 17 gating mechanism that wraps these window flags with a developer-options override. With it, the whole connected-display feature can be toggled coherently for testing.
 
 On the Shell side, two transition handlers in `frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/desktopmode/` own the surface choreography when displays come and go:
 
 - `DesktopModeMoveToDisplayTransitionHandler.kt` -- animates moving a desk task to another display.
-- `DisplayDisconnectTransitionHandler.kt` -- *"animate the transition from disconnecting a display,"* migrating its content off the removed display (its own source TODO notes it may move out of the desktop package as it generalizes).
+- `DisplayDisconnectTransitionHandler.kt` -- *"animate the transition from disconnecting a display,"* It migrates its content off the removed display. Its own source TODO notes that it may move out of the desktop package as it generalizes.
 
-These complement, rather than replace, the per-`DisplayContent` reparenting model from section 23.5: WM core still reparents `Task` containers across `DisplayContent` instances, and these handlers provide the Shell-side animation for that reparent.
+These complement, rather than replace, the per-`DisplayContent` reparenting model from section 23.5. WM core still reparents `Task` containers across `DisplayContent` instances. These handlers provide the Shell-side animation for that reparent.
 
 ### 23.12.3 Caption-Bar Insets Refactor
 
 Caption bars (the title bars on freeform/desktop windows from section 23.10.9) gained finer insets control in Android 17.
 
-- `FLAG_FORCE_CONSUMING_OPAQUE_CAPTION_BAR` (`frameworks/base/core/java/android/view/InsetsSource.java`) is a caption-specific sibling of `FLAG_FORCE_CONSUMING` (section 23.9.9). When set, the `captionBar()` insets are consumed *even when the caption bar is requested visible* -- unless the window opts into `APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND`. This lets the system keep app content out from under an opaque caption while still allowing apps that draw their own transparent caption background to take the space.
-- `refactor_caption_sandboxing_to_core` (`lse_desktop_experience`) -- *"Refactor sandboxing of caption insets from app bounds from shell to core."* The logic that excludes caption insets from an app's reported bounds is moving from Shell into WM core, consolidating where the app-bounds sandboxing decision is made.
+- `FLAG_FORCE_CONSUMING_OPAQUE_CAPTION_BAR` (`frameworks/base/core/java/android/view/InsetsSource.java`) is a caption-specific sibling of `FLAG_FORCE_CONSUMING` (section 23.9.9). When set, the `captionBar()` insets are consumed *even when the caption bar is requested visible* -- unless the window opts into `APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND`. This lets the system keep app content out from under an opaque caption. It still lets apps that draw their own transparent caption background take the space.
+- `refactor_caption_sandboxing_to_core` (`lse_desktop_experience`) -- *"Refactor sandboxing of caption insets from app bounds from shell to core."* The logic that excludes caption insets from an app's reported bounds is moving from Shell into WM core. This consolidates where the app-bounds sandboxing decision is made.
 - `exclude_caption_insets_opt_out_api` (exported) -- *"Allow app developers to opt out from OVERRIDE_EXCLUDE_CAPTION_INSETS_FROM_APP_BOUNDS,"* giving apps a public API to opt out of the caption-insets exclusion behavior.
 
-Together these tighten the section 23.9 insets model for the desktop/caption case: caption insets become a first-class, core-owned insets source with an explicit consume policy and an app opt-out, rather than a Shell-only adjustment to app bounds.
+Together these tighten the section 23.9 insets model for the desktop/caption case. Caption insets become a first-class, core-owned insets source with an explicit consume policy and an app opt-out, rather than a Shell-only adjustment to app bounds.
 
 ### 23.12.4 Flexible Split
 
 The two-pane split from section 23.4.2 is generalizing toward flexible layouts in Android 17, gated by Shell flags in `frameworks/base/libs/WindowManager/Shell/aconfig/multitasking.aconfig`:
 
 - `enable_flexible_split` -- read across `StageCoordinator.java` and `DesktopTasksController.kt` as `com.android.wm.shell.Flags.enableFlexibleSplit()`.
-- `enable_flexible_two_app_split` -- read in `SplitStatusBarHider.kt` and related split components as `enableFlexibleTwoAppSplit()`, covering the two-app flexible split layout (including 10:90 / 90:10 ratios) and the matching status-bar handling.
+- `enable_flexible_two_app_split` -- read in `SplitStatusBarHider.kt` and related split components as `enableFlexibleTwoAppSplit()`. It covers the two-app flexible split layout (including 10:90 / 90:10 ratios) and the matching status-bar handling.
 
 The new `LayoutEngine.kt` (`.../splitscreen/LayoutEngine.kt`) computes flexible-split bounds from a node tree (`calculateFlexibleSplit()`), which is the layout substrate for moving beyond a single fixed divider. This is an evolution of the `StageCoordinator` / `SplitLayout` model in section 23.4.2, not a replacement: the stage and listener structure is unchanged.
 
 ### 23.12.5 SurfaceControlViewHost and Surface Mirroring
 
-Android 17 lands a cluster of changes on the cross-process view-embedding path -- `SurfaceControlViewHost` (SCVH) and its engine `WindowlessWindowManager` -- plus a new public surface-mirroring API. SCVH is the mechanism that lets one process host a `View` hierarchy inside another process's `SurfaceControl` tree (used by Bubbles in 23.10.2 and window decorations in 23.10.9); these changes refine it rather than restructure it.
+Android 17 lands a cluster of changes on the cross-process view-embedding path -- `SurfaceControlViewHost` (SCVH) and its engine `WindowlessWindowManager` -- plus a new public surface-mirroring API. SCVH is the mechanism that lets one process host a `View` hierarchy inside another process's `SurfaceControl` tree. Bubbles use it in 23.10.2, and window decorations use it in 23.10.9. These changes refine it rather than restructure it.
 
-**A new public mirror API.** `AttachedSurfaceControl.createMirror()` (`@FlaggedApi(mirror_surface_api)`, `frameworks/base/core/java/android/view/AttachedSurfaceControl.java`; the working implementation is `ViewRootImpl.createMirror()`, line 13104) returns a new `SurfaceControl` that parents a *mirror* of the window's root surface hierarchy. Transforms applied to the returned control affect only the copy, not the original, so an app can show a live duplicate of its own content on another surface without re-rendering it. The flag description is explicit: "allows apps to get [a] mirrored surface control of [their] own window." The caller owns the returned control and must `release()` it.
+**A new public mirror API.** `AttachedSurfaceControl.createMirror()` (`@FlaggedApi(mirror_surface_api)`, `frameworks/base/core/java/android/view/AttachedSurfaceControl.java`; the working implementation is `ViewRootImpl.createMirror()`, line 13104) returns a new `SurfaceControl` that parents a *mirror* of the window's root surface hierarchy. Transforms applied to the returned control affect only the copy, not the original. So an app can show a live duplicate of its own content on another surface without rendering it again. The flag description is explicit: "allows apps to get [a] mirrored surface control of [their] own window." The caller owns the returned control and must `release()` it.
 
 createMirror() parents an independent copy of the window's surface tree:
 
@@ -3491,13 +3505,13 @@ graph TD
     B -. "mirrored" .-> Bp
 ```
 
-**Identifiable embedded surfaces.** `SCVH.setView` now names the backing `SurfaceControl` with the hosting package -- `setName("SurfaceControlViewHost[" + context.getPackageName() + "]")` -- and the SCVH `Builder` gained `setTitle()` / `getTitle()` (`@FlaggedApi(scvh_set_focusable_api)`), whose title is threaded into the window `LayoutParams` (`wmLayoutParams.setTitle(mTitle)`) and the windowless input-handle name. Both make embedded surfaces identifiable in `dumpsys SurfaceFlinger` and Winscope, where every SCVH surface previously shared the generic name "SurfaceControlViewHost". A new `@hide getViewRoot()` exposes the wrapped `ViewRootImpl`.
+**Identifiable embedded surfaces.** `SCVH.setView` now names the backing `SurfaceControl` with the hosting package -- `setName("SurfaceControlViewHost[" + context.getPackageName() + "]")`. The SCVH `Builder` gained `setTitle()` / `getTitle()` (`@FlaggedApi(scvh_set_focusable_api)`). Its title is threaded into the window `LayoutParams` (`wmLayoutParams.setTitle(mTitle)`) and the windowless input-handle name. Both make embedded surfaces identifiable in `dumpsys SurfaceFlinger` and Winscope, where every SCVH surface previously shared the generic name "SurfaceControlViewHost". A new `@hide getViewRoot()` exposes the wrapped `ViewRootImpl`.
 
-**Focus and lifetime fixes.** The flag gating SCVH's focus-control API was renamed `scvh_set_focusable` -> `scvh_set_focusable_api`, and a companion bugfix flag `scvh_surface_control_lifetime_fix` ("Fix lifetime issue with SurfaceControl's created by SCVH") closes a real lifetime bug in SCVH-created surfaces (both in `frameworks/base/core/java/android/window/flags/window_surfaces.aconfig`).
+**Focus and lifetime fixes.** The flag gating SCVH's focus-control API was renamed `scvh_set_focusable` -> `scvh_set_focusable_api`. A companion bugfix flag `scvh_surface_control_lifetime_fix` ("Fix lifetime issue with SurfaceControl's created by SCVH") closes a real lifetime bug in SCVH-created surfaces (both in `frameworks/base/core/java/android/window/flags/window_surfaces.aconfig`).
 
-**Windowless input plumbing refactor.** `WindowlessWindowManager` now passes a single `WindowInputChannelParams` struct (`frameworks/base/core/java/android/view/WindowInputChannelParams.aidl`) to `grantInputChannel()` / `updateInputChannel()` instead of long positional argument lists, and it calls `dispatchStateToClients()` on state changes so embedded hosts learn about host-token and configuration updates (it forwards `onConfigurationChanged` and the host `InputTransferToken` through `onDispatchAttachedToWindow`). The dead `addToDisplayWithoutInputChannel()` override was removed.
+**Windowless input plumbing refactor.** `WindowlessWindowManager` now passes a single `WindowInputChannelParams` struct (`frameworks/base/core/java/android/view/WindowInputChannelParams.aidl`) to `grantInputChannel()` / `updateInputChannel()` instead of long positional argument lists. It also calls `dispatchStateToClients()` on state changes, so embedded hosts learn about host-token and configuration updates. It forwards `onConfigurationChanged` and the host `InputTransferToken` through `onDispatchAttachedToWindow`. The dead `addToDisplayWithoutInputChannel()` override was removed.
 
-These are distinct from out-of-process rendering (Chapter 13, section 13.41). SCVH embeds a *live View hierarchy* from another process by sharing SurfaceControls and input channels, and that hierarchy still renders in the embedded process; OOPR instead ships a *recorded command buffer* for SurfaceFlinger to replay. Both cross the process boundary through SurfaceControl transactions, but they solve different problems.
+These are distinct from out-of-process rendering (Chapter 13, section 13.41). SCVH shares SurfaceControls and input channels to embed a *live View hierarchy* from another process. That hierarchy still renders in the embedded process. OOPR instead ships a *recorded command buffer* for SurfaceFlinger to replay. Both cross the process boundary through SurfaceControl transactions, but they solve different problems.
 
 ---
 
@@ -3505,15 +3519,19 @@ These are distinct from out-of-process rendering (Chapter 13, section 13.41). SC
 
 Use a device or emulator running Android 17 (`android17-release`) to observe the structures this chapter describes. The window system exposes most of its state through `dumpsys window`.
 
-1. **Walk the WindowContainer tree.** Run `adb shell dumpsys window containers` and trace the hierarchy from `RootWindowContainer` down through `DisplayContent`, the `DisplayArea` nodes, `TaskDisplayArea`, `Task`, `ActivityRecord`, and `WindowState` (section 23.1.4). Confirm system windows (status bar, nav bar, IME) sit in their own `DisplayArea.Tokens` nodes separate from the app `TaskDisplayArea`.
+1. **Walk the WindowContainer tree.** Run `adb shell dumpsys window containers`. Trace the hierarchy from `RootWindowContainer` down through `DisplayContent`, the `DisplayArea` nodes, `TaskDisplayArea`, `Task`, `ActivityRecord`, and `WindowState` (section 23.1.4). Confirm system windows (status bar, nav bar, IME) sit in their own `DisplayArea.Tokens` nodes separate from the app `TaskDisplayArea`.
 
-2. **Inspect per-display insets.** With an app open, run `adb shell dumpsys window displays` and find the `InsetsState` / `InsetsSourceProvider` block (section 23.9). Show or hide the IME and re-dump to see the `ime()` source appear and disappear, and the focused window's `InsetsControlTarget` change.
+2. **Inspect per-display insets.** With an app open, run `adb shell dumpsys window displays` and find the `InsetsState` / `InsetsSourceProvider` block (section 23.9). Show or hide the IME and dump again. See the `ime()` source appear and disappear. See the focused window's `InsetsControlTarget` change.
 
-3. **Watch a transition.** Run `adb shell dumpsys window` and locate the transition/`TransitionController` state in the dump (there is no `transitions` sub-command), then launch and close an app while re-dumping. Observe a `Transition` move through collecting/ready/playing, and note the track assignment (section 23.3.9). Capturing a Winscope trace during the launch lets you replay the leash animation (section 23.7.2) frame by frame.
+3. **Watch a transition.** Run `adb shell dumpsys window`. Locate the transition/`TransitionController` state in the dump (there is no `transitions` sub-command). Then launch and close an app, and dump again while it runs. Observe a `Transition` move through collecting/ready/playing, and note the track assignment (section 23.3.9).
 
-4. **Exercise the Android 17 paths.** If the device supports connected displays or desktop windowing, enable the desktop-experience developer toggle (backed by `DesktopExperienceFlags`, section 23.12.2) and attach an external display. Move a window between displays and watch `dumpsys window displays` show the `Task` reparent to the second `DisplayContent`. Rotate the device with an app that reacts to insets to see the bundled rotation + `InsetsState` delivery (section 23.12.1).
+    Capture a Winscope trace during the launch. Then replay the leash animation (section 23.7.2) frame by frame.
 
-5. **Map a window type to its layer.** Pick a window from `dumpsys window windows`, note its type and the `DisplayArea` it landed in, and reconcile that against the type-to-`DisplayArea` routing in sections 23.8.5 and 23.8.10.
+4. **Exercise the Android 17 paths.** If the device supports connected displays or desktop windowing, enable the desktop-experience developer toggle. It is backed by `DesktopExperienceFlags` (section 23.12.2). Then attach an external display.
+
+    Move a window between displays and watch `dumpsys window displays` show the `Task` reparent to the second `DisplayContent`. Rotate the device with an app that reacts to insets. See the bundled rotation + `InsetsState` delivery (section 23.12.1).
+
+5. **Map a window type to its layer.** Pick a window from `dumpsys window windows`, note its type and the `DisplayArea` it landed in. Reconcile that against the type-to-`DisplayArea` routing in sections 23.8.5 and 23.8.10.
 
 ## Summary
 
@@ -3531,7 +3549,7 @@ The Android window system is a three-tier architecture:
 
 2. **Organizer pattern** -- `TaskOrganizer`, `DisplayAreaOrganizer`, and `TaskFragmentOrganizer` allow Shell to subscribe to and control subsets of the hierarchy via callbacks, without modifying Core policy code.
 
-3. **Shell transitions** -- WM Core collects participating containers into a `Transition`, waits for readiness via `BLASTSyncEngine`, then hands a `TransitionInfo` with surface leashes to Shell for animation. Shell returns control via `finishTransition()`. Multiple tracks enable parallel animations.
+3. **Shell transitions** -- WM Core collects participating containers into a `Transition`, waits for readiness via `BLASTSyncEngine`. Then it hands a `TransitionInfo` with surface leashes to Shell for animation. Shell returns control via `finishTransition()`. Multiple tracks enable parallel animations.
 
 4. **Leash animation** -- To animate a surface subtree, a new "leash" `EffectLayer` is interposed between the container and its parent. The animation transforms the leash; children move with it. After animation, children are reparented back.
 
@@ -3560,14 +3578,14 @@ The window system is one of the largest subsystems in AOSP:
 
 The window system is evolving in several clear directions:
 
-1. **Desktop-first**: Over 50 files in the `desktopmode/` directory, plus feature flags for desktop windowing, multi-desk support, and display focus management, signal a strategic push toward desktop-class computing.
+1. **Desktop-first**: Over 50 files in the `desktopmode/` directory signal a strategic push toward desktop-class computing. Feature flags for desktop windowing, multi-desk support, and display focus management signal the same push.
 
 2. **Kotlin adoption**: New Shell components (like `StageCoordinator2.kt`, `DesktopTasksController.kt`, `WindowDragTransitionHandler.kt`) are written in Kotlin, while existing Java components are maintained.
 
 3. **Parallel transitions**: The track-based parallel transition machinery in `TransitionController` (WM Core) and the Shell `Transitions` class continues to evolve toward more concurrent animation support.
 
-4. **Multi-display maturity**: Android 17 flags like `enable_connected_displays_wallpaper_presentations` and `mask_presentation_flags_on_internal_displays`, the `DesktopExperienceFlags.ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT` gate, and the cross-display desk handlers (`DesktopModeMoveToDisplayTransitionHandler`, `DisplayDisconnectTransitionHandler`) indicate deepening multi-display support beyond mirroring toward true multi-display computing (see section 23.12).
+4. **Multi-display maturity**: Android 17 flags like `enable_connected_displays_wallpaper_presentations` and `mask_presentation_flags_on_internal_displays`, the `DesktopExperienceFlags.ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT` gate, and the cross-display desk handlers (`DesktopModeMoveToDisplayTransitionHandler`, `DisplayDisconnectTransitionHandler`) indicate deeper multi-display support. This support goes beyond mirroring toward true multi-display computing (see section 23.12).
 
 5. **Flexible split**: The `enableFlexibleSplit` and `enableFlexibleTwoAppSplit` flags suggest movement toward more dynamic multi-window layouts beyond the traditional two-pane split.
 
-For the 100-section deep dive into every subsystem, implementation detail, and edge case, see the companion three-part report (Part 1: sections 1-45, Part 2: sections 46-75, Part 3: sections 76-100).
+For the 100-section deep dive into every subsystem, implementation detail, and edge case, see the companion three-part report. Part 1 has sections 1-45, Part 2 has sections 46-75, and Part 3 has sections 76-100.

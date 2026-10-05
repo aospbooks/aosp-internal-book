@@ -1,15 +1,18 @@
 # Chapter 28: Notification System
 
 The Android notification system is one of the platform's most complex subsystems.
-A single `notify()` call from an application triggers a cascade of permission checks,
-channel lookups, signal extraction, ranking, Do Not Disturb filtering, listener
-dispatch, and finally UI rendering inside SystemUI. In Android 17 the core
+A single `notify()` call from an application triggers a cascade of steps. These are
+permission checks, channel lookups, signal extraction, ranking, Do Not Disturb
+filtering, listener dispatch, and finally UI rendering inside SystemUI. In Android 17 the core
 service `NotificationManagerService.java` is one of the largest classes in the
-framework and coordinates with over 70 helper classes. This chapter traces the full lifecycle of a
-notification from the public API down through the server-side pipeline, ranking
-engine, attention effects, and into the SystemUI shade, then closes with the new
-notification surfaces Android 17 adds: rich ongoing notifications, system-managed
-notification rules and contextual modes, polite notifications, and AI summarization.
+framework and coordinates with over 70 helper classes.
+
+This chapter traces the full
+lifecycle of a notification. It starts at the public API and goes down through the
+server-side pipeline, ranking engine, and attention effects. It ends in the SystemUI
+shade. Then the chapter covers the new notification surfaces that Android 17 adds.
+These are rich ongoing notifications, system-managed notification rules and
+contextual modes, polite notifications, and AI summarization.
 
 ---
 
@@ -385,10 +388,11 @@ r.setPkgAllowedAsConvo(mMsgPkgsAllowedAsConvos.contains(pkg));
 ```
 
 **Step 8 -- FGS importance floor:**
+
 If the notification belongs to a foreground service or user-initiated job and
-the channel importance is MIN or NONE, it is elevated to LOW -- but only when
-the user has not already locked the channel's importance after an FGS/UIJ has
-been shown on that channel:
+the channel importance is MIN or NONE, it is elevated to LOW. This happens only
+when the user has not already locked the channel's importance after an FGS/UIJ
+has been shown on that channel:
 
 ```java
 if (notification.isFgsOrUij()) {
@@ -843,7 +847,7 @@ This must run first because all subsequent extractors depend on channel properti
 ### 28.3.8 Classification Channels
 
 Android 16 introduced automatic classification channels for bundling
-notifications by type, and Android 17 keeps them as the four reserved channel
+notifications by type. Android 17 keeps them as the four reserved channel
 IDs listed in section 28.3.5:
 
 ```java
@@ -854,15 +858,17 @@ public static final String NEWS_ID = "android.app.news";
 public static final String RECS_ID = "android.app.recs";
 ```
 
-When the Notification Assistant Service classifies a notification with the
-`Adjustment.KEY_TYPE` adjustment (for example as news or promotions), the system
-maps that type onto one of these reserved channels (see
-`getChannelIdForBundleType(int type)` in `NotificationChannel.java`, around
-lines 1611-1620) for more consistent user
-control. Apps cannot create channels with these IDs, so the classification
+The Notification Assistant Service classifies a notification with the
+`Adjustment.KEY_TYPE` adjustment, for example as news or promotions. When it does,
+the system maps that type onto one of these reserved channels. This gives the user more
+consistent control. See `getChannelIdForBundleType(int type)` in
+`NotificationChannel.java`, around lines 1611-1620.
+
+Apps cannot create channels with these IDs, so the classification
 bundles always belong to the system. Android 17 also adds the inverse
-`Adjustment.KEY_UNCLASSIFY` key so the assistant can pull a notification back out
-of a classification bundle when it decides the classification was wrong.
+`Adjustment.KEY_UNCLASSIFY` key. With this key the assistant can pull a
+notification back out of a classification bundle when it decides the
+classification was wrong.
 
 ### 28.3.9 Channel Lifecycle Diagram
 
@@ -980,10 +986,10 @@ This multi-level key ensures:
 - Within a group, the summary appears before children.
 - Within children, the developer-provided sort key is honored.
 
-The `intrsv=` component is a vestige: the source hardcodes
+The `intrsv=` component is a vestige. The source hardcodes
 `char intrusiveRank = '2';` for every record, so intrusiveness no longer
-affects the ordering (the old `is_recently_intrusive` name survives only in a
-source comment).
+affects the ordering. The old `is_recently_intrusive` name survives only in a
+source comment.
 
 ### 28.4.5 The Extractors in Detail
 
@@ -1017,11 +1023,11 @@ static final String[] DEFAULT_ALLOWED_ADJUSTMENTS = new String[] {
 
 The full set of adjustment keys the assistant may emit is declared in
 `frameworks/base/core/java/android/service/notification/Adjustment.java`. Android
-17 expands it well beyond the defaults above: `KEY_UNCLASSIFY` (undo a
-classification), `KEY_DYNAMIC_BUNDLE`
-(place a notification into a dynamic bundle), and the contextual-mode keys
-`KEY_NOTIFICATION_RULES`, `KEY_SOUND`, `KEY_LIGHT`, `KEY_HIGHLIGHT`,
-`KEY_MODE_BREAKTHROUGH_LIST`, and `KEY_BREAKTHROUGH_ALL_MODES`. The contextual
+17 expands it well beyond the defaults above. It adds `KEY_UNCLASSIFY` (undo a
+classification) and `KEY_DYNAMIC_BUNDLE` (place a notification into a dynamic
+bundle). It also adds the contextual-mode keys `KEY_NOTIFICATION_RULES`,
+`KEY_SOUND`, `KEY_LIGHT`, `KEY_HIGHLIGHT`, `KEY_MODE_BREAKTHROUGH_LIST`, and
+`KEY_BREAKTHROUGH_ALL_MODES`. The contextual
 keys are guarded by the `nm_contextual_display_launch` flag and are covered in
 section 28.21.
 
@@ -1147,7 +1153,7 @@ them to the top of the shade.
 
 ### 28.5.1 Overview
 
-Do Not Disturb (DND) in Android is managed by `ZenModeHelper`, which maintains
+Do Not Disturb (DND) in Android is managed by `ZenModeHelper`. It maintains
 the DND state machine, evaluates rules, and tells the notification pipeline which
 notifications to intercept. DND is not a simple on/off switch -- it supports
 multiple simultaneous rules, each with its own policy.
@@ -1290,9 +1296,9 @@ When DND allows repeat callers, the system tracks recent calls:
 static final RepeatCallers REPEAT_CALLERS = new RepeatCallers();
 ```
 
-If the same caller calls twice within a threshold period (default 15 minutes),
-the second call is allowed through even if the caller does not match the
-priority filter.
+The threshold period is 15 minutes by default. If the same caller calls twice
+within it, the second call is allowed through. This happens even if the caller
+does not match the priority filter.
 
 ### 28.5.9 Device Effects
 
@@ -1348,13 +1354,15 @@ static final long MANAGE_GLOBAL_ZEN_VIA_IMPLICIT_RULES = 308670109L;
 ```
 
 This change allows the system to properly track which app activated DND and
-prevents apps from accidentally overriding each other's DND settings. It is
-gated on the app's target SDK (`VANILLA_ICE_CREAM`, API 35), so an app keeps the
-legacy global-DND behavior until it targets Android 15 or newer; Android 17
+prevents apps from accidentally overriding each other's DND settings.
+
+The change is
+gated on the app's target SDK (`VANILLA_ICE_CREAM`, API 35). For that reason, an app keeps the
+legacy global-DND behavior until it targets Android 15 or newer. Android 17
 continues to enforce it. Android 17 also tightened the bookkeeping around these
-transitions: the "zenOrigin" recorded for `setInterruptionFilter()` and
-`setZenMode()` was corrected so the audit trail attributes each DND change to the
-right caller (see the `zenOrigin` handling in `ZenModeHelper.java`).
+transitions. The "zenOrigin" recorded for `setInterruptionFilter()` and
+`setZenMode()` was corrected. This lets the audit trail attribute each DND change to
+the right caller (see the `zenOrigin` handling in `ZenModeHelper.java`).
 
 ### 28.5.11 Suppressed Visual Effects
 
@@ -1440,8 +1448,8 @@ protected long getBindFlags() {
 }
 ```
 
-The `BIND_NOT_PERCEPTIBLE` flag is notable: it tells the system that too many
-third-party listeners could cause memory pressure, so they should be treated
+The `BIND_NOT_PERCEPTIBLE` flag is notable. It tells the system that too many
+third-party listeners could cause memory pressure. So they should be treated
 as lower priority for OOM adjustment purposes.
 
 ### 28.6.4 Listener Callbacks
@@ -1504,10 +1512,12 @@ private final ArraySet<Integer> mTrustedListenerUids = new ArraySet<>();
 When the `redactSensitiveNotificationsFromUntrustedListeners` flag is enabled,
 listeners not in the trusted set receive redacted notification content. A
 listener is trusted (`isAppTrustedNotificationListenerService()`,
-`NotificationManagerService.java` lines 15303-15330) when it holds the
-`RECEIVE_SENSITIVE_NOTIFICATIONS` permission, is platform-signed, is allowed
-the `OP_RECEIVE_SENSITIVE_NOTIFICATIONS` app-op, or has a
-`CompanionDeviceManager` association. SystemUI qualifies because it is
+`NotificationManagerService.java` lines 15303-15330) in any of these cases. It
+holds the `RECEIVE_SENSITIVE_NOTIFICATIONS` permission. It is platform-signed.
+It is allowed the `OP_RECEIVE_SENSITIVE_NOTIFICATIONS` app-op. It has a
+`CompanionDeviceManager` association.
+
+SystemUI qualifies because it is
 platform-signed, not because of its `STATUS_BAR_SERVICE` permission (that
 permission is checked separately, only to mark a listener as `isSystemUi`).
 
@@ -1557,7 +1567,7 @@ The Android 17 contextual keys (`KEY_NOTIFICATION_RULES`, `KEY_SOUND`,
 `KEY_LIGHT`, `KEY_HIGHLIGHT`, `KEY_MODE_BREAKTHROUGH_LIST`,
 `KEY_BREAKTHROUGH_ALL_MODES`) are described in section 28.21. The system also
 "undoes" an adjustment automatically when the key it depends on is no longer
-supported, so a stale assistant suggestion does not keep affecting a
+supported. So a stale assistant suggestion does not keep affecting a
 notification after a feature flag is turned off.
 
 ### 28.6.9 Listener Lifecycle Diagram
@@ -1670,9 +1680,9 @@ public @Nullable String getParentChannelId();   // the parent channel's ID
 public @Nullable String getConversationId();     // the conversation shortcut ID
 ```
 
-Both accessors return the *IDs* as strings, not channel objects: a conversation
-channel is a real `NotificationChannel` whose `parentChannelId` points at the
-app's original channel and whose `conversationId` is the conversation's shortcut
+Both accessors return the *IDs* as strings, not channel objects. A conversation
+channel is a real `NotificationChannel`. Its `parentChannelId` points at the
+app's original channel. Its `conversationId` is the conversation's shortcut
 ID. This allows per-conversation customization (different sound for different
 contacts) without affecting the parent channel.
 
@@ -1819,9 +1829,10 @@ stateDiagram-v2
 
 Each expanded bubble hosts an embedded `Activity` in a task. `BubbleTaskView`
 is a wrapper around the WM Shell `TaskView`
-(`com.android.wm.shell.taskview.TaskView`), which hosts the bubble's activity
-as a normal task whose `SurfaceControl` is reparented into the expanded view's
-surface hierarchy by `ShellTaskOrganizer` -- no virtual display is involved:
+(`com.android.wm.shell.taskview.TaskView`). The WM Shell class hosts the bubble's
+activity as a normal task. `ShellTaskOrganizer` reparents the task's
+`SurfaceControl` into the expanded view's surface hierarchy. No virtual display
+is involved:
 
 ```java
 // BubbleExpandedView.java
@@ -1890,11 +1901,11 @@ frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notificatio
 
 SystemUI uses a modern notification pipeline (sometimes called "new pipeline"
 or "notif pipeline") for processing notifications. Notifications flow from the
-`NotificationListener` into `NotifCollection`, and `ShadeListBuilder.buildList()`
+`NotificationListener` into `NotifCollection`. Then `ShadeListBuilder.buildList()`
 (`frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/collection/ShadeListBuilder.java`,
-lines 432-517) is the stage that runs the filtering, grouping, sorting, and
-section-assignment steps in order -- coordinators plug their filters, promoters,
-and comparators into it -- before dispatching the finished list to the view layer:
+lines 432-517) runs the filtering, grouping, sorting, and section-assignment
+steps in order. Coordinators plug their filters, promoters, and comparators into
+it. It then dispatches the finished list to the view layer:
 
 ```mermaid
 graph TD
@@ -2067,8 +2078,8 @@ in SystemUI:
 (`frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotificationCustomContentMemoryVerifier.kt`)
 implements the check. After a custom view is inflated, `satisfiesMemoryLimits()`
 walks the view hierarchy and sums the byte size of every `ImageView`'s drawable
-(`computeViewHierarchyImageViewSize()`); bitmaps count their
-`allocationByteCount`, other drawables are estimated as `width * height * 4`.
+(`computeViewHierarchyImageViewSize()`). Bitmaps count their
+`allocationByteCount`. Other drawables are estimated as `width * height * 4`.
 Two thresholds, both read from `config.xml`, govern the outcome:
 
 | Threshold | Config integer | Default | Effect |
@@ -2078,15 +2089,15 @@ Two thresholds, both read from `config.xml`, govern the outcome:
 
 Android 17 (SDK 37) makes the strip threshold enforceable. For apps targeting
 SDK 37 (`Build.VERSION_CODES.CINNAMON_BUN`) a custom view that exceeds the strip
-limit causes the notification to be dropped; apps targeting an earlier SDK only
+limit causes the notification to be dropped. Apps targeting an earlier SDK only
 get a logcat warning that the notification "WILL be dropped when targetSdk is set
 to" SDK 37. The gate is the compatibility change
 `CHECK_SIZE_OF_INFLATED_CUSTOM_VIEWS` (`@EnabledAfter(targetSdkVersion =
 Build.VERSION_CODES.BAKLAVA)`,
 `frameworks/base/packages/SystemUI/src/com/android/systemui/statusbar/notification/row/NotificationCustomContentCompat.java`),
 checked per UID with `CompatChanges.isChangeEnabled(...)`. The whole check is
-also held behind the `notification_custom_view_uri_restriction` aconfig flag, so
-it is inert until both the flag and the per-app target SDK gate are satisfied.
+also held behind the `notification_custom_view_uri_restriction` aconfig flag. So
+it is inert until the flag and the per-app target SDK gate are both satisfied.
 
 ### 28.9.11 Swipe to Dismiss
 
@@ -2274,7 +2285,7 @@ flowchart TD
 
 ### 28.11.1 Notification History
 
-Android maintains a history of dismissed and cancelled notifications:
+Android maintains a history of dismissed and canceled notifications:
 
 ```java
 // NotificationManagerService.java (line 822)
@@ -2292,7 +2303,7 @@ static class Archive {
 }
 ```
 
-When a notification is cancelled, it is recorded in the archive:
+When a notification is canceled, it is recorded in the archive:
 
 ```java
 // cancelNotificationLocked (line 12037)
@@ -2454,9 +2465,9 @@ Auto-grouping triggers when a package has more than `AUTOGROUP_AT_COUNT_DEFAULT`
 ### 28.13.2 Force Grouping (Android 16+)
 
 Force grouping is a newer mechanism that aggressively bundles notifications.
-It originally shipped behind the `notification_force_grouping` aconfig flag,
-but the flag has since been removed and the behavior is now unconditional
-(only a legacy log string in `GroupHelper` still mentions it):
+It originally shipped behind the `notification_force_grouping` aconfig flag.
+Since then the flag has been removed and the behavior is now unconditional.
+Only a legacy log string in `GroupHelper` still mentions the flag:
 
 ```java
 // GroupHelper.java (line 87)
@@ -2564,9 +2575,9 @@ The group key uniquely identifies a notification group:
 ```
 
 If the notification has an explicit group set via `setGroup()`, the last
-segment is `g:<group>`; if only a sort key was set, it is `c:<channelId>`
+segment is `g:<group>`. If only a sort key was set, it is `c:<channelId>`
 instead. When neither a group nor a sort key is present, the group key is the
-notification key itself (each notification is its own group of one). An
+notification key itself. Each notification is then its own group of one. An
 `overrideGroupKey` -- for example an autogroup key -- takes precedence over
 all of these.
 
@@ -2638,11 +2649,13 @@ Values are from `frameworks/base/core/java/android/app/Notification.java`
 | `FLAG_PROMOTED_ONGOING` | 0x00040000 | Promoted ongoing (rich ongoing); set by system |
 | `FLAG_COMPUTER_CONTROL` | 0x00080000 | Associated with a Computer Control session; system-only (Android 17) |
 
-Two of these values shifted in recent releases, so they are easy to get wrong:
-`FLAG_LIFETIME_EXTENDED_BY_DIRECT_REPLY` is `0x00010000`, `FLAG_SILENT` is
-`0x00020000` (`1 << 17`), and `FLAG_PROMOTED_ONGOING` is `0x00040000`. The last
-two flags are set only by the system: `FLAG_PROMOTED_ONGOING` marks a rich
-ongoing notification (section 28.20) and `FLAG_COMPUTER_CONTROL` (new in Android
+Two of these values shifted in recent releases, so they are easy to get wrong.
+`FLAG_LIFETIME_EXTENDED_BY_DIRECT_REPLY` is `0x00010000`. `FLAG_SILENT` is
+`0x00020000` (`1 << 17`). `FLAG_PROMOTED_ONGOING` is `0x00040000`.
+
+The last
+two flags are set only by the system. `FLAG_PROMOTED_ONGOING` marks a rich
+ongoing notification (section 28.20). `FLAG_COMPUTER_CONTROL` (new in Android
 17) marks a notification tied to a Computer Control session. Applications cannot
 set either flag directly.
 
@@ -2729,8 +2742,9 @@ Notes:
 
 Android 17 promotes "rich ongoing notifications" (RONs) from a flagged
 experiment to a first-class surface. A RON is an ongoing notification that the
-system can *promote* out of the regular shade and onto more prominent surfaces:
-the status bar chip, the always-on display (AOD), and the lock screen. The
+system can *promote* out of the regular shade. The system can move it onto more
+prominent surfaces: the status bar chip, the always-on display (AOD), and the
+lock screen. The
 feature is guarded by the `api_rich_ongoing` flag:
 
 ```
@@ -2804,12 +2818,15 @@ public boolean hasPromotableCharacteristics() {
 }
 ```
 
-A notification therefore qualifies for promotion only if it requested it, is an
-ongoing event, has a title, uses a promotable style (no style at all, or
-`BigTextStyle`, `CallStyle`, `ProgressStyle`, or `MetricStyle` --
-`hasPromotableStyle()` also returns true when `getNotificationStyle()` is
-null), is not a group summary, has no
-custom `RemoteViews`, and is not colorized. Even when these hold, user and
+A notification therefore qualifies for promotion only if all of these hold.
+It requested promotion. It is an ongoing event. It has a title.
+It uses a
+promotable style (no style at all, or `BigTextStyle`, `CallStyle`,
+`ProgressStyle`, or `MetricStyle`). Note that `hasPromotableStyle()` also
+returns true when `getNotificationStyle()` is null.
+
+It is not a group summary.
+It has no custom `RemoteViews`. It is not colorized. Even when these hold, user and
 channel preferences can still deny promotion, which is why
 `hasPromotableCharacteristics()` is documented as necessary but not sufficient.
 
@@ -2825,7 +2842,7 @@ tie the rich-ongoing feature into the contextual-rules engine described next.
 ### 28.20.5 Semantic Color Annotations
 
 Live Updates can tag spans of notification text with a *meaning* rather than a raw
-color, leaving the system to choose a palette that survives theming and
+color. The system then chooses a palette that survives theming and
 accessibility transforms. `Notification.createSemanticStyleAnnotation(int)`
 (`frameworks/base/core/java/android/app/Notification.java:1039`, gated by the
 `api_notification_semantic_style` flag) returns a text `Annotation` carrying one of
@@ -2840,12 +2857,12 @@ five semantic roles:
 | `SEMANTIC_STYLE_DANGER` | 4 | danger / stop (red) |
 
 (Constants at `Notification.java:967`-1009.) An app wraps text in a
-`SpannableStringBuilder` carrying these annotations; because the app names the
-*role* and not an RGB value, the platform maps each role to a palette that stays
-legible under Material You theming, dark mode, and high-contrast accessibility
-settings. It pairs naturally with the `ProgressStyle` rich-ongoing template
-(Section 28.20.2): a navigation or safety Live Update can render "DANGER" red and
-"SAFE" green consistently across every device surface.
+`SpannableStringBuilder` that carries these annotations. The app names the
+*role* and not an RGB value. So the platform maps each role to a palette that
+stays legible under Material You theming, dark mode, and high-contrast
+accessibility settings. It pairs naturally with the `ProgressStyle` rich-ongoing
+template (Section 28.20.2). A navigation or safety Live Update can render
+"DANGER" red and "SAFE" green consistently across every device surface.
 
 ---
 
@@ -2853,9 +2870,9 @@ settings. It pairs naturally with the `ProgressStyle` rich-ongoing template
 
 ### 28.21.1 Overview
 
-Android 17 introduces a system-managed *notification rule* framework that lets
+Android 17 introduces a system-managed *notification rule* framework. It lets
 the user (and reserved system/assistant owners) change how a notification is
-presented based on contextual conditions. The framework is guarded by the
+presented, based on contextual conditions. The framework is guarded by the
 `nm_contextual_display_launch` flag, described as "Changes notification
 appearance based on user created rules":
 
@@ -2893,12 +2910,13 @@ Each rule carries:
   keywords.
 - **Conditions** (`getConditions()`): time-of-day and location conditions that
   gate when the rule is active.
-- **An Action** (`getAction()`): what to do with matching notifications --
-  override sound, set a light color, allow the notification to break through
-  contextual modes, or route it into a dynamic bundle.
-- **Identity**: an integer id (user-owned rules use ids 100-200; ids 201-204 are
-  reserved for the OS and the notification assistant) plus an `editIntentAction`
-  so Settings can deep-link into the rule's editor.
+- **An Action** (`getAction()`): what to do with matching notifications. It
+  can override the sound, set a light color, allow the notification to break
+  through contextual modes, or route it into a dynamic bundle.
+- **Identity**: an integer id plus an `editIntentAction`. User-owned rules use
+  ids 100-200. Ids 201-204 are reserved for the OS and the notification
+  assistant. Settings uses it to deep-link into the rule's
+  editor.
 
 Rules are fully persisted and participate in backup and restore, so a user's
 custom rules survive reboots and device migration.
@@ -2918,8 +2936,8 @@ public final class ContextualMode implements Parcelable {
 }
 ```
 
-A contextual mode is a generalization of the older `AutomaticZenRule`: each mode
-has an id, a type, and an activation state, and notifications can be granted
+A contextual mode is a generalization of the older `AutomaticZenRule`. Each mode
+has an id, a type, and an activation state. Notifications can be granted
 permission to "break through" specific modes.
 
 ### 28.21.4 Breakthrough and the New Adjustment Keys
@@ -2941,8 +2959,8 @@ contextual display are:
 These keys are declared in
 `frameworks/base/core/java/android/service/notification/Adjustment.java`
 (lines 246-300) and are all annotated `@FlaggedApi(FLAG_NM_CONTEXTUAL_DISPLAY_LAUNCH)`.
-When a contextual key becomes unsupported -- for example its feature flag is
-turned off -- NMS undoes the adjustment so a stale suggestion does not keep
+A contextual key becomes unsupported, for example when its feature flag is
+turned off. Then NMS undoes the adjustment, so a stale suggestion does not keep
 affecting the notification.
 
 ### 28.21.5 Rules Pipeline Diagram
@@ -2998,7 +3016,7 @@ beep, or blink (section 28.10).
 - **`StrategyAvalanche`** (line 1611): wraps the per-app strategy and adds
   cross-app "avalanche" handling. When the device detects an avalanche of
   notifications (for example after reconnecting from airplane mode), it applies a
-  shared `cross_app_common_key` so the whole burst is calmed together rather than
+  shared `cross_app_common_key`. This lets the whole burst be calmed together, rather than
   each app independently.
 
 The avalanche timeout and the polite/muted volume levels are configurable; the
@@ -3010,10 +3028,10 @@ Polite notifications shipped behind several flags, and Android 17 removed most
 of them. The 16-to-17 changeset removes the sub-flags
 `polite_notifications_attn_update` and `cross_app_polite_notifications` and drops
 the test-only disabling of `FLAG_POLITE_NOTIFICATIONS`. The feature as a whole,
-however, is still gated by the top-level `polite_notifications` aconfig flag:
+however, is still gated by the top-level `polite_notifications` aconfig flag.
 `NotificationAttentionHelper` only creates a politeness strategy when
-`Flags.politeNotifications()` is true (line 276), leaving `mStrategy` null
-otherwise.
+`Flags.politeNotifications()` is true (line 276). Otherwise `mStrategy` stays
+null.
 
 ---
 
@@ -3049,8 +3067,8 @@ public static final String KEY_SUMMARIZATION = "key_summarization";
 `KEY_SUMMARIZATION` is one of the keys allowed by default
 (`DEFAULT_ALLOWED_ADJUSTMENTS`, section 28.4.5), so a privileged NAS can emit it
 without extra opt-in. On the SystemUI side a `SummarizationDecorator` renders the
-summary; the changeset notes that summaries may be up to five lines tall and
-includes onboarding for the feature on first use. A companion `nm_summarization_all`
+summary. The changeset notes that summaries may be up to five lines tall. It
+also includes onboarding for the feature on first use. A companion `nm_summarization_all`
 flag extends summarization to a broader set of notifications.
 
 ### 28.23.3 Computer Control Notifications
@@ -3065,9 +3083,10 @@ Computer Control session:
 public static final int FLAG_COMPUTER_CONTROL = 0x00080000;
 ```
 
-The flag is internal -- applications cannot set it directly -- and lets the
+The flag is internal, so applications cannot set it directly. It lets the
 shade and downstream surfaces recognize notifications produced on behalf of a
-Computer Control session so they can be presented and audited consistently.
+Computer Control session. So these notifications can be presented and audited
+consistently.
 
 ---
 
@@ -3470,14 +3489,14 @@ adb shell dumpsys notification | grep "FLAG_FOREGROUND_SERVICE"
 Key behaviors:
 
 - FGS notifications get `FLAG_NO_CLEAR` (set in `PostNotificationRunnable`,
-  NotificationManagerService.java lines 11020-11021), so "Clear all" skips
-  them and they cannot be swiped away on the lock screen -- but the user can
-  still dismiss them individually when the device is unlocked. Only
+  NotificationManagerService.java lines 11020-11021). So "Clear all" skips
+  them, and they cannot be swiped away on the lock screen. But the user
+  can still dismiss them individually when the device is unlocked. Only
   `FLAG_NO_DISMISS` makes a notification truly undismissable.
 - If the channel importance is MIN or NONE, it is silently elevated to LOW
-  (unless the user has locked the channel's importance), so the notification
-  is always at least visible; the FGS start itself is not rejected.
-- FGS notifications cannot be cancelled by the app while the service runs.
+  (unless the user has locked the channel's importance). So the notification
+  is always at least visible. The FGS start itself is not rejected.
+- FGS notifications cannot be canceled by the app while the service runs.
 
 ### 28.24.21 Notification Permission (Android 13+)
 
@@ -3503,20 +3522,21 @@ simple `notify()` call into a carefully ranked, policy-filtered, attention-manag
 user experience. The key architectural insights from this chapter:
 
 1. **NotificationManagerService** is the central hub. It is one of the largest
-   classes in the framework, coordinating permission checks, channel lookups,
+   classes in the framework. It coordinates permission checks, channel lookups,
    signal extraction, ranking, DND filtering, attention effects, and listener
    dispatch.
 
 2. **The signal extractor pipeline** provides a modular, extensible architecture.
-   Each extractor writes a specific signal onto the `NotificationRecord`, and the
-   system can be extended by adding new extractors to the XML configuration.
+   Each extractor writes a specific signal onto the `NotificationRecord`. The system can
+   be extended by adding new extractors to the XML configuration.
 
 3. **Notification channels** shift control to users. Once created, channel settings
    are user-owned, and apps cannot programmatically override them.
 
 4. **Do Not Disturb** is not a single switch but a rule engine. Multiple
    `AutomaticZenRule` objects can be active simultaneously, each with its own
-   `ZenPolicy`. The `ZenModeHelper` consolidates them into a single effective policy.
+   `ZenPolicy`. The `ZenModeHelper` consolidates them into a single effective
+   policy.
 
 5. **Conversation notifications** receive first-class treatment through
    `MessagingStyle` + sharing shortcuts + `Person` data, enabling features like
@@ -3530,9 +3550,9 @@ user experience. The key architectural insights from this chapter:
    objects into a rendered shade through a series of coordinators, filters,
    sorters, and the `NotificationStackScrollLayout`.
 
-8. **The threading model** is carefully designed: Binder calls arrive on the
-   Binder pool, processing happens on the handler thread under `mNotificationLock`,
-   and ranking reconsideration runs on a separate thread. This prevents the
+8. **The threading model** is carefully designed. Binder calls arrive on the
+   Binder pool. Processing happens on the handler thread under `mNotificationLock`.
+   Ranking reconsideration runs on a separate thread. This prevents the
    notification system from blocking the main thread or causing deadlocks.
 
 9. **Auto-grouping** and **force grouping** ensure a clean notification shade
@@ -3541,22 +3561,22 @@ user experience. The key architectural insights from this chapter:
    aggressive force-grouping (6+ sparse groups).
 
 10. **Attention effects** (sound, vibration, LED, heads-up) are determined by
-    a complex decision tree in `NotificationAttentionHelper` that considers
+    a complex decision tree in `NotificationAttentionHelper`. The tree considers
     importance, DND state, listener hints, group alert behavior, and the
     `FLAG_ONLY_ALERT_ONCE` flag.
 
-11. **Notification history** is maintained at two levels: an in-memory ring
-    buffer archive for `getHistoricalNotifications()` and persistent per-day
-    Protocol Buffer files for the Settings notification history UI.
+11. **Notification history** is maintained at two levels. An in-memory ring
+    buffer archive serves `getHistoricalNotifications()`. Persistent per-day
+    Protocol Buffer files serve the Settings notification history UI.
 
 12. **Android 17 adds four new surfaces.** Rich ongoing notifications
     (`Notification.ProgressStyle` and the system-set `FLAG_PROMOTED_ONGOING`)
     promote trackable ongoing notifications to the status bar, AOD, and lock
     screen. Polite notifications (`PolitenessStrategy` in
     `NotificationAttentionHelper`) progressively quiet bursts of alerts. The
-    notification-rules and contextual-mode framework (`NotificationRule`,
-    `ContextualMode`, and the expanded `Adjustment` keys) lets users and the
-    assistant change presentation based on context. AI summarization
+    notification-rules and contextual-mode framework lets users and the
+    assistant change presentation based on context. It uses `NotificationRule`,
+    `ContextualMode`, and the expanded `Adjustment` keys. AI summarization
     (`KEY_SUMMARIZATION`) collapses verbose notifications, and
     `FLAG_COMPUTER_CONTROL` marks notifications produced by a Computer Control
     session.

@@ -14,8 +14,9 @@ render thread.
 
 This chapter provides an exhaustive, source-level tour of the view system.
 We will trace the full lifecycle from XML inflation to hardware-accelerated
-rendering, dissect the touch dispatch algorithm in exact detail, and examine
-the machinery behind focus, accessibility, window insets, and custom views.
+rendering.  We will dissect the touch dispatch algorithm in exact detail.  We
+will also examine the machinery behind focus, accessibility, window insets,
+and custom views.
 
 ---
 
@@ -177,10 +178,10 @@ graph TB
     View -->|receives via dispatchAttachedToWindow| AttachInfo
 ```
 
-Each view in the hierarchy holds a reference to this single `AttachInfo`,
-giving it access to the handler for posting messages, the renderer for
-hardware acceleration, the window visibility state, and the tree observer
-for layout-change callbacks.
+Each view in the hierarchy holds a reference to this single `AttachInfo`.
+It gives the view access to the handler for posting messages and the renderer
+for hardware acceleration.  It also gives access to the window visibility
+state and the tree observer for layout-change callbacks.
 
 ### 25.1.5 View Identity and the View Tree
 
@@ -394,9 +395,9 @@ sequenceDiagram
 
 ### 25.2.2 MeasureSpec: The Constraint Protocol
 
-The measurement system communicates constraints from parent to child using
-`MeasureSpec`, a packed 32-bit integer that encodes both a **mode** and a
-**size** in a single `int`:
+The measurement system communicates constraints from parent to child with
+`MeasureSpec`.  It is a packed 32-bit integer that encodes both a **mode** and
+a **size** in a single `int`:
 
 ```
 Source: frameworks/base/core/java/android/view/View.java (line 31989)
@@ -431,8 +432,8 @@ The three modes and their meaning:
 | `AT_MOST` | `0x80000000` | Child can be up to this size | `wrap_content` |
 | `UNSPECIFIED` | `0x00000000` | No constraint; child decides | ScrollView measuring its child |
 
-The two high bits store the mode and the remaining 30 bits store the size,
-giving a maximum measurable dimension of 2^30 - 1 = 1,073,741,823 pixels.
+The two high bits store the mode and the remaining 30 bits store the size.
+The maximum measurable dimension is 2^30 - 1 = 1,073,741,823 pixels.
 
 ```mermaid
 graph LR
@@ -752,8 +753,8 @@ graph TB
 `ViewRootImpl.performTraversals()` (line 3924) is the single largest method
 in the view system, spanning hundreds of lines.  It orchestrates the entire
 rendering pipeline.  In Android 17 it takes the frame's VSYNC timestamp
-(`performTraversals(long frameTimeNanos)`) so that animation, choreographer,
-and frame-rate-voting work can be pinned to a single consistent frame time:
+(`performTraversals(long frameTimeNanos)`).  This lets animation,
+choreographer, and frame-rate-voting work be pinned to a single consistent frame time:
 
 ```
 Source: frameworks/base/core/java/android/view/ViewRootImpl.java
@@ -800,9 +801,10 @@ Source: frameworks/base/core/java/android/view/ViewRootImpl.java
 ```
 
 The critical subtlety is that `performTraversals()` may call
-`measureHierarchy()` *twice*, both times before relayout -- once for the
-pending layout request, and once more after `dispatchApplyInsets()` when
-fitting system windows triggered a fresh layout request.  After
+`measureHierarchy()` *twice*, both times before relayout.  The first call is
+for the pending layout request.  The second call is after
+`dispatchApplyInsets()`, when fitting system windows triggered a fresh layout
+request.  After
 `relayoutWindow()` returns, any re-measurement is done directly through
 `performMeasure()`, which ensures that views see the final window
 dimensions during their last measurement.
@@ -1478,9 +1480,9 @@ Source: frameworks/base/core/java/android/view/ViewRootImpl.java (line 3347)
 ```
 
 In Android 17 `doTraversal()` carries the VSYNC frame time supplied by the
-`Choreographer` (extracted from the frame data) and forwards it to
-`performTraversals(long)`, so that the entire traversal -- including
-frame-rate voting -- works against a single, consistent frame timestamp.
+`Choreographer` (extracted from the frame data). It forwards that time to
+`performTraversals(long)`. For that reason, the entire traversal, including
+frame-rate voting, works against a single, consistent frame timestamp.
 
 The sync barrier is removed *before* `performTraversals()` runs, allowing
 normal messages to be processed once the traversal completes.
@@ -1572,7 +1574,7 @@ For touch events, `ViewPostImeInputStage` is the critical stage.  Its
    mouse pointer icon and any hover tooltip for the new pointer position.
 3. If a view requested unbuffered input during dispatch
    (`mAttachInfo.mUnbufferedDispatchRequested`), it switches to unbuffered
-   input dispatch via `scheduleConsumeBatchedInputImmediately()`, and it
+   input dispatch via `scheduleConsumeBatchedInputImmediately()`. It also
    applies variable-refresh-rate touch boosting for handled events.
 
 For key events, the pipeline allows the IME to consume keys before the view
@@ -1615,13 +1617,13 @@ This guarantees that any `Runnable` posted to the handler *after*
 `scheduleTraversals()` will execute *after* the traversal completes.  The
 AOSP source contains a comment inside `scheduleTraversals()` (around line
 3315) that explicitly calls this behavior "load-bearing for public API
-correctness," with a worked `textView.setText(...)` / `getHandler().post(...)`
-example demonstrating the contract.
+correctness." The comment includes a worked `textView.setText(...)` /
+`getHandler().post(...)` example that demonstrates the contract.
 
 ### 25.4.9 Frame Rate Voting
 
 `ViewRootImpl` participates in frame-rate voting for Variable Refresh Rate
-(VRR) and Adaptive Refresh Rate (ARR) displays -- a story Android 17 expands
+(VRR) and Adaptive Refresh Rate (ARR) displays. Android 17 expands this
 considerably (see Section 25.13).  An app can hint the refresh rate it wants
 through the public `View.setRequestedFrameRate(float)` API:
 
@@ -1658,8 +1660,8 @@ Source: frameworks/base/core/java/android/view/View.java (line 5958)
 
 During `performTraversals()`, `ViewRootImpl` aggregates the per-view votes
 into `mPreferredFrameRateCategory` / `mPreferredFrameRate` (fields declared
-around line 1228 of `ViewRootImpl.java`) and resolves them to one of the
-`Surface` integer categories before reporting to SurfaceFlinger:
+around line 1228 of `ViewRootImpl.java`). Before it reports to SurfaceFlinger,
+it resolves them to one of the `Surface` integer categories:
 
 | `Surface` category | Value | Typical use |
 |--------------------|-------|-------------|
@@ -1873,8 +1875,8 @@ In the hardware-accelerated path:
 ### 25.5.7 Software Rendering Fallback
 
 When hardware acceleration is unavailable (e.g., for `LAYER_TYPE_SOFTWARE`
-views or certain canvas operations), `drawSoftware()` locks the `Surface`
-to get a `Canvas` backed by a CPU-side bitmap buffer:
+views or certain canvas operations), `drawSoftware()` locks the `Surface`.
+This gives a `Canvas` backed by a CPU-side bitmap buffer:
 
 ```mermaid
 graph TB
@@ -1907,9 +1909,9 @@ Views support three layer types:
 | `LAYER_TYPE_HARDWARE` | 2 | Rendered into a GPU texture |
 
 Hardware layers are useful for complex views that are animated (e.g., alpha
-fade, translation) -- the view is rendered once into a texture, then the
-texture is composited with different transform properties each frame, avoiding
-re-recording the display list.
+fade, translation). The view is rendered once into a texture. Then the
+texture is composited with different transform properties each frame. This
+avoids re-recording the display list.
 
 ---
 
@@ -2239,7 +2241,7 @@ Source: frameworks/base/core/java/android/view/ViewGroup.java (line 3446)
 
 API 26 introduced **keyboard navigation clusters** for grouping related
 views.  Plain Tab / Shift+Tab moves focus in tab order and stays confined
-within the current cluster; Ctrl+Tab (Ctrl+Shift+Tab for backward) jumps
+within the current cluster.  Ctrl+Tab (Ctrl+Shift+Tab for backward) jumps
 between clusters via `ViewRootImpl.performKeyboardGroupNavigation()`.
 Arrow keys perform ordinary directional focus search:
 
@@ -2361,9 +2363,9 @@ Subclasses override this to add domain-specific information:
 
 ### 25.8.4 AccessibilityNodeProvider
 
-For views that represent complex virtual hierarchies (e.g., a custom
-calendar grid, a custom number picker), `AccessibilityNodeProvider` allows
-exposing virtual child nodes that do not correspond to real `View` objects:
+Some views represent complex virtual hierarchies (e.g., a custom calendar
+grid, a custom number picker).  For these views, `AccessibilityNodeProvider`
+exposes virtual child nodes that do not correspond to real `View` objects:
 
 ```mermaid
 graph TD
@@ -2603,8 +2605,8 @@ inflater.inflate(R.layout.complex_layout, container,
 ```
 
 Limitations: async inflation cannot be used with views that access the
-`Looper` during construction, or with `<merge>` tags, or with layouts that
-use `Factory` callbacks requiring the UI thread.
+`Looper` during construction.  It also cannot be used with `<merge>` tags or
+with layouts that use `Factory` callbacks that require the UI thread.
 
 ### 25.9.7 rInflate() and Recursive Processing
 
@@ -2712,18 +2714,18 @@ toolbar in a light activity).
 
 ### 25.9.11 Precompiled Layouts (Removed)
 
-Around Android 10, AOSP experimented with *precompiled layouts*: at build
-time a tool would generate code that inflated a layout directly, skipping the
-runtime `XmlPullParser` and reflection-based view construction.  At runtime
-`LayoutInflater` would call into the generated inflater and fall back to XML
-parsing if it was unavailable.
+Around Android 10, AOSP experimented with *precompiled layouts*.  At build
+time a tool would generate code that inflated a layout directly.  This
+skipped the runtime `XmlPullParser` and reflection-based view construction.
+At runtime `LayoutInflater` would call into the generated inflater and fall back
+to XML parsing if it was unavailable.
 
 That feature never became broadly useful and has since been **removed** from
 the platform.  The vestige in the current source is a comment on the
 `@hide` `tryCreateView(View, String, Context, AttributeSet)` method in
 `frameworks/base/core/java/android/view/LayoutInflater.java` (around line
-930), which notes it was "originally for internal use by precompiled layouts,
-which have since been removed."  In Android 17 every inflation therefore goes
+930).  The comment says the method was "originally for internal use by
+precompiled layouts, which have since been removed."  In Android 17 every inflation therefore goes
 through the standard `XmlPullParser` path described in this section:
 
 ```mermaid
@@ -2734,9 +2736,9 @@ graph LR
     Factory --> ViewTree["View Hierarchy"]
 ```
 
-The practical takeaway for inflation performance is unchanged: the framework
+The practical takeaway for inflation performance is unchanged.  The framework
 relies on the static `sConstructorMap` cache (Section 25.9.4) plus tools like
-View Binding (Section 25.9.12) rather than a precompiled-layout fast path.
+View Binding (Section 25.9.12).  It has no precompiled-layout fast path.
 
 ### 25.9.12 View Binding and Data Binding
 
@@ -3223,8 +3225,8 @@ the view.  The view then calls `invalidate()` to trigger a redraw.
 
 This callback mechanism is important: if you hold a reference to a
 `Drawable` without setting its callback to a view, animated drawables will
-not update.  Conversely, if a drawable's callback references a view that has
-been detached, it can leak the view.
+not update.  Conversely, if a drawable's callback references a detached
+view, it can leak the view.
 
 ### 25.10.13 Compound Views vs. Custom Layouts
 
@@ -3324,18 +3326,18 @@ public class UserCard extends LinearLayout {
 
 The view system is mature, so Android 17's changes are evolutionary rather
 than structural.  Three threads dominate the 16->17 delta in
-`frameworks/base` for the view, input, and HWUI code: a much deeper
-Adaptive Refresh Rate (ARR) frame-rate story, synchronized window-insets
-animations becoming the default, and continued investment in moving HWUI
-rendering work out of the app process.  This section folds those into the
-machinery covered above.
+`frameworks/base` for the view, input, and HWUI code.  The first is a much
+deeper Adaptive Refresh Rate (ARR) frame-rate story.  The second is that
+synchronized window-insets animations become the default.  The third is
+continued investment to move HWUI rendering work out of the app process.
+This section folds those into the machinery covered above.
 
 ### 25.12.1 Adaptive Refresh Rate and the View Velocity API
 
 Section 25.4.9 introduced frame-rate voting.  Android 17 builds it out into a
-full **Adaptive Refresh Rate (ARR)** pipeline that lets the toolkit pick a
-sensible refresh rate per frame instead of always running the panel at its
-peak.  The relevant pieces, all in
+full **Adaptive Refresh Rate (ARR)** pipeline.  The pipeline lets the toolkit
+pick a sensible refresh rate per frame instead of always running the panel at
+its peak.  The relevant pieces, all in
 `frameworks/base/core/java/android/view/View.java`:
 
 - **`setRequestedFrameRate(float)`** (line 35127) -- an app's explicit vote,
@@ -3343,9 +3345,9 @@ peak.  The relevant pieces, all in
   `REQUESTED_FRAME_RATE_CATEGORY_*` sentinels (line 5958).
 - **`setFrameContentVelocity(float)`** / **`getFrameContentVelocity()`**
   (line 35083) -- the *View Velocity* API.  A scrolling container reports how
-  fast its content is moving (pixels/second); HWUI and the platform map that
-  velocity to a frame-rate category, so fast flings get a high refresh rate
-  and slow drifts get a lower one.
+  fast its content is moving (pixels/second).  HWUI and the platform map that
+  velocity to a frame-rate category.  Fast flings get a high refresh rate and
+  slow drifts get a lower one.
 
 ```
 Source: frameworks/base/core/java/android/view/View.java (line 35083)
@@ -3357,12 +3359,12 @@ Source: frameworks/base/core/java/android/view/View.java (line 35083)
 `ViewRootImpl` aggregates these signals into `mPreferredFrameRateCategory`,
 `mPreferredFrameRate`, and an `mIsFrameRateBoosting` flag (fields declared
 around line 1228 of
-`frameworks/base/core/java/android/view/ViewRootImpl.java`) and resolves them
-to the integer `Surface.FRAME_RATE_CATEGORY_*` values during the traversal
-before reporting to SurfaceFlinger.  This is also why `performTraversals()`
-and `doTraversal()` now carry the VSYNC `frameTimeNanos` (Sections 25.2.10 and
-25.4.4): the frame time pins the velocity-to-rate mapping to a single,
-consistent frame.
+`frameworks/base/core/java/android/view/ViewRootImpl.java`).  During the
+traversal it resolves them to the integer `Surface.FRAME_RATE_CATEGORY_*`
+values.  Then it reports them to SurfaceFlinger.  This is also why
+`performTraversals()` and `doTraversal()` now carry the VSYNC `frameTimeNanos`
+(Sections 25.2.10 and 25.4.4).  The frame time pins the velocity-to-rate
+mapping to a single, consistent frame.
 
 How the per-frame decision flows:
 
@@ -3375,15 +3377,15 @@ graph TD
 ```
 
 On Multiple-Refresh-Rate (MRR) panels the platform skips the
-`setFrameRateCategory` calls (gated by a `hasArrSupport` check), so the same
+`setFrameRateCategory` calls (gated by a `hasArrSupport` check).  So the same
 toolkit code is a no-op on hardware that cannot vary its refresh rate.
 
 ### 25.12.2 Synchronized Window Insets Animations
 
 The inset-animation callback API (Section 25.6.6) describes how a view
 interpolates its layout as the IME or system bars slide in and out.  In
-Android 17 the platform adds a **synchronized insets animation**: the system
-window's geometry and the app's animated frame advance together, so the IME
+Android 17 the platform adds a **synchronized insets animation**.  The system
+window's geometry and the app's animated frame advance together.  So the IME
 and the content it pushes up stay visually locked instead of drifting apart
 during the transition.
 
@@ -3402,8 +3404,8 @@ Source: frameworks/base/core/java/android/view/InsetsController.java (line 244)
     }
 ```
 
-Because perfectly synced animation depends on the render pipeline keeping up,
-the feature is disabled on devices without high-end graphics, and there is an
+Perfectly synced animation depends on the render pipeline keeping up.  So the
+feature is disabled on devices without high-end graphics.  There is also an
 activity-level opt-out for apps that drive their own inset animations and do
 not want the synchronized path.  From an app's perspective the
 `WindowInsetsAnimation.Callback` contract in Section 25.6.6 is unchanged --
@@ -3414,7 +3416,7 @@ the synchronization happens below the callback, inside `InsetsController` and
 
 Section 25.5 described HWUI's UI-thread / render-thread split inside the app
 process.  Android 17 continues a longer-running effort to push parts of that
-work *out* of the app process entirely -- rendering some `RenderNode` layers
+work *out* of the app process entirely.  Some `RenderNode` layers render
 remotely (in SurfaceFlinger) rather than on the app's own render thread.  The
 goal is better isolation and the ability to composite app-recorded display
 lists without round-tripping every layer through the app.
@@ -3422,30 +3424,31 @@ lists without round-tripping every layer through the app.
 This work is staged behind the libgui aconfig flag
 `out_of_process_rendering`, declared in
 `frameworks/native/libs/gui/libgui_flags.aconfig` and consumed by
-`frameworks/base/libs/hwui/hwui/OutOfProcessRendering.cpp`, and touches the
-`CanvasContext` / render-pipeline abstractions (for example, allowing drawing
-without a `Surface` and plumbing a separate rendering size through to HWUI).
-For app developers the surface stays the same: you still record display lists
-with a `RecordingCanvas` into a `RenderNode` (Section 25.5.3) and the
-`ThreadedRenderer` still drives `syncAndDrawFrame()`.  Where the GPU work
+`frameworks/base/libs/hwui/hwui/OutOfProcessRendering.cpp`.  It also touches
+the `CanvasContext` / render-pipeline abstractions (for example, it allows
+drawing without a `Surface` and passes a separate rendering size through to
+HWUI).  For app developers the surface stays the same.  You still record
+display lists with a `RecordingCanvas` into a `RenderNode` (Section 25.5.3).
+The `ThreadedRenderer` still drives `syncAndDrawFrame()`.  Where the GPU work
 ultimately executes is becoming an implementation detail the platform can
 relocate without changing the recording API.
 
 A smaller but visible HWUI change in this release is that `ViewRootImpl`
 abstracts the rounded-corner radii callback *through* HWUI rather than
-computing it directly, keeping the `RoundedCorners` / `DisplayShape` data
+computing it directly.  This keeps the `RoundedCorners` / `DisplayShape` data
 (Section 25.6.7) consistent with what the render pipeline actually clips.
 
 ### 25.12.4 What Did Not Change
 
 It is worth being explicit about continuity, because the fundamentals carry
-across releases.  The measure-layout-draw contract (Section 25.2), the
-`MeasureSpec` bit packing, the `ViewGroup.dispatchTouchEvent()` algorithm
-(Section 25.3.6), the `InputStage` pipeline (Section 25.4.7), the
-`RenderNode` display-list model (Section 25.5), and the typed
-`WindowInsets.Type` flags (Section 25.6.2) are all unchanged in Android 17.
-The deltas above are refinements layered on top of that stable core, which is
-why the bulk of this chapter remains accurate release over release.
+across releases.  The
+measure-layout-draw contract (Section 25.2) is unchanged in Android 17.  So are the
+`MeasureSpec` bit packing and the `ViewGroup.dispatchTouchEvent()` algorithm
+(Section 25.3.6).  The `InputStage` pipeline (Section 25.4.7) is also
+unchanged.  So are the `RenderNode` display-list model (Section 25.5) and the
+typed `WindowInsets.Type` flags (Section 25.6.2).  The deltas above are refinements layered
+on top of that stable core, which is why the bulk of this chapter remains
+accurate release over release.
 
 ---
 
@@ -3944,8 +3947,8 @@ public class MeasureBenchmark {
 
 **Exercise**: Run this benchmark and compare.  Then increase the depth/count
 to 50 and 100.  Graph the results to see how measure time scales linearly
-with flat hierarchies but can grow exponentially with nested ones (especially
-when `wrap_content` is used at each level).
+with flat hierarchies.  With nested ones it can grow exponentially, especially
+when `wrap_content` is used at each level.
 
 ---
 
@@ -4131,9 +4134,9 @@ fade.start();
 ```
 
 `ViewGroupOverlay` extends `ViewOverlay` to support adding entire `View`
-objects.  This is used internally by the framework for shared element
-transitions -- the transitioning view is reparented to the overlay of the
-window's `DecorView` during the animation.
+objects.  The framework uses this internally for shared element
+transitions.  During the animation, the transitioning view is reparented to the
+overlay of the window's `DecorView`.
 
 **Exercise**: Use `ViewGroupOverlay` to animate a `View` across two
 different parent `ViewGroup` objects without re-parenting.
@@ -4271,17 +4274,17 @@ View System, covering:
   `Canvas` / `Paint` primitives, performance best practices, and custom
   `ViewGroup` layout.
 
-- **Android 17 Updates** (Section 25.12): The expanded Adaptive Refresh Rate
+- **Android 17 Updates** (Section 25.12): Expanded Adaptive Refresh Rate
   pipeline and View Velocity API, default synchronized window-insets
-  animations, and HWUI's move toward out-of-process rendering -- all
+  animations, and HWUI's move to out-of-process rendering.  All are
   refinements on top of an otherwise stable core.
 
 The view system is where every line of application UI code ultimately
-executes.  Understanding its internals -- from the `MeasureSpec` bit packing
+executes.  Understanding its internals is essential to build high-performance Android
+applications and to diagnose the subtle layout and rendering issues that
+arise in complex UIs.  The internals range from the `MeasureSpec` bit packing
 to the `Choreographer` VSYNC synchronization to the `RenderNode` display
-list recording -- is essential for building high-performance Android
-applications and for diagnosing the subtle layout and rendering issues that
-arise in complex UIs.
+list recording.
 
 ---
 

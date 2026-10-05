@@ -1,14 +1,17 @@
 # Chapter 27: Content Providers
 
-Content providers are one of Android's four foundational application components,
-yet unlike activities, services, and broadcast receivers, they exist purely to
-broker structured data across process boundaries.  Every time a dialer app looks
-up a phone number, a gallery app enumerates photos, or the system reads a
-brightness setting, a content provider mediates the transaction.  This chapter
-walks through the framework machinery that makes content providers work --
-from the Binder transport layer and URI routing to the concrete implementations
-that ship with every Android device -- referencing the actual AOSP source at
-every step.
+Content providers are one of Android's four foundational application components.
+Unlike activities, services, and broadcast receivers, they exist purely to
+broker structured data across process boundaries.  A dialer app looks up a
+phone number, a gallery app enumerates photos, or the system reads a
+brightness setting.  In each case, a content provider mediates the
+transaction.
+
+This chapter
+walks through the framework machinery that makes content providers work.  It
+covers the Binder transport layer, URI routing, and the concrete
+implementations that ship with every Android device.  It refers to the actual
+AOSP source at every step.
 
 ---
 
@@ -18,7 +21,7 @@ every step.
 
 A content provider is an in-process object that exposes a relational (or
 relational-like) data interface to other processes.  Callers never instantiate a
-provider directly; instead, they go through `ContentResolver`, which resolves
+provider directly.  Instead, they go through `ContentResolver`.  It resolves
 an authority string, acquires a Binder handle to the remote provider, and
 marshals arguments over IPC.
 
@@ -158,9 +161,9 @@ mPublic.addURI(authority, "*/audio/media",     AUDIO_MEDIA);
 ```
 
 At query time, `MediaProvider.queryInternal()` computes the match code via
-`matchUri()` and passes it down to `getQueryBuilder()` /
-`getQueryBuilderInternal()`, whose large `switch (match)` statement selects
-the backing table and projection map for the query.
+`matchUri()`.  It passes the code down to `getQueryBuilder()` /
+`getQueryBuilderInternal()`.  The large `switch (match)` statement in these
+methods selects the backing table and projection map for the query.
 
 ### 27.1.5 CRUD Operations
 
@@ -213,9 +216,9 @@ public @Nullable Bundle call(@NonNull String authority, @NonNull String method,
 }
 ```
 
-This pattern is used heavily by `SettingsProvider` (see Section 50.4), which
-routes nearly all reads and writes through `call()` instead of the standard
-CRUD methods, for performance reasons.
+`SettingsProvider` (see Section 50.4) uses this pattern heavily.  For
+performance reasons, it routes nearly all reads and writes through `call()`
+instead of the standard CRUD methods.
 
 ### 27.1.7 Binder Transport Details
 
@@ -246,10 +249,10 @@ class Transport extends ContentProviderNative {
 
 Key points about the transport:
 
-1. **URI validation** -- `validateIncomingUri()` verifies the authority belongs
-   to this provider, throws a `SecurityException` for URIs carrying another
-   user's ID when cross-user redirection is not permitted, and normalizes
-   empty path segments.  A separate `maybeGetUriWithoutUserId()` call then
+1. **URI validation** -- `validateIncomingUri()` does three things.  It
+   verifies the authority belongs to this provider.  It throws a
+   `SecurityException` for URIs carrying another user's ID when cross-user
+   redirection is not permitted.  It also normalizes empty path segments.  A separate `maybeGetUriWithoutUserId()` call then
    strips the embedded user ID; the `INTERACT_ACROSS_USERS` /
    `INTERACT_ACROSS_USERS_FULL` check lives in `ContentProvider.checkUser()`.
 2. **Permission enforcement** -- `enforceReadPermission()` and
@@ -401,10 +404,10 @@ The file descriptor modes supported are:
 | `"rwt"` | Read-write with truncation |
 
 In Android 17, `ContentProvider.Transport` sanitizes the mode string before
-delegating to the provider.  If a caller asks to open a file with the
-truncate (`t`) or append (`a`) bit set but without the write (`w`) bit, the
-transport silently drops those bits rather than letting a nominally read-only
-open mutate the file.  The logic lives in `Transport.validateFileMode()`,
+delegating to the provider.  Suppose a caller asks to open a file with the
+truncate (`t`) or append (`a`) bit set but without the write (`w`) bit.  The
+transport then silently drops those bits.  This stops a nominally read-only
+open from mutating the file.  The logic lives in `Transport.validateFileMode()`,
 which the transport calls from both `openFile()` and `openAssetFile()`:
 
 ```java
@@ -426,7 +429,7 @@ private String validateFileMode(String mode) {
 ```
 
 The dropping is deliberately silent (rather than throwing) to avoid breaking
-apps that pass sloppy mode strings; the sanitized mode is what actually
+apps that pass sloppy mode strings.  The sanitized mode is what actually
 reaches `enforceFilePermission()` and the provider's `openFile()`.
 
 ### 27.1.12 The CursorWindow and Shared Memory
@@ -843,7 +846,7 @@ graph TD
 ```
 
 The `VolumeCache` class tracks the volumes that are available and maps volume
-names to their mount and scan paths; it has no knowledge of the databases.
+names to their mount and scan paths.  It has no knowledge of the databases.
 
 ### 27.3.4 Database Schema
 
@@ -990,9 +993,9 @@ public static final int PERMISSION_IS_SYSTEM_GALLERY   = 1 << 22;
 
 ### 27.3.8 Photo Picker
 
-Starting with Android 13, MediaProvider includes a Photo Picker that allows
-users to grant access to specific photos/videos without giving the app broad
-media permissions:
+MediaProvider includes a Photo Picker from Android 13.  With it, users can
+grant access to specific photos/videos without giving the app broad media
+permissions:
 
 ```
 packages/providers/MediaProvider/src/com/android/providers/media/photopicker/
@@ -1089,18 +1092,18 @@ static final String EXTERNAL_DATABASE_NAME = "external.db";
 ```
 
 The helper defines the `OnFilesChangeListener` and `OnLegacyMigrationListener`
-callback interfaces and holds listener instances supplied by `MediaProvider`
-as anonymous implementations (`mFilesListener` and `MIGRATION_LISTENER`,
-passed to the `DatabaseHelper` constructors), coordinating with the provider
-during schema changes and data migrations from older Android versions.
+callback interfaces. It holds listener instances that `MediaProvider`
+supplies as anonymous implementations (`mFilesListener` and `MIGRATION_LISTENER`,
+passed to the `DatabaseHelper` constructors). The helper coordinates with the
+provider during schema changes and data migrations from older Android versions.
 
 ### 27.3.13 Backup and Recovery
 
-MediaProvider includes a database backup and recovery mechanism that stores
+MediaProvider includes a database backup and recovery mechanism. It stores
 file-path-to-`BackupIdRow` mappings in per-volume LevelDB tables under
-`/data/media/<user>/.transforms/recovery/`; filesystem extended attributes
+`/data/media/<user>/.transforms/recovery/`. Filesystem extended attributes
 (xattrs) are used only for a few scalar counters (the next owner ID, the last
-backed-up generation, and the public-volume recovery flag).  This ensures
+backed-up generation, and the public-volume recovery flag).  This makes sure
 that stable URIs survive database recreation after a factory reset or
 device migration:
 
@@ -1113,8 +1116,8 @@ packages/providers/MediaProvider/src/com/android/providers/media/stableuris/dao/
 
 Historically, apps could read the `_data` column to get the absolute filesystem
 path of a media file.  Starting with Android 11 (API 30), this column returns
-a fake path under `/mnt/content/` that the framework intercepts in-process
-and converts back into a `content://` open (see Section 27.9.14):
+a fake path under `/mnt/content/`. The framework intercepts this path
+in-process and converts it back into a `content://` open (see Section 27.9.14):
 
 ```java
 // ContentResolver.java (line 132 and line 145)
@@ -1132,7 +1135,7 @@ Apps should use `ContentResolver.openFileDescriptor()` or
 ### 27.4.1 Overview
 
 The Contacts content provider manages all contact data on the device.  It is
-one of the most complex providers, implementing a three-tier data model
+one of the most complex providers. It implements a three-tier data model
 (contacts, raw contacts, and data rows), automatic aggregation, sync adapter
 integration, and enterprise contact access.
 
@@ -1384,10 +1387,10 @@ user input.
 
 Contacts directories represent remote contact sources, such as a corporate
 Global Address List (GAL).  A client enumerates the registered directories
-from `Directory.CONTENT_URI` and issues one query per directory (for example
-against `Contacts.CONTENT_FILTER_URI` with `?directory=<id>` appended); the
+from `Directory.CONTENT_URI`. It issues one query per directory (for example
+against `Contacts.CONTENT_FILTER_URI` with `?directory=<id>` appended). The
 provider forwards each such query to the single directory provider named by
-that parameter and returns its cursor unmerged:
+that parameter. It returns that cursor unmerged:
 
 ```java
 // ContactsProvider2.java
@@ -1461,7 +1464,7 @@ An app starts the picker with `startActivityForResult()` on the
 (`"android.provider.action.PICK_CONTACTS"`, line 105 of the contract). The
 required `EXTRA_PICK_CONTACTS_REQUESTED_DATA_FIELDS` extra lists the MIME types
 the app wants (phone, email, postal, and so on, drawn from
-`ContactsContract.CommonDataKinds`); the picker both filters the list to
+`ContactsContract.CommonDataKinds`). The picker both filters the list to
 contacts that have one of those fields and limits the returned columns to those
 fields. `EXTRA_PICK_CONTACTS_MATCH_ALL_DATA_FIELDS`,
 `EXTRA_PICK_CONTACTS_SELECTION_LIMIT` (default 50, max 100), and the standard
@@ -1469,19 +1472,21 @@ fields. `EXTRA_PICK_CONTACTS_MATCH_ALL_DATA_FIELDS`,
 action; the docstring notes that third-party handlers are ignored.
 
 The result is not the contact data itself but a one-time pointer to it. On
-selection the picker app, which does hold `READ_CONTACTS`, resolves the chosen
-rows and inserts a session into the `ContactsPickerSessionProvider`
+selection, the picker app resolves the chosen rows. The picker app does hold
+`READ_CONTACTS`. It inserts a session into the `ContactsPickerSessionProvider`
 (`packages/apps/ContactsPicker` writes through the provider at
 `packages/providers/ContactsProvider/src/com/android/providers/contacts/picker/ContactsPickerSessionProvider.java`).
 That provider stores the selected `ContactsContract.Data` row IDs and the
 requesting app's UID, then returns a session URI of the form
-`content://com.android.contacts.picker.sessions/sessions/<session_id>`. The
-session URI travels back to the caller in the result `Intent` carrying
-`FLAG_GRANT_READ_URI_PERMISSION`, so the caller gets temporary read access to
-exactly that URI and nothing else. Querying the session URI projects rows out of
-the `ContactsContract.Data` table for the selected fields; passing a selection
-or selection arguments throws `UnsupportedOperationException`, since the user has
-already made the selection. Writing the session row is itself protected by the
+`content://com.android.contacts.picker.sessions/sessions/<session_id>`.
+
+The session URI travels back to the caller in the result `Intent`. This
+result carries `FLAG_GRANT_READ_URI_PERMISSION`, so the caller gets temporary
+read access to exactly that URI and nothing else. A query on the session URI
+projects rows out of the `ContactsContract.Data` table for the selected fields.
+A query that passes a selection or selection arguments throws
+`UnsupportedOperationException`, because the user has already made the
+selection. Writing the session row is itself protected by the
 `signature|privileged` permission `MANAGE_CONTACTS_PICKER_SESSION`, so only the
 picker can create a session on a requester's behalf.
 
@@ -1502,15 +1507,17 @@ sequenceDiagram
 ```
 
 Sessions are short-lived. `ContactsPickerSessionProvider` schedules a daily
-`ContactsPickerJobService` cleanup that deletes sessions older than 24 hours,
-and an insert prunes the oldest rows once the table reaches `MAX_SESSION_COUNT`
-(5000). Backward compatibility runs through the same picker app: its
+`ContactsPickerJobService` cleanup that deletes sessions older than 24 hours.
+An insert prunes the oldest rows once the table reaches `MAX_SESSION_COUNT`
+(5000).
+
+Backward compatibility runs through the same picker app. Its
 `AndroidManifest.xml` registers intent filters for both `ACTION_PICK_CONTACTS`
-and the legacy `Intent.ACTION_PICK`, and `ContactsPickerAction`
+and the legacy `Intent.ACTION_PICK`. `ContactsPickerAction`
 (`packages/apps/ContactsPicker/src/com/android/contactspicker/config/ContactsPickerAction.kt`)
-records which action launched it. For a legacy `ACTION_PICK` the picker returns
-the old result format (one or more contact content URIs); for
-`ACTION_PICK_CONTACTS` it returns the single session URI described above. An
+records which action launched it. For a legacy `ACTION_PICK`, the picker returns
+the old result format (one or more contact content URIs). For
+`ACTION_PICK_CONTACTS`, it returns the single session URI described above. An
 existing app that already uses `ACTION_PICK` keeps working unchanged and is
 served by the same UI.
 
@@ -1692,9 +1699,9 @@ than storing 52 separate events, the calendar stores one event with an RRULE:
 RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20261231T235959Z
 ```
 
-When a client queries the `Instances` table for a time range (say, March 2026),
-the `CalendarInstancesHelper` computes which occurrences of the recurring event
-fall within that range using the `RecurrenceProcessor`:
+A client can query the `Instances` table for a time range (say, March 2026).
+The `CalendarInstancesHelper` then computes which occurrences of the recurring
+event fall within that range. It uses the `RecurrenceProcessor` for this:
 
 ```mermaid
 sequenceDiagram
@@ -1916,8 +1923,8 @@ frameworks/base/packages/SettingsProvider/src/com/android/providers/settings/Gen
 
 This means that reading a setting that has not changed since the last read
 requires zero IPC calls.  The generation index is exposed to clients through
-a shared-memory `MemoryIntArray`, so a client can poll the current generation
-without any Binder round-trip; only a generation mismatch forces a `call()`.
+a shared-memory `MemoryIntArray`. A client can poll the current generation
+without any Binder round-trip. Only a generation mismatch forces a `call()`.
 
 ### 27.6.5 Settings Moved Between Namespaces
 
@@ -1938,9 +1945,9 @@ transparently redirects to the correct one.
 
 ### 27.6.6 Validation
 
-Apps targeting API 23 (Marshmallow) and above cannot add arbitrary keys to
-the System namespace -- the provider throws `IllegalArgumentException`; apps
-targeting API 22 or lower only get a logged warning.  The provider also
+Apps that target API 23 (Marshmallow) and above cannot add arbitrary keys to
+the System namespace -- the provider throws `IllegalArgumentException`. Apps
+that target API 22 or lower only get a logged warning.  The provider also
 validates values against a set of registered validators:
 
 ```
@@ -1980,9 +1987,9 @@ final int requestingUserId = getRequestingUserId(args);
 final int callingDeviceId = getDeviceId();
 ```
 
-When the calling context is associated with a virtual device (for example a
+When the calling context has a virtual device (for example a
 companion display or a remote-display session), the provider first looks up a
-device-specific value, then falls back to the default device's setting if the
+device-specific value. Then it falls back to the default device's setting if the
 virtual device has no override:
 
 ```java
@@ -2131,8 +2138,8 @@ These allowlists are populated from overlay-configurable resource arrays.
 ### 27.7.1 Overview
 
 The Storage Access Framework (SAF), introduced in Android 4.4, provides a
-unified API for accessing documents from any source -- local storage, cloud
-drives, USB devices, or network shares.  At its center is
+unified API to access documents from any source.  A source can be local
+storage, a cloud drive, a USB device, or a network share.  At its center is
 `DocumentsProvider`, an abstract subclass of `ContentProvider`:
 
 ```
@@ -2343,7 +2350,7 @@ public static final int FLAG_SUPPORTS_EJECT   = 1 << 5;
 
 A "virtual document" (flagged with `FLAG_VIRTUAL_DOCUMENT`) is one that does
 not have a native file representation but can be converted on demand.  For
-example, a Google Docs document stored in the cloud might be virtual -- it
+example, a Google Docs document stored in the cloud might be virtual.  It
 can be opened as a PDF or DOCX through `openTypedDocument()`, but there is no
 raw file to download.
 
@@ -2931,20 +2938,23 @@ flowchart TD
 ```
 
 Note two subtleties of this flow.  A non-exported provider is not an
-immediate denial: the component and path permission checks are skipped, but
-the URI-permission-grant check still runs -- this is exactly how non-exported
-`FileProvider`s hand out access via `grantUriPermission()`.  And AppOps is an
-extra gate applied *after* a successful permission or grant check
-(`enforceReadPermission()` only consults the AppOp once
-`enforceReadPermissionInner()` returns granted); AppOps can turn an allow
-into a denial, never the reverse.  (The testing flag set by
+immediate denial.  The component and path permission checks are skipped, but
+the URI-permission-grant check still runs.  This is exactly how non-exported
+`FileProvider`s hand out access via `grantUriPermission()`.
+
+And AppOps is an extra gate applied *after* a successful permission or grant check.
+`enforceReadPermission()` only consults the AppOp once
+`enforceReadPermissionInner()` returns granted.  AppOps can turn an allow
+into a denial, never the reverse.
+
+(The testing flag set by
 `attachInfo(..., testing=true)` is not a permission bypass -- it only
 suppresses AppOps registration in `setAppOps()`.)
 
 For `query()` operations, a hard permission denial still throws a
-`SecurityException`.  It is a *soft* denial -- an AppOps "ignored" outcome,
-as when a runtime permission has been revoked -- that instead returns an
-empty cursor with the correct column names.  This preserves API compatibility
+`SecurityException`.  A *soft* denial is different.  It is an AppOps "ignored"
+outcome, as when a runtime permission has been revoked.  It returns an
+empty cursor with the correct column names instead.  This preserves API compatibility
 and prevents apps from crashing when permissions are revoked at runtime.
 
 For `insert()`, `update()`, and `delete()`, permission denial throws a
@@ -2981,9 +2991,9 @@ The system limits the number of persisted URI permissions per app (typically
 
 When `grantUriPermission()` is called, the following validation occurs:
 
-1. The calling UID must itself hold read/write access to the URI -- either
-   via the provider's declared permissions and path permissions, or via an
-   existing URI grant strong enough to re-grant
+1. The calling UID must itself hold read/write access to the URI. It gets
+   this access from the provider's declared permissions and path
+   permissions, or from an existing URI grant strong enough to re-grant
 2. The provider must have `grantUriPermissions="true"` or a matching
    `<grant-uri-permission>` element
 3. The target package must exist
@@ -3009,14 +3019,14 @@ sequenceDiagram
 ### 27.9.13 ContentProviderOperation Security
 
 Batch operations via `applyBatch()` inherit the same permission model as
-individual calls.  Although the entire batch arrives in a single IPC call,
+individual calls.  The entire batch arrives in a single IPC call.  Even so,
 `Transport.applyBatch()` walks the operation list up front and enforces read
-or write permission for each operation's URI before delegating to the
-provider; a denial aborts the batch with an `OperationApplicationException`.
+or write permission for each operation's URI before it delegates to the
+provider.  A denial aborts the batch with an `OperationApplicationException`.
 The results are cached per URI (in `ArraySet`s of already-checked read and
 write URIs), so a URI that repeats across operations is only checked once.
 
-This means that if an app has permission to write to the provider, it can
+This means that an app with permission to write to the provider can
 perform any mix of inserts, updates, and deletes in a single batch.
 
 ### 27.9.14 The DEPRECATE_DATA_COLUMNS Mechanism
@@ -3030,14 +3040,14 @@ public static final boolean DEPRECATE_DATA_COLUMNS = true;
 public static final String DEPRECATE_DATA_PREFIX = "/mnt/content/";
 ```
 
-When an app reads the `_data` column from MediaStore and gets a path like
-`/mnt/content/0@media/external/images/media/42`, the interception happens
-inside the app's own process, not in FUSE: `AndroidForwardingOs` (the libcore
-`Os` forwarding shim installed in every app process, at
-`frameworks/base/core/java/android/app/AndroidForwardingOs.java`) checks
+Suppose an app reads the `_data` column from MediaStore and gets a path like
+`/mnt/content/0@media/external/images/media/42`.  The interception happens
+inside the app's own process, not in FUSE.  `AndroidForwardingOs` is the
+libcore `Os` forwarding shim installed in every app process, at
+`frameworks/base/core/java/android/app/AndroidForwardingOs.java`.  It checks
 calls like `open()`, `access()`, `stat()`, and `unlink()` for the
-`/mnt/content/` prefix, converts the path back into a `content://` URI, and
-routes the operation through `ContentResolver`, which performs proper
+`/mnt/content/` prefix.  It converts the path back into a `content://` URI.
+Then it routes the operation through `ContentResolver`, which performs proper
 permission checking.
 
 This migration path allows legacy apps that relied on file paths to continue
@@ -3048,7 +3058,7 @@ working while still enforcing scoped storage permissions.
 ## 27.10 Android 17 Changes for Content Providers
 
 Android 17 (SDK 37, codename Cinnamon Bun) introduced no sweeping redesign of
-the content-provider model; the `IContentProvider` shape, the `Transport`
+the content-provider model.  The `IContentProvider` shape, the `Transport`
 permission flow, and the `CursorWindow` transport are all unchanged.  The
 changes are targeted: a hardening of file-open modes, a more precise ANR
 contract for `ContentProviderClient`, and the formalization of device-aware
@@ -3058,9 +3068,9 @@ settings.  This section collects them.
 
 As described in Section 27.1.11, `ContentProvider.Transport` now passes every
 `openFile()` / `openAssetFile()` mode string through `validateFileMode()`
-before permission checking and delegation.  The motivation is a security fix:
-a caller that requested a read open (`r`) but accidentally (or maliciously)
-set the truncate (`t`) or append (`a`) bit could previously cause writes
+before permission checking and delegation.  The motivation is a security fix.
+A caller could request a read open (`r`) but accidentally (or maliciously)
+set the truncate (`t`) or append (`a`) bit.  Previously this could cause writes
 through what looked like a read path.  The transport now silently strips `t`
 and `a` whenever the write bit `w` is absent.
 
@@ -3079,18 +3089,18 @@ flowchart TD
     style G fill:#4de84d,stroke:#333,color:#000
 ```
 
-The fix is intentionally lenient (drop bits, do not throw) to avoid breaking
-apps that pass sloppy mode strings, but the net effect is that a read-only
-grant can no longer be coerced into truncating a file.
+The fix is intentionally lenient (drop bits, do not throw).  This avoids
+breaking apps that pass sloppy mode strings.  The net effect is that a
+read-only grant can no longer be coerced to truncate a file.
 
 ### 27.10.2 ContentProviderClient ANR on Cancellation
 
-`ContentProviderClient.setDetectNotResponding(long)` has long let a caller arm
-a watchdog: if a remote provider call blocks longer than the configured
-timeout, the provider process is killed with an ANR.  The original timeout was
-fixed and started ticking the moment the call was made, which is awkward for
-long-running cancellable calls (a `query()` or `call()` that legitimately runs
-for a while but honors a `CancellationSignal`).
+For a long time, `ContentProviderClient.setDetectNotResponding(long)` has let a
+caller arm a watchdog.  If a remote provider call blocks longer than the
+configured timeout, the provider process is killed with an ANR.  The original
+timeout was fixed.  It started when the call was made.  This is awkward for
+long-running cancellable calls: a `query()` or `call()` that legitimately runs
+for a while but honors a `CancellationSignal`.
 
 Android 17 adds the system API `setDetectNotRespondingOnCancel(long, long)`,
 gated by the flag
@@ -3116,27 +3126,29 @@ It configures two independent timeouts:
 | `timeoutOnCancelMillis` | Only calls that take a `CancellationSignal` | When the cancellation signal is fired |
 
 For a cancellable call, the watchdog therefore measures how long the provider
-takes to honor a cancel, not how long the call has been running. The legacy
-`setDetectNotResponding(long)` is now a thin wrapper that delegates with a zero
-on-cancel timeout, so existing callers behave exactly as before.
+takes to honor a cancel.  It does not measure how long the call has been
+running. The legacy `setDetectNotResponding(long)` is now a thin wrapper that
+delegates with a zero on-cancel timeout.  Existing callers therefore behave
+exactly as before.
 
 Internally, the client schedules its watchdog runnables (`NotRespondingRunnable`,
 `CallNotCancelledRunnable`) in `beforeRemote()` and clears them in
 `afterRemote()`.  Android 17 also added an `afterRemote()` overload that takes
-the `CancellationSignal` so the client can detach its on-cancel listener once a
-call returns, preventing a cancel fired *after* the call completed from
-tripping the ANR detector (a former source of false-positive ANRs).
+the `CancellationSignal`.  With it, the client can detach its on-cancel listener
+once a call returns.  This stops a cancel fired *after* the call completed from
+tripping the ANR detector.  That cancel was a former source of false-positive
+ANRs.
 
 ### 27.10.3 ContentProviderClient Refactor
 
 Independent of the ANR work, `ContentProviderClient`'s per-operation
-boilerplate was consolidated in Android 17.  The repetitive pattern around each
-remote call (arm the watchdog, make the Binder call, translate
-`RemoteException` / `DeadObjectException`, disarm the watchdog) was factored
-into a small set of helper executors and functional interfaces.  This is an
-internal cleanup with no API surface change, but it is why the per-method
-bodies in this file are now much shorter than in earlier releases: each public
-method funnels its remote call through a shared executor that owns the ANR and
+boilerplate was consolidated in Android 17.  Each remote call had the same
+repetitive pattern: arm the watchdog, make the Binder call, translate
+`RemoteException` / `DeadObjectException`, and disarm the watchdog.  This
+pattern was factored into a small set of helper executors and functional
+interfaces.  This is an internal cleanup with no API surface change.  It is why
+the per-method bodies in this file are now much shorter than in earlier
+releases.  Each public method funnels its remote call through a shared executor that owns the ANR and
 exception handling.
 
 ### 27.10.4 Device-Aware Settings
@@ -3144,12 +3156,15 @@ exception handling.
 The per-virtual-device settings story described in Section 27.6.8 was promoted
 to a first-class, documented behavior in the Android 17 timeframe.  Both the
 `call()` fast path and the legacy mutation path capture the calling device ID
-via `getDeviceId()` and thread it through the setting key (Section 27.6.10), so
-`Secure` and `System` settings can carry a virtual-device override that falls
-back to the default-device value when absent.  As noted earlier, these
-overrides are deliberately ephemeral (never persisted) because virtual devices
-themselves are ephemeral, and the mechanism is restricted to the `Secure` and
-`System` namespaces; `Global`, `config`, and `ssaid` remain device-agnostic.
+via `getDeviceId()`.  They thread it through the setting key (Section 27.6.10).
+So `Secure` and `System` settings can carry a virtual-device override.  The
+override falls back to the default-device value when absent.
+
+As noted earlier,
+these overrides are deliberately ephemeral (never persisted) because virtual
+devices themselves are ephemeral.  The mechanism is restricted to the `Secure`
+and `System` namespaces.  `Global`, `config`, and `ssaid` remain
+device-agnostic.
 
 ---
 
@@ -3174,22 +3189,22 @@ Three details are worth calling out:
 
 - **Deduplication on restore.** `CallLogBackupAgent` does not blindly re-insert
   every backed-up row. `removeDuplicateCalls()` matches incoming rows against
-  the existing log (keyed on date and number) so a restore onto a device that
-  already has overlapping history does not produce duplicates. The newer batch
+  the existing log (keyed on date and number).  This way a restore onto a device
+  that already has overlapping history does not produce duplicates. The newer batch
   path is gated by the `batch_deduplication_enabled` flag declared in
   `packages/providers/CallLogProvider/calllogbackup_flags.aconfig`.
 - **Phone-account handling.** Call rows carry the originating
   `PhoneAccountHandle` (`PHONE_ACCOUNT_COMPONENT_NAME`, `PHONE_ACCOUNT_ID`,
   `PHONE_ACCOUNT_ADDRESS`). On backup the agent can mark a telephony account's
-  ID as migration-pending (`IS_PHONE_ACCOUNT_MIGRATION_PENDING`) so a restore
+  ID as migration-pending (`IS_PHONE_ACCOUNT_MIGRATION_PENDING`).  Then a restore
   onto a device with a different SIM can re-map the account by ICCID rather than
   by a stale component name.
 - **Change-driven backup.** `CallLogChangeReceiver` listens for the internal
-  `CALL_LOG_CHANGE` broadcast and calls `BackupManager.dataChanged()`, so edits
-  to the log schedule a fresh backup pass rather than relying solely on periodic
-  backups.
+  `CALL_LOG_CHANGE` broadcast and calls `BackupManager.dataChanged()`.  Edits
+  to the log therefore schedule a fresh backup pass.  Periodic backups are
+  not the only trigger.
 
-This chapter covers the provider mechanics; for *who* writes call-log entries in
+This chapter covers the provider mechanics.  For *who* writes call-log entries in
 the first place (the in-call service and the telephony stack), see Chapter 36,
 Telephony and RIL.
 
@@ -3197,18 +3212,18 @@ Telephony and RIL.
 
 A newer provider, `packages/providers/ContactsKeysProvider/`, backs the
 `android.provider.E2eeContactKeysManager` API and stores per-contact
-end-to-end-encryption keys that messaging apps use to verify the identity of the
-contacts they talk to. The provider class is
-`packages/providers/ContactsKeysProvider/src/com/android/providers/contactkeys/E2eeContactKeysProvider.java`;
-it declares the authority `com.android.contactkeys.contactkeysprovider` and is
-annotated `@FlaggedApi`, so it is part of a flag-gated API surface
+end-to-end-encryption keys.  Messaging apps use these keys to verify the
+identity of the contacts they talk to. The provider class is
+`packages/providers/ContactsKeysProvider/src/com/android/providers/contactkeys/E2eeContactKeysProvider.java`.
+It declares the authority `com.android.contactkeys.contactkeysprovider` and is
+annotated `@FlaggedApi`.  It is therefore part of a flag-gated API surface
 (`E2eeContactKeysManager` lives at
 `frameworks/base/core/java/android/provider/E2eeContactKeysManager.java`).
 
 It is a good counterpoint to the CRUD-style providers earlier in this chapter
 because it deliberately does *not* use the table model. The `query()`,
-`insert()`, `update()`, `delete()`, and `getType()` overrides are no-ops;
-everything goes through `call()`, which dispatches by method name to operations
+`insert()`, `update()`, `delete()`, and `getType()` overrides are no-ops.
+Everything goes through `call()`.  It dispatches by method name to operations
 like update-or-insert a contact key, fetch a contact's keys, and manage the
 device's own self-keys. Access is gated by the standard `READ_CONTACTS` and
 `WRITE_CONTACTS` permissions declared on the `<provider>` in its manifest, plus
@@ -3233,12 +3248,14 @@ It is useful here for two reasons. First, it is read-only: `query()` is
 implemented, but `insert()`, `update()`, and `delete()` all throw
 `UnsupportedOperationException`. A provider does not have to back every CRUD
 verb, and one that only exposes data declares that by refusing the mutating
-calls. Second, it shows how a provider can seed a real SQLite database from
-its own resources. The provider builds its database (rebuilding it whenever
-the MCC/MNC or locale configuration changes) from the string-array
+calls.
+
+Second, it shows how a provider can seed a real SQLite database from
+its own resources. The provider builds its database from the string-array
 `bookmarks` (alternating title and URL entries) and the `bookmark_preloads`
-icon array in `res/values/`, and serves queries with a `SQLiteQueryBuilder`
-over that database; only the partner-folder-ID URI is answered directly with
+icon array in `res/values/`.  It rebuilds the database whenever the MCC/MNC or
+locale configuration changes.  It serves queries with a `SQLiteQueryBuilder`
+over that database.  Only the partner-folder-ID URI is answered directly with
 a `MatrixCursor`. An OEM customizes the shipped bookmarks by overlaying those
 resources rather than by writing to the provider.
 
@@ -3246,8 +3263,8 @@ The contract exposes one table, `bookmarks`, addressed at
 `content://com.android.partnerbookmarks/bookmarks`, whose rows are either a
 bookmark (`BOOKMARK_TYPE_BOOKMARK`) or a folder (`BOOKMARK_TYPE_FOLDER`). The
 import expects a single top-level folder whose `PARENT` is
-`BOOKMARK_PARENT_ROOT_ID`; more than one root-level entry causes the import to
-fail, which keeps a partner's bookmark tree well-formed. Favicons and
+`BOOKMARK_PARENT_ROOT_ID`.  More than one root-level entry causes the import to
+fail.  This keeps a partner's bookmark tree well-formed. Favicons and
 touch-icons ride along as `FAVICON` and `TOUCHICON` blob columns so the browser
 can show them without a network fetch.
 
@@ -3350,7 +3367,7 @@ adb shell content delete --uri content://com.android.contacts/raw_contacts/1
 
 The `content` shell tool has no `observe` subcommand (its subcommands are
 `insert`, `update`, `delete`, `query`, `call`, `read`, `write`, and
-`gettype`), so watching change notifications requires registering a
+`gettype`).  To watch change notifications, register a
 `ContentObserver` from code, for example in a small test app:
 
 ```java
@@ -3588,9 +3605,9 @@ foundations to its concrete implementations.  The key takeaways:
    through `ContentResolver`, which resolves authorities, manages provider
    lifecycles, and handles stable/unstable references.
 
-3. **The URI scheme is the addressing model** -- The `content://` URI scheme
-   with authorities and path segments provides a uniform way to address any
-   data source, from SQLite databases to cloud storage.
+3. **The URI scheme is the addressing model** -- The `content://` URI scheme,
+   with authorities and path segments, addresses any data source in a uniform
+   way.  Sources range from SQLite databases to cloud storage.
 
 4. **Change notifications are built in** -- The `ContentObserver` mechanism
    provides efficient, URI-scoped change notifications that drive reactive
@@ -3599,7 +3616,7 @@ foundations to its concrete implementations.  The key takeaways:
 5. **System providers are highly specialized** -- MediaProvider,
    ContactsProvider (three-tier aggregation model), CalendarProvider (recurrence
    expansion), and SettingsProvider (call-based fast path with generation
-   tracking) each solve distinct domain problems while sharing the common
+   tracking) each solve distinct problems.  They share the common
    ContentProvider framework.
 
 6. **The permission model is layered** -- Provider-level permissions, path
@@ -3608,10 +3625,10 @@ foundations to its concrete implementations.  The key takeaways:
 
 7. **Android 17 hardened the edges, not the core** -- The framework gained
    file-open mode sanitization in `Transport` (truncate/append bits dropped
-   without write), a cancellation-aware ANR contract for
-   `ContentProviderClient` (`setDetectNotRespondingOnCancel`), an internal
-   refactor of that client's remote-call boilerplate, and a documented
-   device-aware path for `Secure`/`System` settings.
+   without write).  It also gained a cancellation-aware ANR contract for
+   `ContentProviderClient` (`setDetectNotRespondingOnCancel`).  The
+   remote-call boilerplate of that client got an internal refactor.
+   `Secure`/`System` settings gained a documented device-aware path.
 
 ### Key Source Files Referenced
 
